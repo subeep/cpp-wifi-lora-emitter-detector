@@ -1,6 +1,7 @@
 #include "scanner.hpp"
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <ctime>
 
@@ -39,6 +40,28 @@ std::string payload_to_repr(const std::vector<uint8_t>& payload) {
     }
     repr += "'";
     return repr;
+}
+
+// Decimate-by-factor with a basic boxcar (moving-average) anti-alias
+// filter, rather than naive sample-dropping - used only when a
+// device's achievable LoRa-listen capture rate isn't exactly the rate
+// the LoRa codec assumes (125kHz, see lora_phy.hpp and
+// DeviceProfile::lora_listen_capture_rate_hz in config.hpp). Not a
+// rigorous polyphase resampler, but factor==2 (the only case this is
+// currently used for - the X310) puts the new Nyquist edge exactly at
+// the real LoRa signal's own occupied-bandwidth edge, so a simple
+// 2-tap average is a real low-pass step, not just decoration.
+// factor<=1 (the B210, already at exactly 125kHz) is a no-op copy.
+std::vector<std::complex<float>> decimate_boxcar(const std::vector<std::complex<float>>& in,
+                                                  int factor) {
+    if (factor <= 1) return in;
+    std::vector<std::complex<float>> out(in.size() / factor);
+    for (size_t i = 0; i < out.size(); ++i) {
+        std::complex<float> sum(0.0f, 0.0f);
+        for (int j = 0; j < factor; ++j) sum += in[i * factor + j];
+        out[i] = sum / float(factor);
+    }
+    return out;
 }
 }  // namespace
 
@@ -200,11 +223,21 @@ bool Scanner::connect_sdr(const DeviceProfile& profile, std::optional<double> ga
 // reverse-engineered yet - see lora_phy.hpp) fall back to a bare burst
 // detection. Every SF in the list is tried independently, exactly like
 // the Python version - not just the first hit.
-void Scanner::run_lora_listen_step(double freq_hz) {
-    auto [iq, actual_rate, overflow] =
-        sdr_->capture(freq_hz, LORA_LISTEN_SAMPLE_RATE_HZ, LORA_LISTEN_DURATION_S);
-    note_capture_health(!iq.empty());
-    if (iq.empty()) return;
+//
+// Captures at profile.lora_listen_capture_rate_hz (not always exactly
+// LORA_LISTEN_SAMPLE_RATE_HZ - see config.hpp's DeviceProfile comment)
+// and decimates down to what the codec actually expects if the two
+// differ, using whatever the SDR *actually* returned rather than
+// trusting the requested rate blindly.
+void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile) {
+    auto [iq_raw, actual_rate, overflow] = sdr_->capture(
+        freq_hz, profile.lora_listen_capture_rate_hz, LORA_LISTEN_DURATION_S);
+    note_capture_health(!iq_raw.empty());
+    if (iq_raw.empty()) return;
+
+    int decim = std::max(1, int(std::lround(actual_rate / LORA_LISTEN_SAMPLE_RATE_HZ)));
+    std::vector<std::complex<float>> iq = decimate_boxcar(iq_raw, decim);
+
     std::string ts = current_time_hhmmss();
 
     for (int sf : LORA_LISTEN_SF_LIST) {
@@ -364,7 +397,7 @@ void Scanner::run() {
                                                  std::to_string(freq_hz / 1e6) + " MHz" +
                                                  (locked_freq.has_value() ? " (locked)" : "");
                 }
-                run_lora_listen_step(freq_hz);
+                run_lora_listen_step(freq_hz, profile);
             }
         }
 

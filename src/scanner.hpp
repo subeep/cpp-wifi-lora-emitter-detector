@@ -91,7 +91,7 @@ public:
 
 private:
     void run();
-    void run_lora_listen_step(double freq_hz);
+    void run_lora_listen_step(double freq_hz, const DeviceProfile& profile);
     DeviceRegistry& registry_for(const std::string& band);
     // Attempts to (re)connect sdr_, retrying a few times (X310
     // connections over Ethernet fail intermittently - see run()'s

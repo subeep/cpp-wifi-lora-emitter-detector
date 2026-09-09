@@ -242,8 +242,12 @@ int main() {
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
+    // Deliberately not auto-started here - the user picks a device and
+    // clicks Connect in the UI (see the device selector below) rather
+    // than the app silently connecting to whatever the default happens
+    // to be the instant the window appears.
     Scanner scanner;
-    scanner.start();
+    bool scanner_started = false;
 
     int selftest_frames = -1;
     if (const char* env = std::getenv("RF_MONITOR_GUI_SELFTEST_FRAMES")) {
@@ -271,30 +275,42 @@ int main() {
                           ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
 
         // --- SDR device selector ---
-        // Switching devices means physically different hardware (USB vs
-        // Ethernet, different daughterboard/gain range - see config.hpp's
-        // DeviceProfile), so this fully restarts the scan thread rather
-        // than trying to hot-swap mid-run.
+        // Picking a device only changes which radio button is
+        // highlighted - it does NOT connect by itself. Switching means
+        // physically different hardware (USB vs Ethernet, different
+        // daughterboard/gain range - see config.hpp's DeviceProfile),
+        // so this fully restarts the scan thread, and doing that
+        // silently the instant a radio button is clicked was a bit
+        // surprising - Connect is a separate, explicit action.
         static const std::vector<std::pair<const char*, SdrDeviceType>> devices = {
             {"USRP B210", SdrDeviceType::B210},
             {"USRP X310", SdrDeviceType::X310},
         };
-        SdrDeviceType current_device = scanner.device_type();
+        static SdrDeviceType selected_device = SdrDeviceType::B210;
         for (size_t i = 0; i < devices.size(); ++i) {
-            bool selected = current_device == devices[i].second;
+            bool selected = selected_device == devices[i].second;
             if (i > 0) ImGui::SameLine();
-            if (ImGui::RadioButton(devices[i].first, selected) && !selected) {
-                scanner.stop();
-                scanner.set_device_type(devices[i].second);
-                DeviceProfile new_profile = device_profile(devices[i].second);
-                agc = false;
-                gain_db = float(new_profile.default_gain_db);
-                scanner.set_gain(gain_db);
-                scanner.start();
-                current_device = devices[i].second;
+            if (ImGui::RadioButton(devices[i].first, selected)) {
+                selected_device = devices[i].second;
             }
         }
-        DeviceProfile profile = device_profile(current_device);
+        ImGui::SameLine();
+        bool is_connected_to_selected = scanner_started && scanner.device_type() == selected_device;
+        if (ImGui::Button(scanner_started ? "Reconnect" : "Connect")) {
+            if (scanner_started) scanner.stop();
+            scanner.set_device_type(selected_device);
+            DeviceProfile new_profile = device_profile(selected_device);
+            agc = false;
+            gain_db = float(new_profile.default_gain_db);
+            scanner.set_gain(gain_db);
+            scanner.start();
+            scanner_started = true;
+        }
+        if (is_connected_to_selected) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(currently running)");
+        }
+        DeviceProfile profile = device_profile(selected_device);
 
         ImGui::Separator();
 
@@ -302,7 +318,9 @@ int main() {
         std::string active_band = scanner.active_band();
 
         // --- Status line ---
-        if (!status.connected) {
+        if (!scanner_started) {
+            ImGui::TextDisabled("Select a device above and click Connect to start scanning.");
+        } else if (!status.connected) {
             ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1),
                                 "Not connected%s%s", status.error.empty() ? "" : ": ",
                                 status.error.c_str());

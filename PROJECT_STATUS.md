@@ -10,7 +10,55 @@ overall two-project goal and cross-project context.
 lean on here - this file and the code comments are the only record of
 what changed and why.
 
-## Latest work: LoRa PHY decode ported to C++, wired into the GUI
+## Latest work: X310 support, Connect button, and a real LoRa-codec bug found + fixed
+
+Added a USRP B210 / USRP X310 device selector (`config.hpp`'s
+`DeviceProfile`/`device_profile()`, `Scanner::set_device_type()`) and,
+per explicit request, changed the device selector from "connects the
+instant you click a radio button" to "select a device, then click a
+separate Connect button" (`main.cpp` - `scanner_started` state, a
+Connect/Reconnect button). Also fixed several real bugs surfaced by
+live X310 testing (AGC not implemented on the UBX daughterboard, an
+RFNoC streamer-reuse crash on band switches, a destructor throwing
+during teardown of a fully-unresponsive connection, and a 56 Msps
+request saturating the 1GbE link) - all documented inline in
+`config.hpp`/`sdr_capture.cpp`/`scanner.cpp`.
+
+**The most important one, because it's silent rather than a crash: the
+LoRa PHY codec (`lora_phy.hpp`) hard-assumes capture sample rate ==
+the transmitter's 125kHz channel bandwidth** (each symbol is exactly
+`2^SF` *samples* - only true when those two are equal; see
+`demodulate()`/`detect_burst()`, neither of which takes a rate
+parameter at all). The B210 hits 125kHz exactly. The X310 cannot -
+confirmed empirically (`uhd::multi_usrp::set_rx_rate`/`get_rx_rate`
+round-tripped against several candidate rates), requesting 125kHz
+clamps to ~196.08kHz, which is *not* a clean multiple of 125kHz, so
+even decimating that down wouldn't reconstruct a correct 125kHz-
+equivalent signal. Requesting **250kHz**, however, lands on exactly
+`250000.00 Hz` - a clean 2x multiple. Fix: the X310's
+`DeviceProfile::lora_listen_capture_rate_hz` is 250kHz (the B210's
+stays 125kHz, unaffected), and `Scanner::run_lora_listen_step()`
+decimates the result by 2 with a basic boxcar (moving-average)
+anti-alias filter - not naive sample-dropping - before handing it to
+the codec (see `decimate_boxcar()` in `scanner.cpp`). The decimation
+factor is computed from whatever UHD *actually* returns
+(`std::lround(actual_rate / LORA_LISTEN_SAMPLE_RATE_HZ)`), not assumed
+from the profile, so it self-corrects if the achievable rate ever
+changes.
+
+This was NOT caught by the crash-resilience work alone - the app was
+completely stable (no crashes, no RX-stalled warnings, clean cycle
+counts) while silently detecting zero real packets, because the DSP
+math itself was wrong, not the plumbing. Validated against real
+hardware after the fix: a standalone diagnostic
+(`/tmp/.../lora_x310_test.cpp`, not part of the repo) receiving at
+250kHz+decimate-by-2 while a real TarangMini ST22LR01 transmitted 20
+packets detected 4 of them (`DETECTED sf=7 preamble_len=39-40`,
+matching the exact signature already validated on the B210 - see
+`newrocktest/TARANGMINI_LORA_FINDINGS.md`), then re-confirmed live in
+the actual GUI's LoRa packet table with a fresh burst.
+
+## Earlier work: LoRa PHY decode ported to C++, wired into the GUI
 
 Goal (user request): port the Python prototype's real LoRa PHY
 decode/detect capability (`newrocktest/rf_monitor/lora_phy.py` +

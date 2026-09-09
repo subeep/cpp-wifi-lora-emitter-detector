@@ -183,9 +183,10 @@ struct DeviceProfile {
     std::string device_args;
     std::string antenna;
     double default_gain_db;
-    double max_gain_db;         // for the UI slider - hardware will clamp regardless
-    bool supports_agc;         // UBX (and most non-AD9361 daughterboards) don't
-    double max_sample_rate_hz;  // transport-limited - see below
+    double max_gain_db;              // for the UI slider - hardware will clamp regardless
+    bool supports_agc;               // UBX (and most non-AD9361 daughterboards) don't
+    double max_sample_rate_hz;       // transport-limited - see below
+    double lora_listen_capture_rate_hz;  // see below - not always == LORA_LISTEN_SAMPLE_RATE_HZ
 };
 
 // Antenna connected to slot A / Radio#0 (channel 0) on this X310, per
@@ -213,11 +214,25 @@ struct DeviceProfile {
 // in sdr_capture.cpp for that half of the fix). 20 Msps here leaves
 // headroom under the ~31 Msps physical ceiling. If this X310 is ever
 // moved to a 10GbE (SFP+) link, this can go back up to 56 Msps.
+//
+// lora_listen_capture_rate_hz: the LoRa PHY codec (lora_phy.hpp) hard-
+// assumes capture sample rate == the transmitter's 125kHz channel
+// bandwidth (each symbol is exactly 2^SF *samples* - true only when
+// those two are equal). The B210 hits LORA_LISTEN_SAMPLE_RATE_HZ
+// (125kHz) exactly, so it captures at that rate directly. The X310
+// cannot hit 125kHz at all - confirmed empirically, requesting it
+// clamps to ~196.08kHz (not a clean multiple of 125kHz, so decimating
+// that down still wouldn't reconstruct 125kHz correctly). 250kHz,
+// however, lands on *exactly* 250000.0 Hz - a clean 2x multiple - so
+// the X310 captures at 250kHz and Scanner::run_lora_listen_step()
+// decimates that by 2 (with a basic anti-alias filter, not naive
+// sample-dropping) before handing it to the codec, which then sees
+// data indistinguishable from a real 125kHz capture.
 inline DeviceProfile device_profile(SdrDeviceType type) {
     if (type == SdrDeviceType::X310) {
-        return {std::string("addr=") + X310_ADDR, "RX2", 20.0, 31.5, false, 20e6};
+        return {std::string("addr=") + X310_ADDR, "RX2", 20.0, 31.5, false, 20e6, 250e3};
     }
-    return {DEVICE_ARGS, ANTENNA, DEFAULT_GAIN_DB, 70.0, true, 56e6};
+    return {DEVICE_ARGS, ANTENNA, DEFAULT_GAIN_DB, 70.0, true, 56e6, 125e3};
 }
 
 // --- Registry ---
