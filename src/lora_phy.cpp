@@ -165,10 +165,18 @@ int hamming_decode_nibble(int codeword, int cr) {
 }
 
 // --- Diagonal interleaver: spreads each Hamming codeword's bits
-// across `sf` chirp symbols so a single bad symbol doesn't corrupt one
-// whole codeword. ---
+// across `rows` chirp symbols so a single bad symbol doesn't corrupt
+// one whole codeword. Used for both the payload (rows == sf, scales
+// with the actual spreading factor) and the header (rows ==
+// HEADER_INTERLEAVER_ROWS, always fixed at 6 regardless of sf - the
+// header's codeword count never changes) - `rows` must always be >=
+// the number of codewords being (de)interleaved, which is guaranteed
+// for the payload (blocked into groups of exactly `sf` codewords
+// before calling this) but was NOT always guaranteed for the header
+// before HEADER_INTERLEAVER_ROWS existed (see that constant's comment
+// in lora_phy.hpp for the SF5 bug this fixes). ---
 
-std::vector<int> interleave_block(const std::vector<int>& codewords, int sf, int bits_per_symbol) {
+std::vector<int> interleave_block(const std::vector<int>& codewords, int rows, int bits_per_symbol) {
     std::vector<std::vector<int>> matrix(codewords.size(), std::vector<int>(bits_per_symbol));
     for (size_t cw_i = 0; cw_i < codewords.size(); ++cw_i) {
         for (int col = 0; col < bits_per_symbol; ++col) {
@@ -178,7 +186,7 @@ std::vector<int> interleave_block(const std::vector<int>& codewords, int sf, int
     std::vector<int> symbols(bits_per_symbol);
     for (int col = 0; col < bits_per_symbol; ++col) {
         int val = 0;
-        for (int row = 0; row < sf; ++row) {
+        for (int row = 0; row < rows; ++row) {
             int bit = matrix[row][(col + row) % bits_per_symbol];
             val = (val << 1) | bit;
         }
@@ -187,21 +195,21 @@ std::vector<int> interleave_block(const std::vector<int>& codewords, int sf, int
     return symbols;
 }
 
-std::vector<int> deinterleave_block(const std::vector<int>& symbols, int sf, int bits_per_symbol) {
-    std::vector<std::vector<int>> col_bits(symbols.size(), std::vector<int>(sf));
+std::vector<int> deinterleave_block(const std::vector<int>& symbols, int rows, int bits_per_symbol) {
+    std::vector<std::vector<int>> col_bits(symbols.size(), std::vector<int>(rows));
     for (size_t s = 0; s < symbols.size(); ++s) {
-        for (int row = 0; row < sf; ++row) {
-            col_bits[s][row] = (symbols[s] >> (sf - 1 - row)) & 1;
+        for (int row = 0; row < rows; ++row) {
+            col_bits[s][row] = (symbols[s] >> (rows - 1 - row)) & 1;
         }
     }
-    std::vector<std::vector<int>> matrix(sf, std::vector<int>(bits_per_symbol, 0));
+    std::vector<std::vector<int>> matrix(rows, std::vector<int>(bits_per_symbol, 0));
     for (int col = 0; col < static_cast<int>(symbols.size()); ++col) {
-        for (int row = 0; row < sf; ++row) {
+        for (int row = 0; row < rows; ++row) {
             matrix[row][(col + row) % bits_per_symbol] = col_bits[col][row];
         }
     }
-    std::vector<int> codewords(sf);
-    for (int row = 0; row < sf; ++row) {
+    std::vector<int> codewords(rows);
+    for (int row = 0; row < rows; ++row) {
         int val = 0;
         for (int bit : matrix[row]) val = (val << 1) | bit;
         codewords[row] = val;
@@ -341,8 +349,10 @@ std::optional<DecodedPacket> try_decode_from(const std::complex<float>* iq, size
     }
     pos += sfd_len;
 
-    // Header: one interleaved block of `sf` codewords (CR=4/8) is
-    // transmitted as header_bits_per_symbol chirp symbols.
+    // Header: one interleaved block of HEADER_INTERLEAVER_ROWS
+    // codewords (CR=4/8) is transmitted as header_bits_per_symbol
+    // chirp symbols - fixed size regardless of sf, see that constant's
+    // comment in lora_phy.hpp.
     int header_bits_per_symbol = 4 + HEADER_CR;
     if (size_t(pos) + size_t(header_bits_per_symbol) * N > n_iq) {
         cleanup();
@@ -355,7 +365,8 @@ std::optional<DecodedPacket> try_decode_from(const std::complex<float>* iq, size
         header_raw_symbols[k] = gray_to_binary(b);
         pos += N;
     }
-    std::vector<int> header_codewords = deinterleave_block(header_raw_symbols, sf, header_bits_per_symbol);
+    std::vector<int> header_codewords =
+        deinterleave_block(header_raw_symbols, HEADER_INTERLEAVER_ROWS, header_bits_per_symbol);
     int header_nibbles[6];
     for (int i = 0; i < 6; ++i) header_nibbles[i] = hamming_decode_nibble(header_codewords[i], HEADER_CR);
     int b0 = (header_nibbles[0] << 4) | header_nibbles[1];
@@ -459,7 +470,8 @@ std::vector<std::complex<float>> modulate(const std::vector<uint8_t>& payload,
     sfd_iq.insert(sfd_iq.end(), base_down_vec.begin(), base_down_vec.end());
     sfd_iq.insert(sfd_iq.end(), base_down_vec.begin(), base_down_vec.begin() + N / 4);
 
-    // Header (always CR=4/8, gray-coded, interleaved over `sf` symbols).
+    // Header (always CR=4/8, gray-coded, interleaved over
+    // HEADER_INTERLEAVER_ROWS symbols - fixed regardless of sf).
     auto hbytes = header_bytes(static_cast<int>(payload.size()), params.cr, params.sync_word);
     std::vector<int> header_symbols_raw;
     for (uint8_t byte : hbytes) {
@@ -468,8 +480,9 @@ std::vector<std::complex<float>> modulate(const std::vector<uint8_t>& payload,
     }
     int header_bits_per_symbol = 4 + HEADER_CR;
     std::vector<int> header_block = header_symbols_raw;
-    header_block.resize(sf, 0);
-    auto header_interleaved = interleave_block(header_block, sf, header_bits_per_symbol);
+    header_block.resize(HEADER_INTERLEAVER_ROWS, 0);
+    auto header_interleaved =
+        interleave_block(header_block, HEADER_INTERLEAVER_ROWS, header_bits_per_symbol);
     std::vector<int> header_symbols;
     for (int s : header_interleaved) header_symbols.push_back(binary_to_gray(s));
     auto header_iq = symbols_to_iq(header_symbols);

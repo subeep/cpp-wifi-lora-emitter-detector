@@ -98,6 +98,15 @@ int main() {
     all_ok &= run_case("all_zero_bytes", std::vector<uint8_t>(16, 0x00), 7, 1);
     all_ok &= run_case("all_ff_bytes", std::vector<uint8_t>(16, 0xFF), 8, 4);
 
+    // SF5/SF6: TarangNet's own Default Data Rate table (config cmd
+    // 0x08) supports SF05 through SF12, but this codec only ever
+    // ported SF7-12 - the header interleaver reuses `sf` as its row
+    // count assuming that's always >= the header's fixed 6 codewords,
+    // which is false at SF5 specifically (see lora_phy.cpp).
+    all_ok &= run_case("sf6_basic", to_bytes("sf6 test"), 6, 1);
+    all_ok &= run_case("sf5_basic", to_bytes("sf5 test"), 5, 1);
+    all_ok &= run_case("sf5_cr4", random_bytes(12, 3), 5, 4);
+
     if (all_ok && g_failures == 0) {
         std::printf("\nAll LoRa PHY round-trip checks passed.\n");
         return 0;

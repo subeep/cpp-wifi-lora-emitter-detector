@@ -29,6 +29,16 @@ namespace rfmon::lora {
 constexpr int N_PREAMBLE = 8;             // our own TX default (modulate())
 constexpr int SYNC_WORD_DEFAULT = 0x12;   // see file header note
 constexpr int HEADER_CR = 4;              // header is always coded at the most robust rate (4/8)
+// The header is always a fixed 3-byte / 6-codeword structure (payload
+// length, CR+CRC flag, XOR checksum), regardless of spreading factor -
+// its interleaver block must always have (at least) this many rows.
+// Previously this was sized by `sf` directly (fine for SF>=6, where it
+// happens to be >=6 rows, but for SF5 it truncated the header to 5
+// codewords on encode and read one element past the end of a 5-element
+// vector on decode - undefined behavior, confirmed reproducing as a
+// silent demodulate() failure in tests/test_lora_phy.cpp's sf5_* cases
+// before this constant was introduced).
+constexpr int HEADER_INTERLEAVER_ROWS = 6;
 
 struct LoRaParams {
     int sf = 7;

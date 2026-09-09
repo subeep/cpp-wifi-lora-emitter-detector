@@ -255,7 +255,7 @@ inline const std::vector<double> LORA_LISTEN_CHANNELS_HZ = {865.0625e6, 865.4025
                                                              866.9e6};
 constexpr double LORA_LISTEN_SAMPLE_RATE_HZ = 125e3;
 constexpr double LORA_LISTEN_DURATION_S = 2.0;
-inline const std::vector<int> LORA_LISTEN_SF_LIST = {7, 8, 9, 10, 11, 12};
+inline const std::vector<int> LORA_LISTEN_SF_LIST = {5, 6, 7, 8, 9, 10, 11, 12};
 constexpr int LORA_PACKET_LOG_MAX = 200;
 
 }  // namespace rfmon

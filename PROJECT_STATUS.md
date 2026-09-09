@@ -10,7 +10,46 @@ overall two-project goal and cross-project context.
 lean on here - this file and the code comments are the only record of
 what changed and why.
 
-## Latest work: X310 support, Connect button, and a real LoRa-codec bug found + fixed
+## Latest work: SF5/SF6 support (another real codec bug found + fixed)
+
+Extended `LORA_LISTEN_SF_LIST` from `{7..12}` to `{5..12}` - TarangNet's
+own Default Data Rate table supports SF05-SF12, so the previous range
+was a real detection blind spot, not just an arbitrary choice. Naively
+adding 5 surfaced a genuine bug rather than just "SF5 doesn't decode
+yet": the header is always a fixed 3-byte/6-codeword structure, but
+`interleave_block`/`deinterleave_block` reused `sf` itself as the
+header's row count, implicitly assuming SF>=6. At SF5 this silently
+dropped the header's 6th codeword on encode (`header_block.resize(sf,
+0)` truncates when `sf < 6`) and read one element past the end of a
+5-element vector on decode (`header_codewords[5]` when
+`deinterleave_block` only returned 5 elements) - undefined behavior,
+not a clean failure. SF6+ only ever worked by numeric coincidence.
+
+Fixed with a new `HEADER_INTERLEAVER_ROWS = 6` constant
+(`lora_phy.hpp`) used for the header's interleave/deinterleave calls
+instead of `sf` - the payload interleaver, which genuinely scales with
+`sf`, is untouched. The `interleave_block`/`deinterleave_block`
+parameter previously named `sf` was renamed to `rows` to make clear
+it's used for two different purposes now. Applied the identical fix to
+the sibling Python prototype (`newrocktest/rf_monitor/lora_phy.py`),
+which had the same underlying design flaw (manifesting as a silent
+`[0] * -1 == []` no-op on encode and an `IndexError` on decode, rather
+than C++'s undefined behavior, but the same root cause).
+
+Validation order: added SF5/SF6 synthetic round-trip cases to both
+`tests/test_lora_phy.cpp` and the Python test suite *first* -
+confirmed they failed against the un-fixed code (reproducing the bug
+on demand), then confirmed all cases pass post-fix, including the
+existing SF7-12 cases (no regression). Then validated against real
+hardware: reconfigured the same TarangMini ST22LR01 used throughout
+this project's LoRa work to SF06 and then SF05 (via its own config
+API, cmd `0x08`), sent real over-the-air bursts at each rate through
+the X310 (250kHz capture + decimate-by-2, see below), and confirmed
+live detection at both rates with zero false positives on other SFs -
+see `newrocktest/TARANGMINI_LORA_FINDINGS.md` for the exact detection
+counts. Module restored to its original SF07 setting afterward.
+
+## Earlier work: X310 support, Connect button, and a real LoRa-codec bug found + fixed
 
 Added a USRP B210 / USRP X310 device selector (`config.hpp`'s
 `DeviceProfile`/`device_profile()`, `Scanner::set_device_type()`) and,
