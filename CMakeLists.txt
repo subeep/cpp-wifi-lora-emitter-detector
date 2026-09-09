@@ -100,6 +100,17 @@ target_include_directories(test_dsp PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_dsp PRIVATE PkgConfig::KISSFFT)
 
 # ---------------------------------------------------------------------------
+# Synthetic LoRa PHY codec correctness test - pure software, no hardware.
+# Direct C++ port of the validated Python prototype's tests/test_lora_phy.py.
+# ---------------------------------------------------------------------------
+add_executable(test_lora_phy
+  tests/test_lora_phy.cpp
+  src/lora_phy.cpp
+)
+target_include_directories(test_lora_phy PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_lora_phy PRIVATE PkgConfig::KISSFFT)
+
+# ---------------------------------------------------------------------------
 # Manual hardware validation tool (see tools/band_smoke_test.cpp) - not
 # part of the GUI, needs the real B210 and a couple minutes to run.
 # ---------------------------------------------------------------------------
@@ -112,6 +123,7 @@ add_executable(band_smoke_test
   src/spectrum.cpp
   src/detector.cpp
   src/classifier.cpp
+  src/lora_phy.cpp
 )
 target_include_directories(band_smoke_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${UHD_INCLUDE_DIRS})
 target_link_libraries(band_smoke_test PRIVATE PkgConfig::KISSFFT Threads::Threads dl ${UHD_LIBRARIES})

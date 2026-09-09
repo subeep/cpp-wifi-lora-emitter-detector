@@ -1,10 +1,17 @@
-// Thin wrapper around the UHD B210 driver for finite-duration IQ capture.
+// Thin wrapper around the UHD multi_usrp API for finite-duration IQ
+// capture. Device-agnostic by construction (just device_args/antenna/
+// gain/channel passed in) - used for both the USRP B210 (USB3) and the
+// USRP X310 (Ethernet, RFNoC), see config.hpp's DeviceProfile/
+// device_profile() for the per-device args each one is constructed
+// with.
 //
 // Uses host format fc32 (complex64) over wire format sc16 - the wire
-// format keeps USB throughput at ~4 bytes/sample instead of 8, which is
-// what keeps 56 Msps comfortably inside USB3 bandwidth (confirmed on
+// format halves the bytes/sample vs raw fc32, which is what keeps
+// 56 Msps comfortably inside USB3 bandwidth on the B210 (confirmed on
 // this hardware in the Python prototype: zero overflow at 56 Msps over
-// a 1s sustained capture).
+// a 1s sustained capture). The X310's 1GigE link is the newer, lower-
+// bandwidth transport of the two - see PROJECT_STATUS.md for whether
+// 56 Msps has been validated not to overflow there too.
 
 #pragma once
 
@@ -20,9 +27,9 @@
 
 namespace rfmon {
 
-class B210Capture {
+class UsrpCapture {
 public:
-    B210Capture(const std::string& antenna = ANTENNA,
+    UsrpCapture(const std::string& antenna = ANTENNA,
                 std::optional<double> gain_db = DEFAULT_GAIN_DB, size_t channel = 0,
                 const std::string& device_args = DEVICE_ARGS);
 

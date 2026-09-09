@@ -27,6 +27,27 @@ struct ScannerStatus {
     std::string active_step_label;  // which scan step is in flight right now
     int cycle_count = 0;            // cycles completed for the active band since it became active
     bool last_overflow = false;
+    // True once several scan steps/LoRa listen calls in a row have come
+    // back with zero samples (a real capture failure, not just an
+    // ordinary "nothing above threshold" result) - see
+    // Scanner::note_capture_health(). Distinct from `connected`: the
+    // SDR handle is still alive, but samples have stopped flowing.
+    bool rx_stalled = false;
+};
+
+// One observed LoRa PHY event (see lora_phy.hpp): either a full decode
+// or a bare burst detection. Optional fields are unset for a
+// detected-only row (no payload was recovered).
+struct LoraPacketRow {
+    std::string time;      // HH:MM:SS
+    std::string status;    // "decoded" or "detected"
+    double freq_mhz;
+    int sf;
+    std::optional<int> cr;
+    std::optional<int> payload_len;
+    std::optional<bool> crc_valid;
+    int cfo_bins;
+    std::optional<std::string> payload_repr;
 };
 
 class Scanner {
@@ -40,20 +61,51 @@ public:
     void set_active_band(const std::string& band);
     std::string active_band() const;
 
+    // Which physical SDR to connect to. Only takes effect on the next
+    // start() - changing it while running does not hot-swap hardware;
+    // the caller should stop(), set_device_type(), then start() again
+    // (see main.cpp's device selector, which does exactly this).
+    void set_device_type(SdrDeviceType type);
+    SdrDeviceType device_type() const;
+
     void set_threshold_db(double db);
     double threshold_db() const;
 
     void set_gain(std::optional<double> gain_db);  // nullopt = AGC
     std::optional<double> gain() const;
 
+    // Pins the LoRa PHY listen step to one exact frequency every cycle
+    // instead of rotating LORA_LISTEN_CHANNELS_HZ - useful when a known
+    // real device's configured frequency doesn't fall on that list (see
+    // newrocktest/TARANGMINI_LORA_FINDINGS.md for how this comes up in
+    // practice). nullopt (default) = cycle all channels as usual.
+    void set_lora_lock_freq(std::optional<double> freq_hz);
+    std::optional<double> lora_lock_freq() const;
+
     std::vector<DeviceRow> snapshot(const std::string& band) const;
     ScannerStatus status() const;
 
+    // Only populated while BAND_SUB_GHZ is active - see run()'s LoRa
+    // PHY listen sub-loop, which runs alongside the usual energy scan.
+    std::vector<LoraPacketRow> lora_packets() const;
+
 private:
     void run();
+    void run_lora_listen_step(double freq_hz);
     DeviceRegistry& registry_for(const std::string& band);
+    // Attempts to (re)connect sdr_, retrying a few times (X310
+    // connections over Ethernet fail intermittently - see run()'s
+    // comment). Updates status_.connected/error itself either way.
+    // Used both for the initial connect and for the mid-run
+    // auto-reconnect triggered by a sustained RX stall.
+    bool connect_sdr(const DeviceProfile& profile, std::optional<double> gain);
+    // Called after every scan step / LoRa listen attempt with whether it
+    // returned any samples at all. Only touched from the background
+    // thread (run() and its callees), so rx_fail_streak_ itself needs no
+    // locking - only the status_ write it produces does.
+    void note_capture_health(bool got_data);
 
-    std::unique_ptr<B210Capture> sdr_;
+    std::unique_ptr<UsrpCapture> sdr_;
     std::thread thread_;
     std::atomic<bool> stop_flag_{false};
 
@@ -62,6 +114,8 @@ private:
     double threshold_db_ = DEFAULT_DETECTION_THRESHOLD_DB;
     std::optional<double> gain_db_ = DEFAULT_GAIN_DB;
     bool gain_dirty_ = false;
+    std::optional<double> lora_lock_freq_;
+    SdrDeviceType device_type_ = SdrDeviceType::B210;
 
     mutable std::mutex status_mutex_;
     ScannerStatus status_;
@@ -69,6 +123,13 @@ private:
     DeviceRegistry registry_lora_;
     DeviceRegistry registry_wifi24_;
     DeviceRegistry registry_wifi5_;
+
+    mutable std::mutex lora_log_mutex_;
+    std::vector<LoraPacketRow> lora_packet_log_;
+    size_t lora_channel_idx_ = 0;
+
+    int rx_fail_streak_ = 0;
+    static constexpr int kRxStallThreshold = 3;
 };
 
 }  // namespace rfmon

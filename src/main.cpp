@@ -76,7 +76,7 @@ void draw_frequency_track(const BandRange& range, const std::vector<DeviceRow>& 
     ImGui::Dummy(ImVec2(width, height + 6));
 }
 
-void draw_device_table(const std::vector<DeviceRow>& devices) {
+void draw_device_table(const std::vector<DeviceRow>& devices, float height) {
     if (devices.empty()) {
         ImGui::TextDisabled("No active emitters right now.");
         return;
@@ -85,7 +85,7 @@ void draw_device_table(const std::vector<DeviceRow>& devices) {
     static ImGuiTableFlags flags = ImGuiTableFlags_Sortable | ImGuiTableFlags_RowBg |
                                    ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
                                    ImGuiTableFlags_ScrollY;
-    ImVec2 outer_size(0.0f, ImGui::GetContentRegionAvail().y);
+    ImVec2 outer_size(0.0f, height);
     if (!ImGui::BeginTable("devices", 8, flags, outer_size)) return;
 
     ImGui::TableSetupScrollFreeze(0, 1);
@@ -144,6 +144,69 @@ void draw_device_table(const std::vector<DeviceRow>& devices) {
         ImGui::TextUnformatted(d.band == BAND_SUB_GHZ    ? "Sub-GHz ISM"
                                 : d.band == BAND_WIFI_2G4 ? "2.4GHz Wi-Fi"
                                                           : "5GHz Wi-Fi");
+    }
+    ImGui::EndTable();
+}
+
+// "Decoded" = full payload recovered, header checksum matched.
+// "Detected" = a real chirp preamble locked but the header/payload
+// didn't fully decode (e.g. third-party hardware whose exact FEC/
+// interleaver encoding isn't reverse-engineered yet - see
+// lora_phy.hpp). Most-recent-first, matching the Python dashboard.
+void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float height) {
+    if (packets.empty()) {
+        ImGui::TextDisabled("No LoRa packets observed yet.");
+        return;
+    }
+
+    static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
+                                   ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY;
+    ImVec2 outer_size(0.0f, height);
+    if (!ImGui::BeginTable("lora_packets", 9, flags, outer_size)) return;
+
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+    ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+    ImGui::TableSetupColumn("Freq (MHz)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+    ImGui::TableSetupColumn("SF", ImGuiTableColumnFlags_WidthFixed, 40.0f);
+    ImGui::TableSetupColumn("CR", ImGuiTableColumnFlags_WidthFixed, 40.0f);
+    ImGui::TableSetupColumn("Len", ImGuiTableColumnFlags_WidthFixed, 50.0f);
+    ImGui::TableSetupColumn("CRC", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+    ImGui::TableSetupColumn("CFO (bins)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+    ImGui::TableSetupColumn("Payload", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableHeadersRow();
+
+    ImVec4 dim(0.55f, 0.55f, 0.58f, 1.0f);
+    ImVec4 good(0.25f, 0.73f, 0.31f, 1.0f);
+    ImVec4 bad(0.85f, 0.30f, 0.28f, 1.0f);
+
+    for (auto it = packets.rbegin(); it != packets.rend(); ++it) {
+        const auto& d = *it;
+        bool decoded = d.status == "decoded";
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(d.time.c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextColored(decoded ? good : dim, "%s", decoded ? "Decoded" : "Detected");
+        ImGui::TableNextColumn();
+        ImGui::Text("%.4f", d.freq_mhz);
+        ImGui::TableNextColumn();
+        ImGui::Text("%d", d.sf);
+        ImGui::TableNextColumn();
+        if (d.cr.has_value()) ImGui::Text("%d", *d.cr); else ImGui::TextDisabled("--");
+        ImGui::TableNextColumn();
+        if (d.payload_len.has_value()) ImGui::Text("%d", *d.payload_len); else ImGui::TextDisabled("--");
+        ImGui::TableNextColumn();
+        if (d.crc_valid.has_value()) {
+            ImGui::TextColored(*d.crc_valid ? good : bad, "%s", *d.crc_valid ? "valid" : "invalid");
+        } else {
+            ImGui::TextDisabled("--");
+        }
+        ImGui::TableNextColumn();
+        ImGui::Text("%d", d.cfo_bins);
+        ImGui::TableNextColumn();
+        if (d.payload_repr.has_value()) ImGui::TextUnformatted(d.payload_repr->c_str());
+        else ImGui::TextDisabled("--");
     }
     ImGui::EndTable();
 }
@@ -207,6 +270,34 @@ int main() {
                       ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                           ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
 
+        // --- SDR device selector ---
+        // Switching devices means physically different hardware (USB vs
+        // Ethernet, different daughterboard/gain range - see config.hpp's
+        // DeviceProfile), so this fully restarts the scan thread rather
+        // than trying to hot-swap mid-run.
+        static const std::vector<std::pair<const char*, SdrDeviceType>> devices = {
+            {"USRP B210", SdrDeviceType::B210},
+            {"USRP X310", SdrDeviceType::X310},
+        };
+        SdrDeviceType current_device = scanner.device_type();
+        for (size_t i = 0; i < devices.size(); ++i) {
+            bool selected = current_device == devices[i].second;
+            if (i > 0) ImGui::SameLine();
+            if (ImGui::RadioButton(devices[i].first, selected) && !selected) {
+                scanner.stop();
+                scanner.set_device_type(devices[i].second);
+                DeviceProfile new_profile = device_profile(devices[i].second);
+                agc = false;
+                gain_db = float(new_profile.default_gain_db);
+                scanner.set_gain(gain_db);
+                scanner.start();
+                current_device = devices[i].second;
+            }
+        }
+        DeviceProfile profile = device_profile(current_device);
+
+        ImGui::Separator();
+
         ScannerStatus status = scanner.status();
         std::string active_band = scanner.active_band();
 
@@ -223,6 +314,11 @@ int main() {
             if (status.last_overflow) {
                 ImGui::SameLine();
                 ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.1f, 1), "| USB overflow last cycle");
+            }
+            if (status.rx_stalled) {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1),
+                                    "| RX STALLED - no samples received recently");
             }
         }
 
@@ -243,6 +339,33 @@ int main() {
             }
         }
 
+        // --- LoRa frequency lock (only meaningful in Sub-GHz mode) ---
+        // The 4 LORA_LISTEN_CHANNELS_HZ channels are cycled one per
+        // cycle by default, so a real device on some other frequency
+        // (see newrocktest/TARANGMINI_LORA_FINDINGS.md) is only listened
+        // to ~1 cycle in 4. Locking pins every cycle to one exact
+        // frequency instead, for watching one known device continuously.
+        static bool lora_lock_enabled = false;
+        static float lora_lock_mhz = 866.9f;
+        if (active_band == BAND_SUB_GHZ) {
+            ImGui::Spacing();
+            if (ImGui::Checkbox("Lock to frequency", &lora_lock_enabled)) {
+                scanner.set_lora_lock_freq(lora_lock_enabled
+                                                ? std::optional<double>(double(lora_lock_mhz) * 1e6)
+                                                : std::optional<double>());
+            }
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(120);
+            if (ImGui::InputFloat("MHz##lora_lock", &lora_lock_mhz, 0.0f, 0.0f, "%.4f") &&
+                lora_lock_enabled) {
+                scanner.set_lora_lock_freq(double(lora_lock_mhz) * 1e6);
+            }
+            if (lora_lock_enabled) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("(listening only here instead of cycling all 4 channels)");
+            }
+        }
+
         ImGui::Spacing();
 
         // --- Controls ---
@@ -250,14 +373,23 @@ int main() {
                                 "%.1f")) {
             scanner.set_threshold_db(threshold_db);
         }
-        ImGui::SameLine();
-        if (ImGui::Checkbox("AGC", &agc)) {
-            scanner.set_gain(agc ? std::optional<double>() : std::optional<double>(gain_db));
+        if (profile.supports_agc) {
+            ImGui::SameLine();
+            if (ImGui::Checkbox("AGC", &agc)) {
+                scanner.set_gain(agc ? std::optional<double>() : std::optional<double>(gain_db));
+            }
+        } else {
+            ImGui::SameLine();
+            ImGui::BeginDisabled();
+            bool agc_unavailable = false;
+            ImGui::Checkbox("AGC (not supported on this radio)", &agc_unavailable);
+            ImGui::EndDisabled();
         }
         if (!agc) {
             ImGui::SameLine();
             ImGui::SetNextItemWidth(160);
-            if (ImGui::SliderFloat("Gain (dB)", &gain_db, 0.0f, 70.0f, "%.0f")) {
+            if (ImGui::SliderFloat("Gain (dB)", &gain_db, 0.0f, float(profile.max_gain_db),
+                                    "%.1f")) {
                 scanner.set_gain(gain_db);
             }
         }
@@ -286,7 +418,22 @@ int main() {
 
         ImGui::Spacing();
         ImGui::TextUnformatted("Active emitters");
-        draw_device_table(scanner.snapshot(active_band));
+
+        bool show_lora_packets = (active_band == BAND_SUB_GHZ);
+        float remaining = ImGui::GetContentRegionAvail().y;
+        // Split remaining space: energy-detection device list gets ~40%
+        // when the LoRa packet list is also shown below it, else all of it.
+        float device_table_height = show_lora_packets ? remaining * 0.4f : remaining;
+        draw_device_table(scanner.snapshot(active_band), device_table_height);
+
+        if (show_lora_packets) {
+            ImGui::Spacing();
+            ImGui::TextUnformatted("LoRa PHY packets (Sub-GHz IN865 channels)");
+            ImGui::TextDisabled(
+                "Decoded = full payload recovered. Detected = a real chirp preamble locked but "
+                "header/payload didn't fully decode (third-party hardware, see docs).");
+            draw_lora_packet_table(scanner.lora_packets(), ImGui::GetContentRegionAvail().y);
+        }
 
         ImGui::End();
         ImGui::Render();

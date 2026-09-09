@@ -105,8 +105,13 @@ inline const std::map<int, double>& wifi_5g_channels() {
 // Each scan step takes several short captures and combines them with
 // max-hold rather than one long averaged capture, so short/intermittent
 // bursts (a single LoRa packet, a Wi-Fi beacon) aren't washed out.
+// SUB_CAPTURE_DURATION_S was doubled from its original 0.15s - longer
+// per-channel dwell gives intermittent emitters more chance to land in
+// a capture window (matters more now on the X310, where each capture
+// also has more RFNoC/network round-trip overhead than the B210's USB
+// path), at the cost of a longer scan cycle.
 constexpr int SUB_CAPTURES_PER_STEP = 4;
-constexpr double SUB_CAPTURE_DURATION_S = 0.15;
+constexpr double SUB_CAPTURE_DURATION_S = 0.3;
 constexpr double RETUNE_SETTLE_S = 0.1;
 
 // --- Detection ---
@@ -158,8 +163,84 @@ constexpr double DEFAULT_GAIN_DB = 40.0;
 constexpr const char* ANTENNA = "RX2";
 constexpr const char* DEVICE_ARGS = "type=b200";
 
+// --- SDR device selection (B210 or X310) ---
+// Both are driven through the same UsrpCapture wrapper (see
+// sdr_capture.hpp) - only the UHD device args, antenna name, and gain
+// range differ per device, captured here as one DeviceProfile per type.
+enum class SdrDeviceType { B210, X310 };
+
+// This lab's X310, reached over a direct Ethernet link (its factory-
+// default static IP on the 1GigE management/data port - re-discover
+// with `uhd_find_devices` if it's ever changed or moved to a different
+// network). Needs the host's UDP send buffer raised first:
+//   sudo sysctl -w net.core.wmem_max=50000000
+// (UHD logs the exact required value if this is too small; this is a
+// standard requirement for X3x0-series devices, not specific to this
+// app - see PROJECT_STATUS.md.)
+constexpr const char* X310_ADDR = "192.168.10.2";
+
+struct DeviceProfile {
+    std::string device_args;
+    std::string antenna;
+    double default_gain_db;
+    double max_gain_db;         // for the UI slider - hardware will clamp regardless
+    bool supports_agc;         // UBX (and most non-AD9361 daughterboards) don't
+    double max_sample_rate_hz;  // transport-limited - see below
+};
+
+// Antenna connected to slot A / Radio#0 (channel 0) on this X310, per
+// the user's physical setup - see PROJECT_STATUS.md. Both installed
+// daughterboards are UBX-160 (10 MHz - 6 GHz, fixed 160MHz analog
+// bandwidth), with a PGA0 gain range of 0.0-31.5dB (`uhd_usrp_probe`) -
+// much narrower than the B210's, hence the separate default/max here.
+// UBX has no AGC at all (UHD throws not_implemented_error - see
+// sdr_capture.cpp's try_set_agc) - only the AD9361-based B210 does.
+//
+// max_sample_rate_hz: the B210's value (56 Msps) was validated over its
+// USB3 link in the Python prototype, but this app originally reused
+// that same figure for the X310 unconditionally, sizing the request to
+// the transport that can carry it - not the one that's actually
+// connected. This X310 is on a 1GigE link (~1 Gbps, ~125 MB/s): at
+// complex sc16 (4 bytes/sample), 56 Msps is ~1.6 Gbps - well over 10x
+// what a 1GbE link can carry. Confirmed as the root cause of a real
+// crash: requesting 56 Msps (silently clamped by UHD to 50 Msps, which
+// is still far too high) saturated the link, starved the RFNoC control
+// channel of bandwidth, and produced sustained "rx xport timed out
+// getting a response from mgmt_portal" / "Timed out getting recv buff
+// for management transaction" errors that didn't recover - eventually
+// even the automatic reconnect's own hardware teardown timed out and
+// crashed the process (see UsrpCapture's destructor-exception handling
+// in sdr_capture.cpp for that half of the fix). 20 Msps here leaves
+// headroom under the ~31 Msps physical ceiling. If this X310 is ever
+// moved to a 10GbE (SFP+) link, this can go back up to 56 Msps.
+inline DeviceProfile device_profile(SdrDeviceType type) {
+    if (type == SdrDeviceType::X310) {
+        return {std::string("addr=") + X310_ADDR, "RX2", 20.0, 31.5, false, 20e6};
+    }
+    return {DEVICE_ARGS, ANTENNA, DEFAULT_GAIN_DB, 70.0, true, 56e6};
+}
+
 // --- Registry ---
 constexpr int DEFAULT_EXPIRE_CYCLES = 4;
 constexpr double POWER_EMA_ALPHA = 0.3;
+
+// --- LoRa PHY listen (only runs while BAND_SUB_GHZ is the active mode,
+// alongside the wideband energy scan above) - cycles the 3 mandatory
+// IN865 uplink channels at the codec's native 125kHz sample rate (no
+// resampling needed - the B210 can capture directly at this rate),
+// blind-searching SF7-12 against each. Ported from the validated
+// Python tools/lora_listen.py in the sibling newrocktest project.
+//
+// 866.9 MHz is not one of the 3 mandatory IN865 uplink channels - it's
+// this lab's TarangMini ST22LR01 demo unit's actual configured Default
+// Frequency (read live via its TarangNet config API, cmd 0x0F), added
+// so the GUI can show real detections from it. See
+// newrocktest/TARANGMINI_LORA_FINDINGS.md for how this was found.
+inline const std::vector<double> LORA_LISTEN_CHANNELS_HZ = {865.0625e6, 865.4025e6, 865.985e6,
+                                                             866.9e6};
+constexpr double LORA_LISTEN_SAMPLE_RATE_HZ = 125e3;
+constexpr double LORA_LISTEN_DURATION_S = 2.0;
+inline const std::vector<int> LORA_LISTEN_SF_LIST = {7, 8, 9, 10, 11, 12};
+constexpr int LORA_PACKET_LOG_MAX = 200;
 
 }  // namespace rfmon
