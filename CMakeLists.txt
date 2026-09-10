@@ -124,6 +124,16 @@ target_include_directories(test_lora_phy_std PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_lora_phy_std PRIVATE PkgConfig::KISSFFT)
 
 # ---------------------------------------------------------------------------
+# Synthetic correctness test for the Wi-Fi DSSS/OFDM modulation
+# correlators - see src/wifi_phy.hpp. Pure software, no hardware.
+# ---------------------------------------------------------------------------
+add_executable(test_wifi_phy
+  tests/test_wifi_phy.cpp
+  src/wifi_phy.cpp
+)
+target_include_directories(test_wifi_phy PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+# ---------------------------------------------------------------------------
 # Manual hardware validation tool (see tools/band_smoke_test.cpp) - not
 # part of the GUI, needs the real B210 and a couple minutes to run.
 # ---------------------------------------------------------------------------
@@ -138,6 +148,7 @@ add_executable(band_smoke_test
   src/classifier.cpp
   src/lora_phy.cpp
   src/lora_phy_std.cpp
+  src/wifi_phy.cpp
 )
 target_include_directories(band_smoke_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${UHD_INCLUDE_DIRS})
 target_link_libraries(band_smoke_test PRIVATE PkgConfig::KISSFFT Threads::Threads dl ${UHD_LIBRARIES})

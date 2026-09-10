@@ -9,6 +9,7 @@
 #include "lora_phy.hpp"
 #include "lora_phy_std.hpp"
 #include "spectrum.hpp"
+#include "wifi_phy.hpp"
 
 namespace rfmon {
 
@@ -378,12 +379,57 @@ void Scanner::run() {
             std::vector<bool> edge_mask =
                 mask_edge_guard(spec.freqs_offset_hz, actual_rate, EDGE_GUARD_FRACTION);
 
+            // Hysteresis growth only helps the WiFi bands (see
+            // HYSTERESIS_LOW_RATIO's comment) - LoRa classification
+            // depends on comparatively tight bandwidth tolerances
+            // (lora_bandwidths_hz()), and growth measuring a wider
+            // segment risks pushing a real 125kHz signal into the
+            // 250kHz bucket instead. Passing threshold itself as the
+            // low bar disables growth (low == high) for that band,
+            // reproducing the original non-hysteresis behavior exactly.
+            double hysteresis_low =
+                (step.band == BAND_SUB_GHZ) ? threshold : threshold * HYSTERESIS_LOW_RATIO;
             std::vector<Segment> segments =
                 find_segments(spec.freqs_offset_hz, spec.psd_db, step.center_hz, edge_mask,
                               dc_mask, NOISE_FLOOR_PERCENTILE, threshold, MIN_SEGMENT_BINS,
-                              MERGE_GAP_BINS);
+                              MERGE_GAP_BINS, hysteresis_low);
             for (const auto& seg : segments) {
-                detections.push_back(Detection{step.band, seg, classify(step.band, seg)});
+                // Only the WiFi bands get modulation classification -
+                // the LoRa/sub-GHz band has its own dedicated codec
+                // path (run_lora_listen_step() below) and doesn't need
+                // this. Both correlators run against every one of this
+                // step's sub-captures (not just one), keeping the best
+                // result across them - the same "don't wash out a
+                // short burst" reasoning SUB_CAPTURES_PER_STEP already
+                // exists for (see config.hpp).
+                wifi::ModClass mod = wifi::ModClass::Unknown;
+                // Gate on the segment's own bandwidth already looking
+                // plausible for a WiFi channel before bothering to run
+                // the correlators at all - a narrowband spur or a
+                // simple CW tone can trivially satisfy the Schmidl-Cox
+                // periodicity test on its own terms (a pure tone is, by
+                // definition, "periodic" at any period), and classify()
+                // would never show a mod tag on a non-WiFi-width
+                // segment anyway. Confirmed worth doing: a live run
+                // against real 2.4GHz traffic here found every segment
+                // well under 2MHz wide (nowhere near the ~20MHz a real
+                // WiFi channel occupies) with the correlators still
+                // reporting wildly overconfident results on them.
+                if ((step.band == BAND_WIFI_2G4 || step.band == BAND_WIFI_5G) &&
+                    bandwidth_looks_like_wifi(step.band, seg.bandwidth_hz)) {
+                    bool try_dsss = (step.band == BAND_WIFI_2G4);  // no DSSS/CCK in 5GHz
+                    double best_confidence = 0.0;
+                    for (const auto& cap : captures) {
+                        auto result = wifi::classify_modulation(cap, actual_rate, step.center_hz,
+                                                                  seg.center_hz, try_dsss);
+                        if (result.mod != wifi::ModClass::Unknown &&
+                            result.confidence > best_confidence) {
+                            mod = result.mod;
+                            best_confidence = result.confidence;
+                        }
+                    }
+                }
+                detections.push_back(Detection{step.band, seg, classify(step.band, seg, mod)});
             }
         }
 

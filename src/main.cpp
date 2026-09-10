@@ -306,6 +306,13 @@ int main() {
             scanner.start();
             scanner_started = true;
         }
+        if (scanner_started) {
+            ImGui::SameLine();
+            if (ImGui::Button("Disconnect")) {
+                scanner.stop();
+                scanner_started = false;
+            }
+        }
         if (is_connected_to_selected) {
             ImGui::SameLine();
             ImGui::TextDisabled("(currently running)");

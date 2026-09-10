@@ -44,43 +44,39 @@ constexpr double SUB_GHZ_CENTER_HZ = 865.5e6;
 constexpr double SUB_GHZ_SAMPLE_RATE_HZ = 5e6;   // covers ~863.0-868.0 MHz
 
 // --- 2.4 GHz ISM band (Wi-Fi channels 1-13; India does not permit 14) ---
-// Centers are deliberately offset from every real 802.11 channel center
-// (2412, 2417, ... 2472 MHz, every 5 MHz) - a channel whose own center
-// (and much of its energy) sits inside the DC-guard gap is the one case
-// the detector's gap-bridging can't recover, so the gap is kept off the
-// channel grid entirely rather than relying on the bridge for every
-// capture.
-inline const std::vector<double> WIFI_2G4_CENTERS_HZ = {2409.5e6, 2434.5e6, 2459.5e6};
 constexpr double WIFI_2G4_SAMPLE_RATE_HZ = 56e6;
 
 // --- 5 GHz ISM/UNII band (non-DFS only: UNII-1 + UNII-3) ---
 // UNII-1 channels 36/40/44/48 (centers 5180-5240 MHz); UNII-3 channels
-// 149/153/157/161/165 (centers 5745-5825 MHz). Centers below are offset
-// from that 20MHz channel grid for the same DC-guard reason as 2.4GHz.
-inline const std::vector<double> WIFI_5G_CENTERS_HZ = {
-    5190e6, 5230e6,               // covers UNII-1 (36-48)
-    5755e6, 5795e6, 5835e6,       // covers UNII-3 (149-165)
-};
+// 149/153/157/161/165 (centers 5745-5825 MHz). Skips the DFS-gated
+// UNII-2/2e range (5250-5725 MHz) entirely - real consumer APs use it
+// far less often, and it would roughly triple the number of scan steps
+// for a lot of usually-quiet spectrum.
 constexpr double WIFI_5G_SAMPLE_RATE_HZ = 56e6;
 
-inline std::vector<ScanStep> scan_plan_for_band(const std::string& band) {
-    std::vector<ScanStep> plan;
-    if (band == BAND_SUB_GHZ) {
-        plan.push_back({BAND_SUB_GHZ, SUB_GHZ_CENTER_HZ, SUB_GHZ_SAMPLE_RATE_HZ,
-                         "Sub-GHz ISM 863-868 MHz (LoRa/IN865)"});
-    } else if (band == BAND_WIFI_2G4) {
-        for (double f : WIFI_2G4_CENTERS_HZ) {
-            plan.push_back({BAND_WIFI_2G4, f, WIFI_2G4_SAMPLE_RATE_HZ,
-                             "2.4GHz Wi-Fi @ " + std::to_string(int(f / 1e6)) + " MHz"});
-        }
-    } else if (band == BAND_WIFI_5G) {
-        for (double f : WIFI_5G_CENTERS_HZ) {
-            plan.push_back({BAND_WIFI_5G, f, WIFI_5G_SAMPLE_RATE_HZ,
-                             "5GHz Wi-Fi @ " + std::to_string(int(f / 1e6)) + " MHz"});
-        }
-    }
-    return plan;
-}
+// One capture centered on each real channel, not a few wide captures
+// spanning several channels each. This used to be 3 (2.4GHz) / 5 (5GHz)
+// wide sweep centers sized for 56 Msps, each covering multiple channels
+// per capture - fine on the B210, but this project's X310 is capped to
+// 20 Msps (DeviceProfile::max_sample_rate_hz), where Nyquist is only
+// +/-10MHz and the existing edge guard trims that to +/-8.8MHz usable -
+// already narrower than one real 20MHz-wide channel, so a wide sweep
+// center could never fully contain any channel and, worse, every
+// channel's peak energy landed too close to some capture's edge to
+// reliably clear the detection threshold (confirmed live: every
+// detected segment topped out under ~2.5MHz against real building WiFi
+// traffic, nowhere near WiFi-channel width). Centering one capture on
+// each channel instead means that channel's core energy sits near the
+// middle of the usable window regardless of capture rate.
+//
+// The capture center is offset from the channel's own center by
+// WIFI_CHANNEL_CAPTURE_OFFSET_HZ, not tuned exactly to it - a channel
+// whose own center (where its energy peaks) sits inside the DC-guard
+// gap (the LO-leakage exclusion zone at the tuned center, +/-40kHz here)
+// is the one case the detector's gap-bridging can't fully recover. The
+// offset is small (1.5MHz) relative to the 8.8MHz usable half-width, so
+// the channel stays effectively centered in the capture regardless.
+constexpr double WIFI_CHANNEL_CAPTURE_OFFSET_HZ = 1.5e6;
 
 // 802.11 2.4 GHz channel plan valid in India (channels 1-13).
 inline const std::map<int, double>& wifi_2g4_channels() {
@@ -101,17 +97,43 @@ inline const std::map<int, double>& wifi_5g_channels() {
     return channels;
 }
 
+inline std::vector<ScanStep> scan_plan_for_band(const std::string& band) {
+    std::vector<ScanStep> plan;
+    if (band == BAND_SUB_GHZ) {
+        plan.push_back({BAND_SUB_GHZ, SUB_GHZ_CENTER_HZ, SUB_GHZ_SAMPLE_RATE_HZ,
+                         "Sub-GHz ISM 863-868 MHz (LoRa/IN865)"});
+    } else if (band == BAND_WIFI_2G4) {
+        for (const auto& [ch, f] : wifi_2g4_channels()) {
+            double capture_hz = f + WIFI_CHANNEL_CAPTURE_OFFSET_HZ;
+            plan.push_back({BAND_WIFI_2G4, capture_hz, WIFI_2G4_SAMPLE_RATE_HZ,
+                             "2.4GHz Wi-Fi ch " + std::to_string(ch) + " (" +
+                                 std::to_string(int(f / 1e6)) + " MHz)"});
+        }
+    } else if (band == BAND_WIFI_5G) {
+        for (const auto& [ch, f] : wifi_5g_channels()) {
+            double capture_hz = f + WIFI_CHANNEL_CAPTURE_OFFSET_HZ;
+            plan.push_back({BAND_WIFI_5G, capture_hz, WIFI_5G_SAMPLE_RATE_HZ,
+                             "5GHz Wi-Fi ch " + std::to_string(ch) + " (" +
+                                 std::to_string(int(f / 1e6)) + " MHz)"});
+        }
+    }
+    return plan;
+}
+
 // --- Capture ---
 // Each scan step takes several short captures and combines them with
 // max-hold rather than one long averaged capture, so short/intermittent
 // bursts (a single LoRa packet, a Wi-Fi beacon) aren't washed out.
-// SUB_CAPTURE_DURATION_S was doubled from its original 0.15s - longer
-// per-channel dwell gives intermittent emitters more chance to land in
-// a capture window (matters more now on the X310, where each capture
-// also has more RFNoC/network round-trip overhead than the B210's USB
-// path), at the cost of a longer scan cycle.
+// SUB_CAPTURE_DURATION_S has grown twice now - 0.15s originally, then
+// 0.3s, now 1.0s - each time trading a longer scan cycle for more
+// chances an intermittent emitter (a single Wi-Fi beacon, a LoRa
+// packet) lands inside a capture window. Combined with per-channel
+// scan steps (see scan_plan_for_band()), a full 2.4GHz cycle is now
+// 13 channels x 4 sub-captures x 1.0s = 52s - a real tradeoff, worth
+// revisiting (e.g. fewer sub-captures per step) if that cycle time
+// turns out too slow in practice.
 constexpr int SUB_CAPTURES_PER_STEP = 4;
-constexpr double SUB_CAPTURE_DURATION_S = 0.3;
+constexpr double SUB_CAPTURE_DURATION_S = 1.0;
 constexpr double RETUNE_SETTLE_S = 0.1;
 
 // --- Detection ---
@@ -119,6 +141,19 @@ constexpr double NOISE_FLOOR_PERCENTILE = 20.0;
 constexpr double DEFAULT_DETECTION_THRESHOLD_DB = 12.0;
 constexpr int MIN_SEGMENT_BINS = 3;
 constexpr int MERGE_GAP_BINS = 2;
+
+// Hysteresis growth (see find_segments()): a segment still needs
+// threshold_db above the noise floor to be *seeded*, but is then grown
+// outward through bins clearing only this lower bar - scaled off
+// whatever threshold_db is live (including the GUI's Threshold slider)
+// rather than a fixed second value, so the relationship holds however
+// the user has that slider set. Tried against real 2.4GHz WiFi traffic
+// on the X310 at threshold_db=7: real AP energy was landing as dozens
+// of small (tens-to-hundreds-of-kHz) fragments spanning several real
+// MHz per channel rather than one contiguous ~20MHz block - genuine
+// signal, just not uniformly strong enough above the noise floor to
+// read as contiguous at a single threshold.
+constexpr double HYSTERESIS_LOW_RATIO = 0.5;
 
 // Exclude +/- this fraction of the sample rate around the tuned center
 // frequency from detection - the B210's own LO-leakage spike lands

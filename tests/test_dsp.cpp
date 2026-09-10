@@ -136,10 +136,15 @@ CaseResult run_case(const std::string& name, const std::string& band, double sam
     std::vector<bool> edge_mask =
         mask_edge_guard(spec.freqs_offset_hz, sample_rate_hz, EDGE_GUARD_FRACTION);
 
+    // Mirrors scanner.cpp's own policy: hysteresis growth only applies
+    // outside the LoRa/sub-GHz band (see HYSTERESIS_LOW_RATIO's
+    // comment in config.hpp).
+    double hysteresis_low = (band == BAND_SUB_GHZ) ? DEFAULT_DETECTION_THRESHOLD_DB
+                                                     : DEFAULT_DETECTION_THRESHOLD_DB * HYSTERESIS_LOW_RATIO;
     std::vector<Segment> segments =
         find_segments(spec.freqs_offset_hz, spec.psd_db, tuned_center_hz, edge_mask, dc_mask,
                       NOISE_FLOOR_PERCENTILE, DEFAULT_DETECTION_THRESHOLD_DB, MIN_SEGMENT_BINS,
-                      MERGE_GAP_BINS);
+                      MERGE_GAP_BINS, hysteresis_low);
 
     CaseResult result;
     check(!segments.empty(), "[" + name + "] expected a detection, got none");
@@ -178,6 +183,66 @@ void test_wifi_like_burst_is_detected() {
     run_case("wifi_20mhz_burst", BAND_WIFI_2G4, 50e6, -5e6, 20e6, 0.02, "WiFi-like", 1e6, 4e6);
 }
 
+// A strong, narrow "core" plus a wider but weaker "skirt" superimposed
+// at the same center - like a real WiFi channel's stronger central
+// energy tailing off toward its edges. Growth should extend the
+// measured segment out into the skirt (not just the core), and the
+// low-threshold band (WiFi) should measure meaningfully wider than the
+// high-threshold-only band (LoRa/sub-GHz, where growth is disabled).
+void test_hysteresis_grows_into_weak_skirt() {
+    double sample_rate_hz = 50e6;
+    int n_samples = int(sample_rate_hz * SUB_CAPTURE_DURATION_S);
+    std::mt19937 rng(42);
+    double core_bw = 6e6, skirt_bw = 18e6;
+
+    auto core = make_band_limited_burst(n_samples, sample_rate_hz, 0.0, core_bw, 5.0, rng);
+    auto skirt = make_band_limited_burst(n_samples, sample_rate_hz, 0.0, skirt_bw, 0.5, rng);
+    std::vector<std::complex<float>> iq(n_samples);
+    std::normal_distribution<double> normal(0.0, 1.0);
+    for (int i = 0; i < n_samples; ++i) {
+        iq[i] = core[i] + skirt[i] +
+                std::complex<float>(float(normal(rng) * 0.2), float(normal(rng) * 0.2));
+    }
+
+    double tuned_center_hz = 2434.5e6;
+    Spectrum spec = max_hold_spectrum({iq}, sample_rate_hz);
+    double guard_hz = std::max(sample_rate_hz * DC_GUARD_FRACTION, DC_GUARD_MIN_HZ);
+    std::vector<bool> dc_mask = mask_dc_guard(spec.freqs_offset_hz, guard_hz);
+    std::vector<bool> edge_mask =
+        mask_edge_guard(spec.freqs_offset_hz, sample_rate_hz, EDGE_GUARD_FRACTION);
+
+    auto best_of = [&](double hysteresis_low) -> Segment {
+        auto segs = find_segments(spec.freqs_offset_hz, spec.psd_db, tuned_center_hz, edge_mask,
+                                   dc_mask, NOISE_FLOOR_PERCENTILE, DEFAULT_DETECTION_THRESHOLD_DB,
+                                   MIN_SEGMENT_BINS, MERGE_GAP_BINS, hysteresis_low);
+        Segment best{};
+        for (const auto& s : segs)
+            if (s.peak_db > best.peak_db) best = s;
+        return best;
+    };
+
+    Segment no_growth = best_of(DEFAULT_DETECTION_THRESHOLD_DB);  // low == high: disabled
+    Segment grown = best_of(DEFAULT_DETECTION_THRESHOLD_DB * HYSTERESIS_LOW_RATIO);
+
+    check(no_growth.bandwidth_hz > 0.0,
+          "[hysteresis_grows_into_weak_skirt] expected the ungrown core to be detected at all");
+    check(grown.bandwidth_hz > no_growth.bandwidth_hz * 1.5,
+          "[hysteresis_grows_into_weak_skirt] grown bandwidth (" +
+              std::to_string(grown.bandwidth_hz / 1e3) + "kHz) not meaningfully wider than core-only (" +
+              std::to_string(no_growth.bandwidth_hz / 1e3) + "kHz)");
+    check(grown.bandwidth_hz <= skirt_bw * 1.2,
+          "[hysteresis_grows_into_weak_skirt] grown bandwidth (" +
+              std::to_string(grown.bandwidth_hz / 1e3) +
+              "kHz) overshot the true skirt width (" + std::to_string(skirt_bw / 1e3) + "kHz)");
+
+    if (grown.bandwidth_hz > no_growth.bandwidth_hz * 1.5 && grown.bandwidth_hz <= skirt_bw * 1.2) {
+        std::printf(
+            "PASS [hysteresis_grows_into_weak_skirt]: core-only=%.1fkHz grown=%.1fkHz (true "
+            "core=%.0fkHz, true skirt=%.0fkHz)\n",
+            no_growth.bandwidth_hz / 1e3, grown.bandwidth_hz / 1e3, core_bw / 1e3, skirt_bw / 1e3);
+    }
+}
+
 void test_lora_like_burst_is_detected() {
     run_case("lora_125khz_burst", BAND_SUB_GHZ, 5e6, 1.2e6, 125e3, 0.4, "LoRa-like", 20e3, 40e3);
 }
@@ -202,7 +267,7 @@ void test_dc_guard_rejects_center_spike() {
     std::vector<Segment> segments =
         find_segments(spec.freqs_offset_hz, spec.psd_db, tuned_center_hz, edge_mask, dc_mask,
                       NOISE_FLOOR_PERCENTILE, DEFAULT_DETECTION_THRESHOLD_DB, MIN_SEGMENT_BINS,
-                      MERGE_GAP_BINS);
+                      MERGE_GAP_BINS, DEFAULT_DETECTION_THRESHOLD_DB * HYSTERESIS_LOW_RATIO);
     bool bogus = false;
     for (const auto& s : segments) {
         if (std::abs(s.center_hz - tuned_center_hz) < guard_hz) bogus = true;
@@ -228,7 +293,7 @@ void test_edge_guard_rejects_nyquist_edge_artifact() {
     std::vector<Segment> segments =
         find_segments(spec.freqs_offset_hz, spec.psd_db, tuned_center_hz, edge_mask, dc_mask,
                       NOISE_FLOOR_PERCENTILE, DEFAULT_DETECTION_THRESHOLD_DB, MIN_SEGMENT_BINS,
-                      MERGE_GAP_BINS);
+                      MERGE_GAP_BINS, DEFAULT_DETECTION_THRESHOLD_DB * HYSTERESIS_LOW_RATIO);
     double expected_center = tuned_center_hz + edge_offset_hz;
     bool bogus = false;
     for (const auto& s : segments) {
@@ -243,6 +308,7 @@ void test_edge_guard_rejects_nyquist_edge_artifact() {
 
 int main() {
     test_wifi_like_burst_is_detected();
+    test_hysteresis_grows_into_weak_skirt();
     test_lora_like_burst_is_detected();
     test_dc_guard_rejects_center_spike();
     test_edge_guard_rejects_nyquist_edge_artifact();
