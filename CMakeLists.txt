@@ -111,6 +111,19 @@ target_include_directories(test_lora_phy PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_lora_phy PRIVATE PkgConfig::KISSFFT)
 
 # ---------------------------------------------------------------------------
+# Synthetic correctness test for the second, standards-compliant
+# (SX1272/76-family) LoRa PHY codec - see src/lora_phy_std.hpp for what
+# this is and why it exists alongside lora_phy.cpp's self-consistent
+# one. Pure software, no hardware.
+# ---------------------------------------------------------------------------
+add_executable(test_lora_phy_std
+  tests/test_lora_phy_std.cpp
+  src/lora_phy_std.cpp
+)
+target_include_directories(test_lora_phy_std PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_lora_phy_std PRIVATE PkgConfig::KISSFFT)
+
+# ---------------------------------------------------------------------------
 # Manual hardware validation tool (see tools/band_smoke_test.cpp) - not
 # part of the GUI, needs the real B210 and a couple minutes to run.
 # ---------------------------------------------------------------------------
@@ -124,6 +137,7 @@ add_executable(band_smoke_test
   src/detector.cpp
   src/classifier.cpp
   src/lora_phy.cpp
+  src/lora_phy_std.cpp
 )
 target_include_directories(band_smoke_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${UHD_INCLUDE_DIRS})
 target_link_libraries(band_smoke_test PRIVATE PkgConfig::KISSFFT Threads::Threads dl ${UHD_LIBRARIES})

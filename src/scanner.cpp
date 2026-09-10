@@ -7,6 +7,7 @@
 
 #include "classifier.hpp"
 #include "lora_phy.hpp"
+#include "lora_phy_std.hpp"
 #include "spectrum.hpp"
 
 namespace rfmon {
@@ -217,12 +218,15 @@ bool Scanner::connect_sdr(const DeviceProfile& profile, std::optional<double> ga
 // one channel from LORA_LISTEN_CHANNELS_HZ (rotating channel each
 // cycle rather than all 3 every cycle, to keep each cycle's added time
 // to ~LORA_LISTEN_DURATION_S instead of 3x that - UI responsiveness).
-// Ported from the validated Python tools/lora_listen.py: for each
-// candidate SF, try a full decode first, and only if that fails (most
-// likely for real third-party hardware whose header encoding isn't
-// reverse-engineered yet - see lora_phy.hpp) fall back to a bare burst
-// detection. Every SF in the list is tried independently, exactly like
-// the Python version - not just the first hit.
+// For each candidate SF, tries (in order): the standards-compliant
+// (SX1272/76-family) codec first - see lora_phy_std.hpp - since that's
+// what real third-party hardware (TarangMini and presumably most
+// commercial LoRa modules) actually transmits; then this project's own
+// self-consistent codec (lora_phy.hpp), relevant for this app's own
+// B210 TX/RX loopback and HackRF interop, not third-party devices;
+// then, if neither header decodes, falls back to a bare burst
+// detection. Every SF in the list is tried independently - not just
+// the first hit.
 //
 // Captures at profile.lora_listen_capture_rate_hz (not always exactly
 // LORA_LISTEN_SAMPLE_RATE_HZ - see config.hpp's DeviceProfile comment)
@@ -241,6 +245,26 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile)
     std::string ts = current_time_hhmmss();
 
     for (int sf : LORA_LISTEN_SF_LIST) {
+        auto std_decoded = lora::std_phy::demodulate(iq, sf);
+        if (std_decoded.has_value() && std_decoded->header_valid) {
+            LoraPacketRow row;
+            row.time = ts;
+            row.status = "decoded";
+            row.freq_mhz = freq_hz / 1e6;
+            row.sf = std_decoded->sf;
+            row.cr = std_decoded->cr;
+            row.payload_len = static_cast<int>(std_decoded->payload.size());
+            row.crc_valid = std_decoded->crc_valid;
+            row.cfo_bins = std_decoded->cfo_bins;
+            row.payload_repr = payload_to_repr(std_decoded->payload);
+            std::lock_guard<std::mutex> lock(lora_log_mutex_);
+            lora_packet_log_.push_back(std::move(row));
+            if (lora_packet_log_.size() > static_cast<size_t>(LORA_PACKET_LOG_MAX)) {
+                lora_packet_log_.erase(lora_packet_log_.begin());
+            }
+            continue;
+        }
+
         auto decoded = lora::demodulate(iq, sf);
         if (decoded.has_value() && decoded->header_valid) {
             LoraPacketRow row;
