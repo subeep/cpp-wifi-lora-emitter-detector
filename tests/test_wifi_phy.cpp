@@ -8,9 +8,13 @@
 #include <string>
 #include <vector>
 
+#include <kissfft/kiss_fft.h>
+
 #include "wifi_phy.hpp"
 
 using rfmon::wifi::classify_modulation;
+using rfmon::wifi::estimate_mean_power_db;
+using rfmon::wifi::estimate_occupied_bandwidth_hz;
 using rfmon::wifi::ModClass;
 
 namespace {
@@ -104,6 +108,60 @@ std::vector<std::complex<float>> shift_up(const std::vector<std::complex<float>>
     return out;
 }
 
+// Band-limits `n` samples of complex white noise to +/- bandwidth_hz/2
+// via FFT-domain zeroing, optionally punching a notch of `notch_width_hz`
+// at `notch_offset_hz` (0 = no notch) - lets a test check that
+// estimate_occupied_bandwidth_hz() isn't fooled by an interior dip: it
+// isn't looking for one contiguous run, just the outermost bins that
+// clear a peak-relative threshold (see wifi_phy.hpp's file header).
+std::vector<std::complex<float>> band_limited_noise(int n, double sample_rate_hz,
+                                                     double bandwidth_hz, float amplitude,
+                                                     double notch_offset_hz, double notch_width_hz,
+                                                     unsigned seed) {
+    std::mt19937 rng(seed);
+    std::normal_distribution<float> normal(0.0f, 1.0f);
+    size_t n_sz = size_t(n);
+    std::vector<kiss_fft_cpx> in(n_sz);
+    std::vector<kiss_fft_cpx> out(n_sz);
+    for (int i = 0; i < n; ++i) {
+        in[size_t(i)].r = normal(rng);
+        in[size_t(i)].i = normal(rng);
+    }
+    kiss_fft_cfg fwd = kiss_fft_alloc(n, 0, nullptr, nullptr);
+    kiss_fft(fwd, in.data(), out.data());
+    kiss_fft_free(fwd);
+
+    double bin_hz = sample_rate_hz / n;
+    for (int i = 0; i < n; ++i) {
+        int shifted = (i <= n / 2) ? i : i - n;
+        double freq = shifted * bin_hz;
+        bool in_band = std::abs(freq) <= bandwidth_hz / 2.0;
+        bool in_notch =
+            notch_width_hz > 0 && std::abs(freq - notch_offset_hz) <= notch_width_hz / 2.0;
+        if (!in_band || in_notch) {
+            out[size_t(i)].r = 0.0f;
+            out[size_t(i)].i = 0.0f;
+        }
+    }
+
+    kiss_fft_cfg inv = kiss_fft_alloc(n, 1, nullptr, nullptr);
+    std::vector<kiss_fft_cpx> filtered(n_sz);
+    kiss_fft(inv, out.data(), filtered.data());
+    kiss_fft_free(inv);
+
+    std::vector<std::complex<float>> result(n_sz);
+    double mean_sq = 0.0;
+    for (int i = 0; i < n; ++i) {
+        double re = filtered[size_t(i)].r / n, im = filtered[size_t(i)].i / n;
+        result[size_t(i)] = std::complex<float>(float(re), float(im));
+        mean_sq += re * re + im * im;
+    }
+    double rms = std::sqrt(mean_sq / n);
+    double scale = amplitude / (rms + 1e-12);
+    for (auto& s : result) s *= float(scale);
+    return result;
+}
+
 }  // namespace
 
 int main() {
@@ -192,6 +250,46 @@ int main() {
         auto r = classify_modulation(iq, 56e6, 5240e6, 5240e6, /*try_dsss=*/false);
         check(r.mod != ModClass::DSSS, "try_dsss_false_never_reports_dsss",
               "expected not-DSSS with try_dsss=false, got " + std::to_string(int(r.mod)));
+    }
+
+    // 8. estimate_occupied_bandwidth_hz() on a clean band-limited signal
+    // should land close to the true bandwidth.
+    {
+        double sample_rate = 20e6, true_bw = 15e6;
+        auto iq = band_limited_noise(4096, sample_rate, true_bw, 5.0, 0.0, 0.0, 8);
+        double measured = estimate_occupied_bandwidth_hz(iq.data(), iq.size(), sample_rate);
+        double err = std::abs(measured - true_bw);
+        check(err <= 3e6, "occupied_bandwidth_matches_true_bandwidth",
+              "measured " + std::to_string(measured / 1e6) + "MHz, true " +
+                  std::to_string(true_bw / 1e6) + "MHz, err " + std::to_string(err / 1e6) + "MHz");
+    }
+
+    // 9. The whole point of adopting this over detector.cpp's
+    // contiguous-run segmentation: an interior notch (a real fading dip
+    // or nulled subcarrier) must not fragment or shrink the measured
+    // span - it should still span close to the full true bandwidth,
+    // since only the outermost above-threshold bins matter.
+    {
+        double sample_rate = 20e6, true_bw = 15e6;
+        auto iq = band_limited_noise(4096, sample_rate, true_bw, 5.0, /*notch_offset=*/0.0,
+                                      /*notch_width=*/3e6, 9);
+        double measured = estimate_occupied_bandwidth_hz(iq.data(), iq.size(), sample_rate);
+        check(measured >= true_bw * 0.7, "occupied_bandwidth_tolerates_interior_notch",
+              "measured " + std::to_string(measured / 1e6) +
+                  "MHz collapsed despite an interior notch, true bandwidth " +
+                  std::to_string(true_bw / 1e6) + "MHz");
+    }
+
+    // 10. estimate_mean_power_db() should increase with signal amplitude
+    // - a basic sanity check, not a calibrated absolute value.
+    {
+        auto quiet = band_limited_noise(2048, 20e6, 15e6, 0.5f, 0.0, 0.0, 10);
+        auto loud = band_limited_noise(2048, 20e6, 15e6, 5.0f, 0.0, 0.0, 10);
+        double p_quiet = estimate_mean_power_db(quiet.data(), quiet.size());
+        double p_loud = estimate_mean_power_db(loud.data(), loud.size());
+        check(p_loud > p_quiet + 15.0, "mean_power_db_tracks_amplitude",
+              "expected a 10x amplitude increase (~20dB) to show up, got quiet=" +
+                  std::to_string(p_quiet) + "dB loud=" + std::to_string(p_loud) + "dB");
     }
 
     if (failures > 0) {

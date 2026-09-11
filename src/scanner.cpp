@@ -219,85 +219,86 @@ bool Scanner::connect_sdr(const DeviceProfile& profile, std::optional<double> ga
 // one channel from LORA_LISTEN_CHANNELS_HZ (rotating channel each
 // cycle rather than all 3 every cycle, to keep each cycle's added time
 // to ~LORA_LISTEN_DURATION_S instead of 3x that - UI responsiveness).
-// For each candidate SF, tries (in order): the standards-compliant
-// (SX1272/76-family) codec first - see lora_phy_std.hpp - since that's
-// what real third-party hardware (TarangMini and presumably most
-// commercial LoRa modules) actually transmits; then this project's own
-// self-consistent codec (lora_phy.hpp), relevant for this app's own
-// B210 TX/RX loopback and HackRF interop, not third-party devices;
-// then, if neither header decodes, falls back to a bare burst
-// detection. Every SF in the list is tried independently - not just
-// the first hit.
 //
-// Captures at profile.lora_listen_capture_rate_hz (not always exactly
-// LORA_LISTEN_SAMPLE_RATE_HZ - see config.hpp's DeviceProfile comment)
-// and decimates down to what the codec actually expects if the two
-// differ, using whatever the SDR *actually* returned rather than
-// trusting the requested rate blindly.
+// Captures ONCE at profile.lora_listen_capture_rate_hz (500kHz, the
+// largest bandwidth in LORA_LISTEN_BW_LIST_HZ - see config.hpp's
+// DeviceProfile comment) and tries every (bandwidth, SF) combination
+// against that single capture, decimating down per bandwidth hypothesis
+// rather than re-capturing 3x. For each combination, tries (in order):
+// the standards-compliant (SX1272/76-family) codec first - see
+// lora_phy_std.hpp - since that's what real third-party hardware
+// (TarangMini and presumably most commercial LoRa modules) actually
+// transmits; then this project's own self-consistent codec
+// (lora_phy.hpp), relevant for this app's own B210 TX/RX loopback and
+// HackRF interop, not third-party devices; then, if neither header
+// decodes, falls back to a bare burst detection. Every combination is
+// tried independently - not just the first hit.
 void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile) {
     auto [iq_raw, actual_rate, overflow] = sdr_->capture(
         freq_hz, profile.lora_listen_capture_rate_hz, LORA_LISTEN_DURATION_S);
     note_capture_health(!iq_raw.empty());
     if (iq_raw.empty()) return;
 
-    int decim = std::max(1, int(std::lround(actual_rate / LORA_LISTEN_SAMPLE_RATE_HZ)));
-    std::vector<std::complex<float>> iq = decimate_boxcar(iq_raw, decim);
-
     std::string ts = current_time_hhmmss();
 
-    for (int sf : LORA_LISTEN_SF_LIST) {
-        auto std_decoded = lora::std_phy::demodulate(iq, sf);
-        if (std_decoded.has_value() && std_decoded->header_valid) {
-            LoraPacketRow row;
-            row.time = ts;
-            row.status = "decoded";
-            row.freq_mhz = freq_hz / 1e6;
-            row.sf = std_decoded->sf;
-            row.cr = std_decoded->cr;
-            row.payload_len = static_cast<int>(std_decoded->payload.size());
-            row.crc_valid = std_decoded->crc_valid;
-            row.cfo_bins = std_decoded->cfo_bins;
-            row.payload_repr = payload_to_repr(std_decoded->payload);
-            std::lock_guard<std::mutex> lock(lora_log_mutex_);
-            lora_packet_log_.push_back(std::move(row));
-            if (lora_packet_log_.size() > static_cast<size_t>(LORA_PACKET_LOG_MAX)) {
-                lora_packet_log_.erase(lora_packet_log_.begin());
-            }
-            continue;
+    auto push_row = [&](LoraPacketRow row) {
+        std::lock_guard<std::mutex> lock(lora_log_mutex_);
+        lora_packet_log_.push_back(std::move(row));
+        if (lora_packet_log_.size() > static_cast<size_t>(LORA_PACKET_LOG_MAX)) {
+            lora_packet_log_.erase(lora_packet_log_.begin());
         }
+    };
 
-        auto decoded = lora::demodulate(iq, sf);
-        if (decoded.has_value() && decoded->header_valid) {
-            LoraPacketRow row;
-            row.time = ts;
-            row.status = "decoded";
-            row.freq_mhz = freq_hz / 1e6;
-            row.sf = decoded->sf;
-            row.cr = decoded->cr;
-            row.payload_len = static_cast<int>(decoded->payload.size());
-            row.crc_valid = decoded->crc_valid;
-            row.cfo_bins = decoded->cfo_bins;
-            row.payload_repr = payload_to_repr(decoded->payload);
-            std::lock_guard<std::mutex> lock(lora_log_mutex_);
-            lora_packet_log_.push_back(std::move(row));
-            if (lora_packet_log_.size() > static_cast<size_t>(LORA_PACKET_LOG_MAX)) {
-                lora_packet_log_.erase(lora_packet_log_.begin());
+    for (double bw_hz : LORA_LISTEN_BW_LIST_HZ) {
+        int decim = std::max(1, int(std::lround(actual_rate / bw_hz)));
+        std::vector<std::complex<float>> iq = decimate_boxcar(iq_raw, decim);
+        double bw_khz = bw_hz / 1e3;
+
+        for (int sf : LORA_LISTEN_SF_LIST) {
+            auto std_decoded = lora::std_phy::demodulate(iq, sf);
+            if (std_decoded.has_value() && std_decoded->header_valid) {
+                LoraPacketRow row;
+                row.time = ts;
+                row.status = "decoded";
+                row.freq_mhz = freq_hz / 1e6;
+                row.sf = std_decoded->sf;
+                row.bandwidth_khz = bw_khz;
+                row.cr = std_decoded->cr;
+                row.payload_len = static_cast<int>(std_decoded->payload.size());
+                row.crc_valid = std_decoded->crc_valid;
+                row.cfo_bins = std_decoded->cfo_bins;
+                row.payload_repr = payload_to_repr(std_decoded->payload);
+                push_row(std::move(row));
+                continue;
             }
-            continue;
-        }
 
-        auto burst = lora::detect_burst(iq, sf);
-        if (burst.has_value()) {
-            LoraPacketRow row;
-            row.time = ts;
-            row.status = "detected";
-            row.freq_mhz = freq_hz / 1e6;
-            row.sf = burst->sf;
-            row.cfo_bins = burst->cfo_bins;
-            std::lock_guard<std::mutex> lock(lora_log_mutex_);
-            lora_packet_log_.push_back(std::move(row));
-            if (lora_packet_log_.size() > static_cast<size_t>(LORA_PACKET_LOG_MAX)) {
-                lora_packet_log_.erase(lora_packet_log_.begin());
+            auto decoded = lora::demodulate(iq, sf);
+            if (decoded.has_value() && decoded->header_valid) {
+                LoraPacketRow row;
+                row.time = ts;
+                row.status = "decoded";
+                row.freq_mhz = freq_hz / 1e6;
+                row.sf = decoded->sf;
+                row.bandwidth_khz = bw_khz;
+                row.cr = decoded->cr;
+                row.payload_len = static_cast<int>(decoded->payload.size());
+                row.crc_valid = decoded->crc_valid;
+                row.cfo_bins = decoded->cfo_bins;
+                row.payload_repr = payload_to_repr(decoded->payload);
+                push_row(std::move(row));
+                continue;
+            }
+
+            auto burst = lora::detect_burst(iq, sf);
+            if (burst.has_value()) {
+                LoraPacketRow row;
+                row.time = ts;
+                row.status = "detected";
+                row.freq_mhz = freq_hz / 1e6;
+                row.sf = burst->sf;
+                row.bandwidth_khz = bw_khz;
+                row.cfo_bins = burst->cfo_bins;
+                push_row(std::move(row));
             }
         }
     }
@@ -321,10 +322,12 @@ void Scanner::run() {
     while (!stop_flag_.load()) {
         std::string band;
         double threshold;
+        std::optional<double> locked_freq;
         {
             std::lock_guard<std::mutex> lock(config_mutex_);
             band = active_band_;
             threshold = threshold_db_;
+            locked_freq = lora_lock_freq_;
             if (gain_dirty_) {
                 sdr_->set_gain(gain_db_);
                 gain_dirty_ = false;
@@ -335,9 +338,23 @@ void Scanner::run() {
             last_band_seen = band;
         }
 
-        std::vector<ScanStep> plan = scan_plan_for_band(band);
         std::vector<Detection> detections;
         bool any_overflow = false;
+
+        // While locked to one exact LoRa frequency, skip the generic
+        // wideband energy scan entirely (below) and spend every cycle
+        // on the dedicated listener instead - the wideband scan exists
+        // to notice *other*, unlocated Sub-GHz emitters, which isn't
+        // what "lock to frequency" is for, and it otherwise consumed
+        // ~4 of every ~6.5 seconds a cycle could instead spend actually
+        // listening for a brief LoRa burst at the one frequency that
+        // matters here. Tradeoff: the Active emitters table stops
+        // updating for anything but the locked frequency while this is
+        // active (nothing feeds it), and any of its existing rows age
+        // out per DEFAULT_EXPIRE_CYCLES faster in wall-clock time,
+        // since cycles themselves now come much faster.
+        bool skip_wideband_scan = (band == BAND_SUB_GHZ) && locked_freq.has_value();
+        std::vector<ScanStep> plan = skip_wideband_scan ? std::vector<ScanStep>{} : scan_plan_for_band(band);
 
         for (const auto& step : plan) {
             if (stop_flag_.load()) break;
@@ -393,43 +410,49 @@ void Scanner::run() {
                 find_segments(spec.freqs_offset_hz, spec.psd_db, step.center_hz, edge_mask,
                               dc_mask, NOISE_FLOOR_PERCENTILE, threshold, MIN_SEGMENT_BINS,
                               MERGE_GAP_BINS, hysteresis_low);
+            // Generic energy-detected segments - unrelated to WiFi
+            // modulation classification below, still how BLE/Zigbee
+            // narrowband and "Unknown emitter" rows get found, for
+            // every band including LoRa/sub-GHz. Untouched.
             for (const auto& seg : segments) {
-                // Only the WiFi bands get modulation classification -
-                // the LoRa/sub-GHz band has its own dedicated codec
-                // path (run_lora_listen_step() below) and doesn't need
-                // this. Both correlators run against every one of this
-                // step's sub-captures (not just one), keeping the best
-                // result across them - the same "don't wash out a
-                // short burst" reasoning SUB_CAPTURES_PER_STEP already
-                // exists for (see config.hpp).
-                wifi::ModClass mod = wifi::ModClass::Unknown;
-                // Gate on the segment's own bandwidth already looking
-                // plausible for a WiFi channel before bothering to run
-                // the correlators at all - a narrowband spur or a
-                // simple CW tone can trivially satisfy the Schmidl-Cox
-                // periodicity test on its own terms (a pure tone is, by
-                // definition, "periodic" at any period), and classify()
-                // would never show a mod tag on a non-WiFi-width
-                // segment anyway. Confirmed worth doing: a live run
-                // against real 2.4GHz traffic here found every segment
-                // well under 2MHz wide (nowhere near the ~20MHz a real
-                // WiFi channel occupies) with the correlators still
-                // reporting wildly overconfident results on them.
-                if ((step.band == BAND_WIFI_2G4 || step.band == BAND_WIFI_5G) &&
-                    bandwidth_looks_like_wifi(step.band, seg.bandwidth_hz)) {
-                    bool try_dsss = (step.band == BAND_WIFI_2G4);  // no DSSS/CCK in 5GHz
-                    double best_confidence = 0.0;
-                    for (const auto& cap : captures) {
-                        auto result = wifi::classify_modulation(cap, actual_rate, step.center_hz,
-                                                                  seg.center_hz, try_dsss);
-                        if (result.mod != wifi::ModClass::Unknown &&
-                            result.confidence > best_confidence) {
-                            mod = result.mod;
-                            best_confidence = result.confidence;
-                        }
+                detections.push_back(Detection{step.band, seg, classify(step.band, seg)});
+            }
+
+            // WiFi modulation detection: runs unconditionally against
+            // this channel's own captures, independent of the segments
+            // above - a correlator hit IS the detection signal (see
+            // wifi_phy.hpp's file header for why bandwidth can't be a
+            // gate here). Each WiFi ScanStep is already centered on one
+            // real channel, offset by WIFI_CHANNEL_CAPTURE_OFFSET_HZ
+            // (see config.hpp's scan_plan_for_band()) to keep that
+            // channel's peak off the DC-guard notch - recover the real
+            // channel center to mix baseband/report the emitter at,
+            // rather than the offset tuned frequency.
+            if (step.band == BAND_WIFI_2G4 || step.band == BAND_WIFI_5G) {
+                bool try_dsss = (step.band == BAND_WIFI_2G4);  // no DSSS/CCK in 5GHz
+                double real_channel_hz = step.center_hz - WIFI_CHANNEL_CAPTURE_OFFSET_HZ;
+                wifi::ModClass best_mod = wifi::ModClass::Unknown;
+                double best_confidence = 0.0;
+                const std::vector<std::complex<float>>* best_capture = nullptr;
+                for (const auto& cap : captures) {
+                    auto result = wifi::classify_modulation(cap, actual_rate, step.center_hz,
+                                                              real_channel_hz, try_dsss);
+                    if (result.mod != wifi::ModClass::Unknown &&
+                        result.confidence > best_confidence) {
+                        best_mod = result.mod;
+                        best_confidence = result.confidence;
+                        best_capture = &cap;
                     }
                 }
-                detections.push_back(Detection{step.band, seg, classify(step.band, seg, mod)});
+                if (best_mod != wifi::ModClass::Unknown && best_capture != nullptr) {
+                    Segment wifi_seg{
+                        real_channel_hz,
+                        wifi::estimate_occupied_bandwidth_hz(best_capture->data(),
+                                                              best_capture->size(), actual_rate),
+                        wifi::estimate_mean_power_db(best_capture->data(), best_capture->size())};
+                    detections.push_back(
+                        Detection{step.band, wifi_seg, classify(step.band, wifi_seg, best_mod)});
+                }
             }
         }
 
@@ -443,14 +466,17 @@ void Scanner::run() {
         // channel per cycle (rotating), alongside the energy scan above -
         // unless a single frequency has been locked via
         // set_lora_lock_freq(), in which case every cycle listens on
-        // just that frequency instead of rotating.
+        // just that frequency instead of rotating (and the energy scan
+        // above is skipped entirely - see skip_wideband_scan). Reuses
+        // the same locked_freq read at the top of this cycle rather
+        // than re-reading it - it's cycled through fast enough now
+        // that any staleness from a lock change mid-cycle self-corrects
+        // within one more cycle.
         if (band == BAND_SUB_GHZ && !stop_flag_.load()) {
             bool still_active;
-            std::optional<double> locked_freq;
             {
                 std::lock_guard<std::mutex> lock(config_mutex_);
                 still_active = (active_band_ == band);
-                locked_freq = lora_lock_freq_;
             }
             if (still_active) {
                 double freq_hz;

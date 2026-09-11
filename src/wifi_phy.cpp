@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include <kissfft/kiss_fft.h>
+
 namespace rfmon::wifi {
 
 namespace {
@@ -199,6 +201,58 @@ ModClassification classify_modulation(const std::vector<std::complex<float>>& iq
         result.confidence = sc_conf;
     }
     return result;
+}
+
+double estimate_occupied_bandwidth_hz(const std::complex<float>* x, size_t n,
+                                       double sample_rate_hz, double threshold_db) {
+    if (n == 0 || sample_rate_hz <= 0.0) return 0.0;
+
+    constexpr int kFftSize = 256;  // coarse periodogram, not decode-grade
+    int fft_n = std::min<int>(kFftSize, int(n));
+    if (fft_n < 8) return 0.0;
+
+    size_t fft_n_sz = size_t(fft_n);
+    std::vector<kiss_fft_cpx> in(fft_n_sz);
+    std::vector<kiss_fft_cpx> out(fft_n_sz);
+    for (int i = 0; i < fft_n; ++i) {
+        // Rectangular window is fine for a coarse occupied-BW estimate.
+        in[size_t(i)].r = x[i].real();
+        in[size_t(i)].i = x[i].imag();
+    }
+    kiss_fft_cfg cfg = kiss_fft_alloc(fft_n, 0, nullptr, nullptr);
+    kiss_fft(cfg, in.data(), out.data());
+    kiss_fft_free(cfg);
+
+    // Bin order is [0..+Nyquist), [-Nyquist..0) - reorder to monotonic
+    // frequency for a simple contiguous-index occupied-band scan.
+    std::vector<float> mag2(fft_n_sz);
+    for (int i = 0; i < fft_n; ++i) {
+        int shifted = (i + fft_n / 2) % fft_n;
+        float re = out[size_t(i)].r, im = out[size_t(i)].i;
+        mag2[size_t(shifted)] = re * re + im * im;
+    }
+
+    float peak = *std::max_element(mag2.begin(), mag2.end());
+    if (peak <= 0.0f) return 0.0;
+    float thresh_lin = peak * float(std::pow(10.0, threshold_db / 10.0));
+
+    int lo = 0, hi = fft_n - 1;
+    while (lo < fft_n && mag2[size_t(lo)] < thresh_lin) ++lo;
+    while (hi >= 0 && mag2[size_t(hi)] < thresh_lin) --hi;
+    if (lo > hi) return 0.0;
+
+    int occupied_bins = hi - lo + 1;
+    double bin_hz = sample_rate_hz / fft_n;
+    return occupied_bins * bin_hz;
+}
+
+double estimate_mean_power_db(const std::complex<float>* x, size_t n) {
+    if (n == 0) return -200.0;
+    double sum = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        sum += double(x[i].real()) * x[i].real() + double(x[i].imag()) * x[i].imag();
+    }
+    return 10.0 * std::log10(sum / double(n) + 1e-15);
 }
 
 }  // namespace rfmon::wifi

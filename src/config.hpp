@@ -221,7 +221,7 @@ struct DeviceProfile {
     double max_gain_db;              // for the UI slider - hardware will clamp regardless
     bool supports_agc;               // UBX (and most non-AD9361 daughterboards) don't
     double max_sample_rate_hz;       // transport-limited - see below
-    double lora_listen_capture_rate_hz;  // see below - not always == LORA_LISTEN_SAMPLE_RATE_HZ
+    double lora_listen_capture_rate_hz;  // see below - the base rate to decimate down from
 };
 
 // Antenna connected to slot A / Radio#0 (channel 0) on this X310, per
@@ -251,23 +251,29 @@ struct DeviceProfile {
 // moved to a 10GbE (SFP+) link, this can go back up to 56 Msps.
 //
 // lora_listen_capture_rate_hz: the LoRa PHY codec (lora_phy.hpp) hard-
-// assumes capture sample rate == the transmitter's 125kHz channel
-// bandwidth (each symbol is exactly 2^SF *samples* - true only when
-// those two are equal). The B210 hits LORA_LISTEN_SAMPLE_RATE_HZ
-// (125kHz) exactly, so it captures at that rate directly. The X310
-// cannot hit 125kHz at all - confirmed empirically, requesting it
-// clamps to ~196.08kHz (not a clean multiple of 125kHz, so decimating
-// that down still wouldn't reconstruct 125kHz correctly). 250kHz,
-// however, lands on *exactly* 250000.0 Hz - a clean 2x multiple - so
-// the X310 captures at 250kHz and Scanner::run_lora_listen_step()
-// decimates that by 2 (with a basic anti-alias filter, not naive
-// sample-dropping) before handing it to the codec, which then sees
-// data indistinguishable from a real 125kHz capture.
+// assumes capture sample rate == the transmitter's channel bandwidth
+// (each symbol is exactly 2^SF *samples* - true only when those two are
+// equal). TarangMini (and LoRa generally) can be configured to BW125,
+// BW250, or BW500 (see LORA_LISTEN_BW_LIST_HZ) - to test all three
+// against one capture without re-tuning 3x, this requests the largest
+// (500kHz) as the base rate and Scanner::run_lora_listen_step()
+// decimates down by 2x/4x for the 250/125kHz hypotheses, the same
+// basic-anti-alias-filtered decimation already used for the X310's
+// 250->125kHz case below - just one level further.
+//
+// The X310 cannot hit 125kHz directly - confirmed empirically,
+// requesting it clamps to ~196.08kHz (not a clean multiple, so
+// decimating that down wouldn't reconstruct 125kHz correctly) - but
+// 250kHz and 500kHz both land on *exactly* their requested value (clean
+// divisions of this device's clock), so requesting 500kHz as the base
+// avoids the 125kHz clamping problem entirely rather than working
+// around it. The B210 hits 125/250/500kHz directly with no clamping
+// issue at all, so it also just requests the 500kHz base rate.
 inline DeviceProfile device_profile(SdrDeviceType type) {
     if (type == SdrDeviceType::X310) {
-        return {std::string("addr=") + X310_ADDR, "RX2", 20.0, 31.5, false, 20e6, 250e3};
+        return {std::string("addr=") + X310_ADDR, "RX2", 20.0, 31.5, false, 20e6, 500e3};
     }
-    return {DEVICE_ARGS, ANTENNA, DEFAULT_GAIN_DB, 70.0, true, 56e6, 125e3};
+    return {DEVICE_ARGS, ANTENNA, DEFAULT_GAIN_DB, 70.0, true, 56e6, 500e3};
 }
 
 // --- Registry ---
@@ -276,10 +282,10 @@ constexpr double POWER_EMA_ALPHA = 0.3;
 
 // --- LoRa PHY listen (only runs while BAND_SUB_GHZ is the active mode,
 // alongside the wideband energy scan above) - cycles the 3 mandatory
-// IN865 uplink channels at the codec's native 125kHz sample rate (no
-// resampling needed - the B210 can capture directly at this rate),
-// blind-searching SF7-12 against each. Ported from the validated
-// Python tools/lora_listen.py in the sibling newrocktest project.
+// IN865 uplink channels, blind-searching every (bandwidth, SF)
+// combination in LORA_LISTEN_BW_LIST_HZ x LORA_LISTEN_SF_LIST against
+// each capture. Ported from the validated Python tools/lora_listen.py
+// in the sibling newrocktest project (that version only tried BW125).
 //
 // 866.9 MHz is not one of the 3 mandatory IN865 uplink channels - it's
 // this lab's TarangMini ST22LR01 demo unit's actual configured Default
@@ -288,7 +294,11 @@ constexpr double POWER_EMA_ALPHA = 0.3;
 // newrocktest/TARANGMINI_LORA_FINDINGS.md for how this was found.
 inline const std::vector<double> LORA_LISTEN_CHANNELS_HZ = {865.0625e6, 865.4025e6, 865.985e6,
                                                              866.9e6};
-constexpr double LORA_LISTEN_SAMPLE_RATE_HZ = 125e3;
+// Every bandwidth TarangMini's own Default Data Rate command supports
+// (see TarangNet API doc, cmd 0x08). Tried against ONE capture at
+// DeviceProfile::lora_listen_capture_rate_hz (500kHz, the largest of
+// these) by decimating down per hypothesis, not by re-capturing 3x.
+inline const std::vector<double> LORA_LISTEN_BW_LIST_HZ = {125e3, 250e3, 500e3};
 constexpr double LORA_LISTEN_DURATION_S = 2.0;
 inline const std::vector<int> LORA_LISTEN_SF_LIST = {5, 6, 7, 8, 9, 10, 11, 12};
 constexpr int LORA_PACKET_LOG_MAX = 200;

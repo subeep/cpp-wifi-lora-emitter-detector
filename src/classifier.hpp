@@ -14,23 +14,15 @@
 namespace rfmon {
 
 // `mod` is only meaningful for the WiFi bands - it's the correlator-
-// based result from wifi_phy.hpp, run by the caller against this
-// segment's own slice of the wideband capture (see scanner.cpp).
-// Unknown (the default) falls back to today's bandwidth-only label, so
-// a candidate the correlators couldn't confirm still shows up exactly
-// as it did before this existed - it just doesn't get the extra detail.
+// based result from wifi_phy.hpp, run by the caller (scanner.cpp)
+// directly against a WiFi channel's own capture, unconditionally - not
+// gated on this segment's bandwidth (see wifi_phy.hpp's file header for
+// why: bandwidth is descriptive here, not a detection gate). When mod
+// is DSSS/OFDM, that correlator confirmation alone is enough to call it
+// "WiFi-like" regardless of the measured bandwidth bucket. Unknown (the
+// default, and always what BAND_SUB_GHZ passes) falls back to today's
+// original bandwidth-only heuristic label, untouched.
 std::string classify(const std::string& band, const Segment& segment,
                       wifi::ModClass mod = wifi::ModClass::Unknown);
-
-// Whether `bandwidth_hz` is even plausibly a WiFi channel's width for
-// `band` - the same bandwidth gate classify() itself uses to decide
-// whether to show a modulation tag at all. Exposed so the caller can
-// skip running the (comparatively expensive, and only meaningful for a
-// real ~20MHz-wide candidate) correlators entirely on a segment that
-// could never qualify anyway - a narrowband spur or CW tone can
-// trivially satisfy the Schmidl-Cox periodicity test on its own terms
-// (a pure tone is perfectly "periodic" at any period), so this gate
-// matters for correctness, not just for saving cycles.
-bool bandwidth_looks_like_wifi(const std::string& band, double bandwidth_hz);
 
 }  // namespace rfmon

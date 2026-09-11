@@ -36,3 +36,8 @@ band_smoke_test
 # Temporary / log files
 *.log
 *.tmp
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class

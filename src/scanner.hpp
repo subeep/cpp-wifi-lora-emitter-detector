@@ -43,6 +43,8 @@ struct LoraPacketRow {
     std::string status;    // "decoded" or "detected"
     double freq_mhz;
     int sf;
+    double bandwidth_khz;  // which of LORA_LISTEN_BW_LIST_HZ this was found at -
+                            // a real hypothesis that matched, not a measurement
     std::optional<int> cr;
     std::optional<int> payload_len;
     std::optional<bool> crc_valid;

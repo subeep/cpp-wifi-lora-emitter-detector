@@ -132,6 +132,7 @@ add_executable(test_wifi_phy
   src/wifi_phy.cpp
 )
 target_include_directories(test_wifi_phy PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_wifi_phy PRIVATE PkgConfig::KISSFFT)
 
 # ---------------------------------------------------------------------------
 # Manual hardware validation tool (see tools/band_smoke_test.cpp) - not

@@ -162,13 +162,14 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
     static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
                                    ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY;
     ImVec2 outer_size(0.0f, height);
-    if (!ImGui::BeginTable("lora_packets", 9, flags, outer_size)) return;
+    if (!ImGui::BeginTable("lora_packets", 10, flags, outer_size)) return;
 
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 80.0f);
     ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 80.0f);
     ImGui::TableSetupColumn("Freq (MHz)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
     ImGui::TableSetupColumn("SF", ImGuiTableColumnFlags_WidthFixed, 40.0f);
+    ImGui::TableSetupColumn("BW (kHz)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
     ImGui::TableSetupColumn("CR", ImGuiTableColumnFlags_WidthFixed, 40.0f);
     ImGui::TableSetupColumn("Len", ImGuiTableColumnFlags_WidthFixed, 50.0f);
     ImGui::TableSetupColumn("CRC", ImGuiTableColumnFlags_WidthFixed, 60.0f);
@@ -192,6 +193,8 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
         ImGui::Text("%.4f", d.freq_mhz);
         ImGui::TableNextColumn();
         ImGui::Text("%d", d.sf);
+        ImGui::TableNextColumn();
+        ImGui::Text("%.0f", d.bandwidth_khz);
         ImGui::TableNextColumn();
         if (d.cr.has_value()) ImGui::Text("%d", *d.cr); else ImGui::TextDisabled("--");
         ImGui::TableNextColumn();

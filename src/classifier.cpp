@@ -31,16 +31,6 @@ std::string mod_tag(wifi::ModClass mod) {
 
 }  // namespace
 
-bool bandwidth_looks_like_wifi(const std::string& band, double bandwidth_hz) {
-    if (band == BAND_WIFI_2G4) {
-        return bandwidth_hz >= WIFI_2G4_CHANNEL_BW_LO_HZ && bandwidth_hz <= WIFI_2G4_CHANNEL_BW_HI_HZ;
-    }
-    if (band == BAND_WIFI_5G) {
-        return bandwidth_hz >= WIFI_5G_CHANNEL_BW_LO_HZ && bandwidth_hz <= WIFI_5G_CHANNEL_BW_HI_HZ;
-    }
-    return false;
-}
-
 std::string classify(const std::string& band, const Segment& segment, wifi::ModClass mod) {
     double bw = segment.bandwidth_hz;
 
@@ -54,9 +44,20 @@ std::string classify(const std::string& band, const Segment& segment, wifi::ModC
     }
 
     if (band == BAND_WIFI_2G4) {
+        // A correlator confirmation (mod != Unknown) is its own
+        // detection evidence - always "WiFi-like" regardless of the
+        // measured bandwidth bucket (see wifi_phy.hpp's file header).
+        // Bandwidth is shown for real here (not the old fixed "~20MHz"
+        // text), since a correlator-confirmed hit's own measured width
+        // is genuinely informative now, not just a bucket membership.
+        if (mod != wifi::ModClass::Unknown) {
+            int ch = nearest_channel(wifi_2g4_channels(), segment.center_hz);
+            return "WiFi-like (" + mod_tag(mod) + "channel " + std::to_string(ch) + ", ~" +
+                   std::to_string(int(bw / 1e6)) + "MHz)";
+        }
         if (bw >= WIFI_2G4_CHANNEL_BW_LO_HZ && bw <= WIFI_2G4_CHANNEL_BW_HI_HZ) {
             int ch = nearest_channel(wifi_2g4_channels(), segment.center_hz);
-            return "WiFi-like (" + mod_tag(mod) + "channel " + std::to_string(ch) + ", ~20MHz)";
+            return "WiFi-like (channel " + std::to_string(ch) + ", ~20MHz)";
         }
         if (bw >= NARROWBAND_2G4_LO_HZ && bw <= NARROWBAND_2G4_HI_HZ) {
             return "Unknown 2.4GHz narrowband (possible BLE/Zigbee)";
@@ -65,9 +66,14 @@ std::string classify(const std::string& band, const Segment& segment, wifi::ModC
     }
 
     if (band == BAND_WIFI_5G) {
+        if (mod != wifi::ModClass::Unknown) {
+            int ch = nearest_channel(wifi_5g_channels(), segment.center_hz);
+            return "WiFi-like (" + mod_tag(mod) + "channel " + std::to_string(ch) + ", ~" +
+                   std::to_string(int(bw / 1e6)) + "MHz)";
+        }
         if (bw >= WIFI_5G_CHANNEL_BW_LO_HZ && bw <= WIFI_5G_CHANNEL_BW_HI_HZ) {
             int ch = nearest_channel(wifi_5g_channels(), segment.center_hz);
-            return "WiFi-like (" + mod_tag(mod) + "channel " + std::to_string(ch) + ", ~20-80MHz)";
+            return "WiFi-like (channel " + std::to_string(ch) + ", ~20-80MHz)";
         }
         return "Unknown 5GHz emitter";
     }
