@@ -93,7 +93,13 @@ public:
 
 private:
     void run();
-    void run_lora_listen_step(double freq_hz, const DeviceProfile& profile);
+    // Appends any energy-detected segment(s) found in this same
+    // capture to `detections` (see .cpp) - reuses the one capture
+    // already taken here for the dedicated codec attempts, rather than
+    // requiring a second wideband capture just to keep the Active
+    // emitters table populated while locked to one frequency.
+    void run_lora_listen_step(double freq_hz, const DeviceProfile& profile, double threshold_db,
+                               std::vector<Detection>& detections);
     DeviceRegistry& registry_for(const std::string& band);
     // Attempts to (re)connect sdr_, retrying a few times (X310
     // connections over Ethernet fail intermittently - see run()'s

@@ -233,11 +233,36 @@ bool Scanner::connect_sdr(const DeviceProfile& profile, std::optional<double> ga
 // HackRF interop, not third-party devices; then, if neither header
 // decodes, falls back to a bare burst detection. Every combination is
 // tried independently - not just the first hit.
-void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile) {
+void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
+                                    double threshold_db, std::vector<Detection>& detections) {
     auto [iq_raw, actual_rate, overflow] = sdr_->capture(
         freq_hz, profile.lora_listen_capture_rate_hz, LORA_LISTEN_DURATION_S);
     note_capture_health(!iq_raw.empty());
     if (iq_raw.empty()) return;
+
+    // Feed the Active emitters table from this same capture rather
+    // than requiring a separate wideband one - this is the only
+    // capture taken at all while locked to one frequency (see run()'s
+    // skip_wideband_scan), so without this the emitter itself could
+    // never show up there no matter how well the codec below detects
+    // it. Growth is disabled (hysteresis_low == threshold_db) for the
+    // same reason as the wideband scan's own sub-GHz call: LoRa
+    // classification depends on tight bandwidth tolerances
+    // (lora_bandwidths_hz()) that growth would blur.
+    {
+        Spectrum spec = max_hold_spectrum({iq_raw}, actual_rate);
+        double guard_hz = std::max(actual_rate * DC_GUARD_FRACTION, DC_GUARD_MIN_HZ);
+        std::vector<bool> dc_mask = mask_dc_guard(spec.freqs_offset_hz, guard_hz);
+        std::vector<bool> edge_mask =
+            mask_edge_guard(spec.freqs_offset_hz, actual_rate, EDGE_GUARD_FRACTION);
+        std::vector<Segment> segments =
+            find_segments(spec.freqs_offset_hz, spec.psd_db, freq_hz, edge_mask, dc_mask,
+                          NOISE_FLOOR_PERCENTILE, threshold_db, MIN_SEGMENT_BINS, MERGE_GAP_BINS,
+                          threshold_db);
+        for (const auto& seg : segments) {
+            detections.push_back(Detection{BAND_SUB_GHZ, seg, classify(BAND_SUB_GHZ, seg)});
+        }
+    }
 
     std::string ts = current_time_hhmmss();
 
@@ -456,10 +481,6 @@ void Scanner::run() {
             }
         }
 
-        DeviceRegistry& reg = registry_for(band);
-        double now = now_seconds();
-        reg.update_cycle(detections, now);
-        reg.end_cycle();
         ++band_cycle_count;
 
         // LoRa PHY listen: only while LoRa mode is active, one IN865
@@ -471,7 +492,11 @@ void Scanner::run() {
         // the same locked_freq read at the top of this cycle rather
         // than re-reading it - it's cycled through fast enough now
         // that any staleness from a lock change mid-cycle self-corrects
-        // within one more cycle.
+        // within one more cycle. Appends its own energy-detected
+        // segment(s) into the same `detections` this cycle's registry
+        // update uses below, rather than needing a separate wideband
+        // capture just to keep Active emitters populated while locked
+        // (see run_lora_listen_step()'s own comment).
         if (band == BAND_SUB_GHZ && !stop_flag_.load()) {
             bool still_active;
             {
@@ -493,9 +518,14 @@ void Scanner::run() {
                                                  std::to_string(freq_hz / 1e6) + " MHz" +
                                                  (locked_freq.has_value() ? " (locked)" : "");
                 }
-                run_lora_listen_step(freq_hz, profile);
+                run_lora_listen_step(freq_hz, profile, threshold, detections);
             }
         }
+
+        DeviceRegistry& reg = registry_for(band);
+        double now = now_seconds();
+        reg.update_cycle(detections, now);
+        reg.end_cycle();
 
         {
             std::lock_guard<std::mutex> lock(status_mutex_);
