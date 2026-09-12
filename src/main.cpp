@@ -20,6 +20,7 @@
 #include "backends/imgui_impl_opengl3.h"
 
 #include "config.hpp"
+#include "fingerprint.hpp"
 #include "registry.hpp"
 #include "scanner.hpp"
 
@@ -160,9 +161,10 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
     }
 
     static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
-                                   ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY;
+                                   ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
+                                   ImGuiTableFlags_ScrollX;
     ImVec2 outer_size(0.0f, height);
-    if (!ImGui::BeginTable("lora_packets", 10, flags, outer_size)) return;
+    if (!ImGui::BeginTable("lora_packets", 19, flags, outer_size)) return;
 
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 80.0f);
@@ -174,6 +176,23 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
     ImGui::TableSetupColumn("Len", ImGuiTableColumnFlags_WidthFixed, 50.0f);
     ImGui::TableSetupColumn("CRC", ImGuiTableColumnFlags_WidthFixed, 60.0f);
     ImGui::TableSetupColumn("CFO (bins)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+    // --- RF fingerprint (see fingerprint.hpp) - Tier-1 "stable core"
+    // parameters, only populated on a "Detected" row (see
+    // run_lora_listen_step()). SNR doubles as the gate-reason column
+    // when extraction was rejected, since that's the most common gate.
+    ImGui::TableSetupColumn("SNR (dB)", ImGuiTableColumnFlags_WidthFixed, 110.0f);
+    // Fit-quality covariates (source spec §5/§1.6) - what the
+    // LORA_EVM_CEILING_PCT/LORA_SYNC_CORR_FLOOR gate uses to reject a
+    // wrong-hypothesis match that still had plenty of raw SNR behind
+    // it. Shown even on a gated row when they were actually computed.
+    ImGui::TableSetupColumn("EVM (%)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+    ImGui::TableSetupColumn("Sync corr", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+    ImGui::TableSetupColumn("CFO (ppm)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+    ImGui::TableSetupColumn("IRR (dB)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+    ImGui::TableSetupColumn("IQ eps", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+    ImGui::TableSetupColumn("IQ phi (deg)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+    ImGui::TableSetupColumn("DC (dBc)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+    ImGui::TableSetupColumn("DC ang (deg)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
     ImGui::TableSetupColumn("Payload", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableHeadersRow();
 
@@ -207,6 +226,40 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
         }
         ImGui::TableNextColumn();
         ImGui::Text("%d", d.cfo_bins);
+        ImGui::TableNextColumn();
+        if (d.fp_snr_db.has_value()) {
+            ImGui::Text("%.1f", *d.fp_snr_db);
+        } else if (d.fp_gate_reason.has_value()) {
+            ImGui::TextColored(bad, "%s", d.fp_gate_reason->c_str());
+        } else {
+            ImGui::TextDisabled("--");
+        }
+        ImGui::TableNextColumn();
+        if (d.fp_evm_pct.has_value()) {
+            bool bad_evm = *d.fp_evm_pct > fingerprint::LORA_EVM_CEILING_PCT;
+            ImGui::TextColored(bad_evm ? bad : good, "%.2f", *d.fp_evm_pct);
+        } else {
+            ImGui::TextDisabled("--");
+        }
+        ImGui::TableNextColumn();
+        if (d.fp_sync_corr.has_value()) {
+            bool bad_sync = *d.fp_sync_corr < fingerprint::LORA_SYNC_CORR_FLOOR;
+            ImGui::TextColored(bad_sync ? bad : good, "%.3f", *d.fp_sync_corr);
+        } else {
+            ImGui::TextDisabled("--");
+        }
+        ImGui::TableNextColumn();
+        if (d.fp_cfo_ppm.has_value()) ImGui::Text("%.3f", *d.fp_cfo_ppm); else ImGui::TextDisabled("--");
+        ImGui::TableNextColumn();
+        if (d.fp_irr_db.has_value()) ImGui::Text("%.2f", *d.fp_irr_db); else ImGui::TextDisabled("--");
+        ImGui::TableNextColumn();
+        if (d.fp_iq_eps.has_value()) ImGui::Text("%.5f", *d.fp_iq_eps); else ImGui::TextDisabled("--");
+        ImGui::TableNextColumn();
+        if (d.fp_iq_phi_deg.has_value()) ImGui::Text("%.3f", *d.fp_iq_phi_deg); else ImGui::TextDisabled("--");
+        ImGui::TableNextColumn();
+        if (d.fp_dc_dbc.has_value()) ImGui::Text("%.1f", *d.fp_dc_dbc); else ImGui::TextDisabled("--");
+        ImGui::TableNextColumn();
+        if (d.fp_dc_ang_deg.has_value()) ImGui::Text("%.1f", *d.fp_dc_ang_deg); else ImGui::TextDisabled("--");
         ImGui::TableNextColumn();
         if (d.payload_repr.has_value()) ImGui::TextUnformatted(d.payload_repr->c_str());
         else ImGui::TextDisabled("--");

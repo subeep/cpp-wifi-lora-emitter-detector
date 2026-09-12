@@ -6,6 +6,7 @@
 #include <ctime>
 
 #include "classifier.hpp"
+#include "fingerprint.hpp"
 #include "lora_phy.hpp"
 #include "lora_phy_std.hpp"
 #include "spectrum.hpp"
@@ -316,6 +317,21 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
 
             auto burst = lora::detect_burst(iq, sf);
             if (burst.has_value()) {
+                // Fingerprint extraction (see fingerprint.hpp) - only
+                // wired up on this path, not the two decode attempts
+                // above: BurstDetection is the only one of the three
+                // that carries preamble_len, and in practice it's the
+                // only path that ever fires for TarangMini anyway
+                // (its header/CRC never validates - see
+                // TARANGMINI_LORA_FINDINGS.md). Runs off the preamble
+                // alone, so it doesn't need a decode to have succeeded.
+                auto fp = fingerprint::extract_lora_fingerprint(iq, burst->sf, bw_hz, freq_hz,
+                                                                  burst->start_sample,
+                                                                  burst->preamble_len,
+                                                                  burst->cfo_bins);
+                fingerprint::append_fingerprint_record(LORA_FINGERPRINT_LOG_PATH, ts,
+                                                        freq_hz / 1e6, burst->sf, bw_khz, fp);
+
                 LoraPacketRow row;
                 row.time = ts;
                 row.status = "detected";
@@ -323,7 +339,45 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
                 row.sf = burst->sf;
                 row.bandwidth_khz = bw_khz;
                 row.cfo_bins = burst->cfo_bins;
+                if (fp.gated_out) {
+                    row.fp_gate_reason = fp.gate_reason;
+                } else {
+                    row.fp_cfo_ppm = fp.cfo_ppm;
+                    row.fp_irr_db = fp.irr_db;
+                    row.fp_iq_eps = fp.iq_eps;
+                    row.fp_iq_phi_deg = fp.iq_phi_deg;
+                    row.fp_dc_dbc = fp.dc_dbc;
+                    row.fp_dc_ang_deg = fp.dc_ang_deg;
+                    row.fp_snr_db = fp.snr_db;
+                }
+                // n_samp is only ever set once the IQ-imbalance fit has
+                // actually run (see fingerprint.cpp) - shown even when
+                // the EVM/sync_corr gate itself is what rejected this
+                // row, since they're the reason for that rejection.
+                if (fp.n_samp > 0) {
+                    row.fp_evm_pct = fp.evm_pct;
+                    row.fp_sync_corr = fp.sync_corr;
+                }
                 push_row(std::move(row));
+
+                // Feed the registry too, so a fingerprinted burst can
+                // be matched/merged by RF identity (see
+                // registry.hpp/.cpp) rather than only ever by frequency
+                // bucket. peak_db here is a stand-in using snr_db, not
+                // a real power measurement - this Detection's job is
+                // identity matching, not power ranking.
+                if (!fp.gated_out) {
+                    Segment seg{freq_hz, bw_hz, fp.snr_db};
+                    FingerprintSnapshot snap;
+                    snap.cfo_ppm = fp.cfo_ppm;
+                    snap.irr_db = fp.irr_db;
+                    snap.iq_eps = fp.iq_eps;
+                    snap.iq_phi_deg = fp.iq_phi_deg;
+                    snap.dc_dbc = fp.dc_dbc;
+                    snap.dc_ang_deg = fp.dc_ang_deg;
+                    Detection det{BAND_SUB_GHZ, seg, classify(BAND_SUB_GHZ, seg), snap};
+                    detections.push_back(std::move(det));
+                }
             }
         }
     }
@@ -525,7 +579,6 @@ void Scanner::run() {
         DeviceRegistry& reg = registry_for(band);
         double now = now_seconds();
         reg.update_cycle(detections, now);
-        reg.end_cycle();
 
         {
             std::lock_guard<std::mutex> lock(status_mutex_);

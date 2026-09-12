@@ -50,6 +50,29 @@ struct LoraPacketRow {
     std::optional<bool> crc_valid;
     int cfo_bins;
     std::optional<std::string> payload_repr;
+
+    // RF fingerprint (see fingerprint.hpp) - the "stable core" Tier-1
+    // parameters plus the SNR they were gated on. Unset when extraction
+    // was gated out (e.g. below the SNR floor) or not attempted for
+    // this row (only the "detected" path currently extracts one - see
+    // run_lora_listen_step()).
+    std::optional<double> fp_cfo_ppm;
+    std::optional<double> fp_irr_db;
+    std::optional<double> fp_iq_eps;
+    std::optional<double> fp_iq_phi_deg;
+    std::optional<double> fp_dc_dbc;
+    std::optional<double> fp_dc_ang_deg;
+    std::optional<double> fp_snr_db;
+    std::optional<std::string> fp_gate_reason;  // set only when gated out
+
+    // Fit-quality covariates - shown regardless of gate outcome, once
+    // actually computed (unset only if gating happened before the fit
+    // ever ran, e.g. the SNR floor). A high SNR alone doesn't mean the
+    // (SF, BW) hypothesis was correct - these reveal whether the fit
+    // actually explains the signal, which is exactly what the
+    // LORA_EVM_CEILING_PCT/LORA_SYNC_CORR_FLOOR gate uses them for.
+    std::optional<double> fp_evm_pct;
+    std::optional<double> fp_sync_corr;
 };
 
 class Scanner {

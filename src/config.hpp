@@ -303,4 +303,11 @@ constexpr double LORA_LISTEN_DURATION_S = 2.0;
 inline const std::vector<int> LORA_LISTEN_SF_LIST = {5, 6, 7, 8, 9, 10, 11, 12};
 constexpr int LORA_PACKET_LOG_MAX = 200;
 
+// Append-only NDJSON fingerprint log (see fingerprint.hpp) - relative
+// to whatever directory the binary is launched from, matching how
+// nothing else in this project writes to an absolute path. Grows
+// forever by design (source spec's own append-only philosophy); no
+// cap here the way LORA_PACKET_LOG_MAX bounds the in-memory GUI table.
+constexpr const char* LORA_FINGERPRINT_LOG_PATH = "lora_fingerprints.ndjson";
+
 }  // namespace rfmon
