@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -15,6 +16,7 @@
 #include <vector>
 
 #include "config.hpp"
+#include "lora_master.hpp"
 #include "registry.hpp"
 #include "sdr_capture.hpp"
 
@@ -75,6 +77,22 @@ struct LoraPacketRow {
     std::optional<double> fp_sync_corr;
 };
 
+// One detected Wi-Fi transmission - a single burst found by
+// wifi::detect_bursts() and then classified on its own window, rather
+// than a whole-capture verdict. Deliberately detection-only: no PLCP or
+// payload decode, so there is no rate/length/MAC here (see the session
+// notes on why decode is out of scope for this hardware).
+struct WifiPacketRow {
+    std::string time;  // HH:MM:SS
+    double freq_mhz = 0.0;
+    int channel = 0;
+    std::string modulation;  // "DSSS" or "OFDM"
+    double power_db = 0.0;
+    double bandwidth_khz = 0.0;
+    double duration_us = 0.0;
+    double confidence = 0.0;  // [0,1], comparable across modulations
+};
+
 class Scanner {
 public:
     Scanner();
@@ -113,6 +131,24 @@ public:
     // Only populated while BAND_SUB_GHZ is active - see run()'s LoRa
     // PHY listen sub-loop, which runs alongside the usual energy scan.
     std::vector<LoraPacketRow> lora_packets() const;
+
+    // Persistent, cross-run LoRa "master emitter" list (see
+    // lora_master.hpp) - a separate identity system from registry_lora_
+    // above; fed only by non-gated LoRa fingerprint readings, and never
+    // forgets anything across restarts.
+    std::vector<lora_master::LoraMasterRow> lora_master_snapshot() const;
+
+    // Only populated while a Wi-Fi band is active - one row per
+    // individually detected and classified burst.
+    std::vector<WifiPacketRow> wifi_packets() const;
+
+    // How many distinct transmitting sources were resolved on each
+    // Wi-Fi channel, keyed by channel number (see
+    // wifi::find_beacon_sources). This is an inferred LOWER bound from
+    // beacon timing, never a decoded device count - co-phased BSSes
+    // merge, and virtual/multi-BSSID networks on one radio are
+    // physically indistinguishable here by construction.
+    std::map<int, int> wifi_source_counts(const std::string& band) const;
 
 private:
     void run();
@@ -158,6 +194,12 @@ private:
     mutable std::mutex lora_log_mutex_;
     std::vector<LoraPacketRow> lora_packet_log_;
     size_t lora_channel_idx_ = 0;
+
+    mutable std::mutex wifi_log_mutex_;
+    std::vector<WifiPacketRow> wifi_packet_log_;
+    std::map<std::string, std::map<int, int>> wifi_source_counts_;
+
+    lora_master::LoraMasterList lora_master_;
 
     int rx_fail_streak_ = 0;
     static constexpr int kRxStallThreshold = 3;

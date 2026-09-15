@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 
 #include "classifier.hpp"
@@ -12,6 +13,18 @@
 #include "spectrum.hpp"
 #include "wifi_phy.hpp"
 
+// PROJECT_ROOT_DIR is set by CMakeLists.txt to the source tree root for
+// any target that links lora_master.cpp - resolving the master-list
+// directory from that (not the process's current working directory,
+// which for this app has always been wherever it happened to be
+// launched from, e.g. build/) is what makes "permanently stored" mean
+// something: a `build/` wipe/rebuild must never touch this data. The
+// literal fallback only matters if some future target links this file
+// without setting the definition; every target that matters here does.
+#ifndef PROJECT_ROOT_DIR
+#define PROJECT_ROOT_DIR "."
+#endif
+
 namespace rfmon {
 
 namespace {
@@ -20,6 +33,12 @@ double now_seconds() {
         .count();
 }
 
+// Absolute wall-clock seconds (Unix epoch) - unlike now_seconds() above
+// (steady_clock, monotonic but with an arbitrary per-process epoch),
+// this is what the persistent lora_master_ list needs: a timestamp
+// that means the same thing before and after a process restart.
+int64_t now_epoch_seconds() { return int64_t(std::time(nullptr)); }
+
 std::string current_time_hhmmss() {
     std::time_t t = std::time(nullptr);
     std::tm tm_buf{};
@@ -27,6 +46,26 @@ std::string current_time_hhmmss() {
     char buf[16];
     std::strftime(buf, sizeof(buf), "%H:%M:%S", &tm_buf);
     return std::string(buf);
+}
+
+// Which numbered Wi-Fi channel a frequency is closest to, for the
+// packet list's Channel column. Mirrors classifier.cpp's own
+// nearest_channel() rather than sharing it - that one is file-local
+// there, and this file already follows the project's duplicate-a-small-
+// helper-rather-than-refactor-validated-code convention.
+int nearest_wifi_channel(const std::string& band, double freq_hz) {
+    const auto& channels =
+        (band == BAND_WIFI_2G4) ? wifi_2g4_channels() : wifi_5g_channels();
+    int best_ch = channels.begin()->first;
+    double best_dist = std::abs(channels.begin()->second - freq_hz);
+    for (const auto& [ch, f] : channels) {
+        double dist = std::abs(f - freq_hz);
+        if (dist < best_dist) {
+            best_dist = dist;
+            best_ch = ch;
+        }
+    }
+    return best_ch;
 }
 
 // Python-repr-like rendering: printable ASCII as-is, else \xHH escapes.
@@ -68,7 +107,7 @@ std::vector<std::complex<float>> decimate_boxcar(const std::vector<std::complex<
 }
 }  // namespace
 
-Scanner::Scanner() = default;
+Scanner::Scanner() : lora_master_(std::string(PROJECT_ROOT_DIR) + "/data/lora_master") {}
 
 Scanner::~Scanner() { stop(); }
 
@@ -148,6 +187,21 @@ ScannerStatus Scanner::status() const {
 std::vector<LoraPacketRow> Scanner::lora_packets() const {
     std::lock_guard<std::mutex> lock(lora_log_mutex_);
     return lora_packet_log_;
+}
+
+std::vector<lora_master::LoraMasterRow> Scanner::lora_master_snapshot() const {
+    return lora_master_.snapshot();
+}
+
+std::vector<WifiPacketRow> Scanner::wifi_packets() const {
+    std::lock_guard<std::mutex> lock(wifi_log_mutex_);
+    return wifi_packet_log_;
+}
+
+std::map<int, int> Scanner::wifi_source_counts(const std::string& band) const {
+    std::lock_guard<std::mutex> lock(wifi_log_mutex_);
+    auto it = wifi_source_counts_.find(band);
+    return (it == wifi_source_counts_.end()) ? std::map<int, int>{} : it->second;
 }
 
 DeviceRegistry& Scanner::registry_for(const std::string& band) {
@@ -377,6 +431,13 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
                     snap.dc_ang_deg = fp.dc_ang_deg;
                     Detection det{BAND_SUB_GHZ, seg, classify(BAND_SUB_GHZ, seg), snap};
                     detections.push_back(std::move(det));
+
+                    // Permanent, cross-run identity list (see
+                    // lora_master.hpp) - separate from the session-only
+                    // registry fed just above; only ever sees readings
+                    // that already cleared every gate.
+                    lora_master_.record_reading(freq_hz, burst->sf, bw_hz, fp,
+                                                 now_epoch_seconds());
                 }
             }
         }
@@ -510,28 +571,155 @@ void Scanner::run() {
             if (step.band == BAND_WIFI_2G4 || step.band == BAND_WIFI_5G) {
                 bool try_dsss = (step.band == BAND_WIFI_2G4);  // no DSSS/CCK in 5GHz
                 double real_channel_hz = step.center_hz - WIFI_CHANNEL_CAPTURE_OFFSET_HZ;
-                wifi::ModClass best_mod = wifi::ModClass::Unknown;
-                double best_confidence = 0.0;
-                const std::vector<std::complex<float>>* best_capture = nullptr;
+                int channel_num = nearest_wifi_channel(step.band, real_channel_hz);
+                std::string ts = current_time_hhmmss();
+
+                // Classify per BURST rather than per capture. Two wins
+                // at once: every frame becomes its own reportable row
+                // (see WifiPacketRow), and the correlators stop
+                // grinding over 20M-sample buffers of mostly idle air,
+                // which is what made a full 2.4GHz sweep take minutes.
+                // Label the channel by which modulation owns the most
+                // AIRTIME, not by whichever single burst scored highest.
+                // OFDM bursts consistently score above DSSS ones, so a
+                // peak-confidence pick made DSSS invisible even on
+                // channels where it dominated - a channel carrying
+                // mostly 1 Mbps beacons was still labelled OFDM because
+                // one short OFDM frame edged it out.
+                double airtime_dsss = 0.0, airtime_ofdm = 0.0;
+                double best_bw_dsss = 0.0, best_power_dsss = -200.0;
+                double best_bw_ofdm = 0.0, best_power_ofdm = -200.0;
+                int source_count = 0;
                 for (const auto& cap : captures) {
-                    auto result = wifi::classify_modulation(cap, actual_rate, step.center_hz,
-                                                              real_channel_hz, try_dsss);
-                    if (result.mod != wifi::ModClass::Unknown &&
-                        result.confidence > best_confidence) {
-                        best_mod = result.mod;
-                        best_confidence = result.confidence;
-                        best_capture = &cap;
+                    auto bursts = wifi::detect_bursts(cap.data(), cap.size(), actual_rate,
+                                                       threshold, WIFI_MAX_BURSTS_PER_CAPTURE);
+                    // Beacon-train timing is per-capture: each capture
+                    // has its own t0, so phases cannot be compared
+                    // across them. Cluster within each and keep the
+                    // most sources any one capture resolved.
+                    std::vector<double> burst_starts_s, burst_powers_db;
+                    for (const auto& b : bursts) {
+                        std::vector<std::complex<float>> window(
+                            cap.begin() + long(b.start), cap.begin() + long(b.start + b.length));
+                        auto result = wifi::classify_modulation(window, actual_rate,
+                                                                  step.center_hz, real_channel_hz,
+                                                                  try_dsss);
+                        if (result.mod == wifi::ModClass::Unknown) continue;
+
+                        double bw_hz = wifi::estimate_occupied_bandwidth_hz(
+                            window.data(), window.size(), actual_rate);
+                        // Nothing in Wi-Fi is narrowband. Rejecting
+                        // sub-4MHz bursts here is what keeps Bluetooth,
+                        // BLE and Zigbee - all of which share this band
+                        // and can correlate against Barker - out of the
+                        // packet list. See MIN_WIFI_BANDWIDTH_HZ.
+                        if (bw_hz < wifi::MIN_WIFI_BANDWIDTH_HZ) continue;
+
+                        double power_db =
+                            wifi::estimate_mean_power_db(window.data(), window.size());
+                        double duration_s = double(b.length) / actual_rate;
+                        // Only feed BEACON-PLAUSIBLE bursts to the
+                        // cadence clustering. This is not an
+                        // optimisation, it is what makes the method work
+                        // at all: with every burst included, a busy
+                        // channel puts ~400 events into a 102.4ms phase
+                        // space at ~1ms resolution, which saturates it -
+                        // every phase bin is occupied on every interval,
+                        // so periodicity carries no information and
+                        // coincidental chains dominate. Measured: 26
+                        // phantom sources per capture from purely
+                        // aperiodic traffic at that density.
+                        //
+                        // A 2.4GHz beacon at the 1 Mbps basic rate runs
+                        // ~2-3ms, while data frames are tens to a few
+                        // hundred microseconds, so duration separates
+                        // them cleanly and drops the candidate count by
+                        // more than an order of magnitude.
+                        if (result.mod == wifi::ModClass::DSSS &&
+                            duration_s >= WIFI_BEACON_MIN_DURATION_S) {
+                            burst_starts_s.push_back(double(b.start) / actual_rate);
+                            burst_powers_db.push_back(power_db);
+                        }
+
+                        WifiPacketRow row;
+                        row.time = ts;
+                        row.freq_mhz = real_channel_hz / 1e6;
+                        row.channel = channel_num;
+                        row.modulation =
+                            (result.mod == wifi::ModClass::DSSS) ? "DSSS" : "OFDM";
+                        row.power_db = power_db;
+                        row.bandwidth_khz = bw_hz / 1e3;
+                        row.duration_us = duration_s * 1e6;
+                        row.confidence = result.confidence;
+                        {
+                            std::lock_guard<std::mutex> lock(wifi_log_mutex_);
+                            wifi_packet_log_.push_back(std::move(row));
+                            if (wifi_packet_log_.size() >
+                                static_cast<size_t>(WIFI_PACKET_LOG_MAX)) {
+                                wifi_packet_log_.erase(wifi_packet_log_.begin());
+                            }
+                        }
+
+                        if (result.mod == wifi::ModClass::DSSS) {
+                            airtime_dsss += duration_s;
+                            if (power_db > best_power_dsss) {
+                                best_power_dsss = power_db;
+                                best_bw_dsss = bw_hz;
+                            }
+                        } else {
+                            airtime_ofdm += duration_s;
+                            if (power_db > best_power_ofdm) {
+                                best_power_ofdm = power_db;
+                                best_bw_ofdm = bw_hz;
+                            }
+                        }
                     }
+                    auto srcs = wifi::find_beacon_sources(burst_starts_s, burst_powers_db);
+                    source_count = std::max(source_count, int(srcs.size()));
                 }
-                if (best_mod != wifi::ModClass::Unknown && best_capture != nullptr) {
-                    Segment wifi_seg{
-                        real_channel_hz,
-                        wifi::estimate_occupied_bandwidth_hz(best_capture->data(),
-                                                              best_capture->size(), actual_rate),
-                        wifi::estimate_mean_power_db(best_capture->data(), best_capture->size())};
-                    detections.push_back(
-                        Detection{step.band, wifi_seg, classify(step.band, wifi_seg, best_mod)});
+
+                wifi::ModClass best_mod = wifi::ModClass::Unknown;
+                double best_bw = 0.0, best_power = 0.0;
+                if (airtime_dsss > 0.0 || airtime_ofdm > 0.0) {
+                    bool dsss_wins = airtime_dsss > airtime_ofdm;
+                    best_mod = dsss_wins ? wifi::ModClass::DSSS : wifi::ModClass::OFDM;
+                    best_bw = dsss_wins ? best_bw_dsss : best_bw_ofdm;
+                    best_power = dsss_wins ? best_power_dsss : best_power_ofdm;
                 }
+
+                {
+                    std::lock_guard<std::mutex> lock(wifi_log_mutex_);
+                    wifi_source_counts_[step.band][channel_num] = source_count;
+                }
+
+                // The Active-emitters row for this channel is the best
+                // burst seen on it this step, not a whole-buffer average.
+                if (best_mod != wifi::ModClass::Unknown) {
+                    Segment wifi_seg{real_channel_hz, best_bw, best_power};
+                    Detection det{step.band, wifi_seg, classify(step.band, wifi_seg, best_mod)};
+                    // Without this the row loses its own frequency
+                    // bucket to a bare energy segment on the same
+                    // channel and never reaches the GUI - see
+                    // Detection::modulation_confirmed.
+                    det.modulation_confirmed = true;
+                    detections.push_back(std::move(det));
+                }
+
+                // Commit this channel's result immediately instead of
+                // waiting for the whole sweep. The registry only ever
+                // updated at a cycle boundary, and a full 2.4GHz sweep
+                // is 52s+, so the table sat empty for a minute at a
+                // time. Nothing is dropped by flushing early - the
+                // registry has had no expiry since permanence was
+                // added - and hit_count keeps its meaning because each
+                // channel is still visited exactly once per sweep.
+                //
+                // Deliberately Wi-Fi only: a sub-GHz cycle has multiple
+                // wideband steps that can each see the SAME emitter, so
+                // flushing per step there would inflate hit_count. That
+                // path keeps accumulating to the end of the cycle.
+                registry_for(band).update_cycle(detections, now_seconds());
+                detections.clear();
             }
         }
 

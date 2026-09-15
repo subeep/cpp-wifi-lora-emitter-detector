@@ -303,6 +303,33 @@ constexpr double LORA_LISTEN_DURATION_S = 2.0;
 inline const std::vector<int> LORA_LISTEN_SF_LIST = {5, 6, 7, 8, 9, 10, 11, 12};
 constexpr int LORA_PACKET_LOG_MAX = 200;
 
+// Wi-Fi burst/packet list (see WifiPacketRow in scanner.hpp). Larger
+// than the LoRa cap because Wi-Fi frame rates are orders of magnitude
+// higher: a busy channel carries hundreds of frames per second, where
+// LoRa produces a burst every few seconds.
+constexpr int WIFI_PACKET_LOG_MAX = 1000;
+// Per sub-capture ceiling on how many bursts get classified. Bounds
+// worst-case work on a saturated channel - without it a single busy
+// 1-second capture could hand the correlators thousands of windows and
+// stall the scan thread. Anything past this is simply not reported: the
+// list is a sampled sighting log, not a complete capture.
+//
+// Raised from 64: detect_bursts() returns bursts in chronological order
+// and stops at the cap, so on a busy channel all 64 could come from the
+// opening fraction of a second. Beacon-cadence clustering (see
+// wifi::find_beacon_sources) needs to observe several 102.4ms intervals,
+// so a truncated window silently starves it - measured as zero inferred
+// sources on channels carrying six known BSSIDs.
+constexpr size_t WIFI_MAX_BURSTS_PER_CAPTURE = 400;
+
+// Shortest burst still plausibly a 2.4GHz beacon. Beacons go out at the
+// lowest basic rate, which on 2.4GHz is normally 1 Mbps DBPSK, making a
+// typical ~250-byte beacon roughly 2ms; ordinary data frames are tens to
+// a few hundred microseconds. Only bursts past this are offered to
+// wifi::find_beacon_sources() - see the comment at that call site for
+// why feeding it everything makes the clustering fail outright.
+constexpr double WIFI_BEACON_MIN_DURATION_S = 1e-3;
+
 // Append-only NDJSON fingerprint log (see fingerprint.hpp) - relative
 // to whatever directory the binary is launched from, matching how
 // nothing else in this project writes to an absolute path. Grows

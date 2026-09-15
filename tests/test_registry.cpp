@@ -160,6 +160,61 @@ int main() {
                   std::to_string(rows.size()));
     }
 
+    // 6. A correlator-confirmed Wi-Fi modulation and a bare energy
+    // segment on the SAME channel land in the same frequency bucket.
+    // The modulation label must survive even though its peak_db comes
+    // from a time-domain mean (~-40dB) while the energy segment's comes
+    // from an un-normalized |FFT|^2 (~+14dB), so the energy one wins
+    // any direct numeric comparison between them. Before
+    // Detection::modulation_confirmed existed the label was discarded
+    // here every cycle and never reached the GUI at all.
+    {
+        DeviceRegistry reg;
+        Detection energy;
+        energy.band = BAND_WIFI_2G4;
+        energy.segment = Segment{2437e6, 3e6, 14.0};  // strong, but unlabelled
+        energy.protocol_guess = "Unknown 2.4GHz emitter";
+
+        Detection modulated;
+        modulated.band = BAND_WIFI_2G4;
+        modulated.segment = Segment{2437e6, 20e6, -40.0};  // far "weaker" by peak_db
+        modulated.protocol_guess = "WiFi-like (802.11 OFDM, channel 6, ~20MHz)";
+        modulated.modulation_confirmed = true;
+
+        reg.update_cycle({energy, modulated}, 0.0);
+        auto rows = reg.snapshot(0.0);
+        check(rows.size() == 1, "same_channel_collapses_to_one_row",
+              "expected 1 row for one channel, got " + std::to_string(rows.size()));
+        if (rows.size() == 1) {
+            check(rows[0].protocol_guess.find("OFDM") != std::string::npos,
+                  "modulation_label_beats_stronger_energy_segment",
+                  "expected the correlator-confirmed label to survive, got '" +
+                      rows[0].protocol_guess + "'");
+        }
+    }
+
+    // 6b. The converse must still hold: with no modulation evidence on
+    // either side, the stronger energy segment wins exactly as before.
+    {
+        DeviceRegistry reg;
+        Detection weak;
+        weak.band = BAND_WIFI_2G4;
+        weak.segment = Segment{2437e6, 3e6, -10.0};
+        weak.protocol_guess = "weak";
+
+        Detection strong;
+        strong.band = BAND_WIFI_2G4;
+        strong.segment = Segment{2437e6, 5e6, 20.0};
+        strong.protocol_guess = "strong";
+
+        reg.update_cycle({weak, strong}, 0.0);
+        auto rows = reg.snapshot(0.0);
+        check(rows.size() == 1 && !rows.empty() && rows[0].protocol_guess == "strong",
+              "strongest_energy_still_wins_without_modulation_evidence",
+              "expected 'strong', got '" + (rows.empty() ? std::string("(none)")
+                                                          : rows[0].protocol_guess) + "'");
+    }
+
     if (failures > 0) {
         std::printf("\n%d check(s) FAILED.\n", failures);
         return 1;

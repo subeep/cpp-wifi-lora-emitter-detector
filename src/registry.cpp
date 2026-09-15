@@ -97,9 +97,14 @@ void DeviceRegistry::push_fingerprint_reading(Device& dev, const FingerprintSnap
 void DeviceRegistry::update_cycle(const std::vector<Detection>& detections, double now) {
     // Non-fingerprinted detections (every WiFi one, and any Sub-GHz
     // energy-only segment with no burst-level fingerprint yet) keep
-    // the original pure frequency-bucket behavior, picking the
-    // strongest segment per bucket for this cycle.
-    std::map<Key, std::pair<Segment, std::string>> best_per_bucket;
+    // the original pure frequency-bucket behavior, picking the best
+    // segment per bucket for this cycle.
+    struct BucketBest {
+        Segment segment;
+        std::string protocol_guess;
+        bool modulation_confirmed = false;
+    };
+    std::map<Key, BucketBest> best_per_bucket;
     std::vector<const Detection*> fingerprinted;
     for (const auto& d : detections) {
         if (d.fingerprint.has_value()) {
@@ -108,14 +113,28 @@ void DeviceRegistry::update_cycle(const std::vector<Detection>& detections, doub
         }
         Key key = bucket_key(d.band, d.segment.center_hz);
         auto it = best_per_bucket.find(key);
-        if (it == best_per_bucket.end() || d.segment.peak_db > it->second.first.peak_db) {
-            best_per_bucket[key] = {d.segment, d.protocol_guess};
+        if (it == best_per_bucket.end()) {
+            best_per_bucket[key] = BucketBest{d.segment, d.protocol_guess, d.modulation_confirmed};
+            continue;
+        }
+        // A correlator-confirmed modulation always beats a bare energy
+        // segment in the same bucket, whatever their peak_db values
+        // say - see Detection::modulation_confirmed for why comparing
+        // those two numbers against each other is meaningless. Only
+        // when both carry the same kind of evidence does the stronger
+        // segment win.
+        const BucketBest& cur = it->second;
+        bool replace = (d.modulation_confirmed && !cur.modulation_confirmed) ||
+                       (d.modulation_confirmed == cur.modulation_confirmed &&
+                        d.segment.peak_db > cur.segment.peak_db);
+        if (replace) {
+            best_per_bucket[key] = BucketBest{d.segment, d.protocol_guess, d.modulation_confirmed};
         }
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& [key, seg_and_protocol] : best_per_bucket) {
-        update_one(key, seg_and_protocol.first, seg_and_protocol.second, now, nullptr);
+    for (const auto& [key, best] : best_per_bucket) {
+        update_one(key, best.segment, best.protocol_guess, now, nullptr);
     }
 
     // Fingerprinted detections: try to match an EXISTING device by RF

@@ -77,6 +77,13 @@ target_include_directories(rf_monitor_gui PRIVATE
   ${UHD_INCLUDE_DIRS}
 )
 
+# Lets src/lora_master.cpp resolve its persistent-storage directory
+# from the source tree root rather than the process's current working
+# directory (which has always just been wherever the binary happened
+# to be launched from, e.g. build/) - so a build/ wipe/rebuild can
+# never take the "permanent" master emitter list down with it.
+target_compile_definitions(rf_monitor_gui PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
+
 target_link_libraries(rf_monitor_gui PRIVATE
   PkgConfig::GLFW
   PkgConfig::KISSFFT
@@ -135,6 +142,20 @@ target_include_directories(test_wifi_phy PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_wifi_phy PRIVATE PkgConfig::KISSFFT)
 
 # ---------------------------------------------------------------------------
+# Adversarial stress matrix for the 2.4GHz classifier - detection rate
+# and misclassification rate vs SNR, plus a false-positive battery
+# against carriers/noise. Uses spec-faithful signal generators that do
+# NOT share formulas with the code under test (see the file header for
+# why the original suite was circular). Pure software, no hardware.
+# ---------------------------------------------------------------------------
+add_executable(test_wifi_stress
+  tests/test_wifi_stress.cpp
+  src/wifi_phy.cpp
+)
+target_include_directories(test_wifi_stress PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_wifi_stress PRIVATE PkgConfig::KISSFFT)
+
+# ---------------------------------------------------------------------------
 # Synthetic correctness test for RF fingerprint extraction - see
 # src/fingerprint.hpp. Pure software, no hardware.
 # ---------------------------------------------------------------------------
@@ -155,6 +176,20 @@ add_executable(test_registry
 target_include_directories(test_registry PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 # ---------------------------------------------------------------------------
+# Correctness test for the persistent cross-run LoRa master emitter
+# list - see src/lora_master.hpp. Pure software, no hardware; points at
+# temp directories rather than PROJECT_ROOT_DIR, so no compile
+# definition needed here (see lora_master_.cpp's constructor - it takes
+# the directory as a plain argument).
+# ---------------------------------------------------------------------------
+add_executable(test_lora_master
+  tests/test_lora_master.cpp
+  src/lora_master.cpp
+  src/fingerprint.cpp
+)
+target_include_directories(test_lora_master PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+# ---------------------------------------------------------------------------
 # Manual hardware validation tool (see tools/band_smoke_test.cpp) - not
 # part of the GUI, needs the real B210 and a couple minutes to run.
 # ---------------------------------------------------------------------------
@@ -171,6 +206,9 @@ add_executable(band_smoke_test
   src/lora_phy_std.cpp
   src/wifi_phy.cpp
   src/fingerprint.cpp
+  src/lora_master.cpp
 )
 target_include_directories(band_smoke_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${UHD_INCLUDE_DIRS})
 target_link_libraries(band_smoke_test PRIVATE PkgConfig::KISSFFT Threads::Threads dl ${UHD_LIBRARIES})
+# See rf_monitor_gui's own compile definition above for why.
+target_compile_definitions(band_smoke_test PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")

@@ -36,11 +36,105 @@ enum class ModClass { Unknown, DSSS, OFDM };
 
 struct ModClassification {
     ModClass mod = ModClass::Unknown;
-    // Whichever correlator won, normalized so >= 1.0 means "fired" -
-    // not a probability, just a consistent way for the caller to pick
-    // the best result across several sub-captures of the same segment.
+    // Mean normalized correlation of whichever correlator won, in
+    // [0,1] - 0 when nothing qualified (mod == Unknown). Not a
+    // probability, but genuinely comparable BETWEEN the two branches
+    // and bounded, which the previous run-length ratio was not: that
+    // one grew without limit with burst duration, so a longer signal
+    // outranked a better-matching one, and DSSS/OFDM numbers were on
+    // different scales entirely. Callers may compare these across
+    // sub-captures and across modulations.
     double confidence = 0.0;
 };
+
+// Minimum occupied bandwidth for a burst to be plausibly Wi-Fi at all.
+//
+// Both 802.11b DSSS (~22MHz main lobe) and 802.11a/g/n OFDM (~16.6MHz
+// occupied) are wideband; nothing in Wi-Fi is narrow. The 2.4GHz band
+// is however full of narrowband emitters - Bluetooth hops in 1MHz
+// channels, BLE in 2MHz, Zigbee in 2MHz - and a Barker correlator has
+// no inherent reason to reject them.
+//
+// This is not hypothetical: live captures produced "DSSS" rows at
+// 0.23, 0.39, 0.47, 0.62 and 0.70MHz with durations of 27us to 1731us,
+// which match Bluetooth packet structure far better than any Wi-Fi
+// frame. Real Wi-Fi bursts in the same captures measured 6-16MHz, so
+// a 4MHz floor sits in a wide empty gap between the two populations
+// and does not need tuning to separate them.
+constexpr double MIN_WIFI_BANDWIDTH_HZ = 4e6;
+
+// One candidate transmission found by detect_bursts() - a slice of the
+// capture where energy rose above the local noise floor for long enough
+// to plausibly be a frame.
+struct BurstWindow {
+    size_t start = 0;   // sample index into the capture
+    size_t length = 0;  // in samples
+    double peak_db = 0.0;
+};
+
+// Splits a capture into individual transmission events by energy, so
+// each can be classified and reported on its own instead of collapsing
+// a whole buffer into one verdict per channel.
+//
+// This exists for two reasons at once. The obvious one is that a packet
+// list needs packets. The less obvious one is cost: the correlators are
+// O(N) and O(N*template_len) over whatever they are handed, and a
+// 1-second capture at 20 Msps is 20 million samples, so classifying
+// whole buffers made a full 2.4GHz sweep take minutes. Real frames
+// occupy a tiny fraction of that - gating the correlators behind this
+// cheap envelope pass cuts the work by orders of magnitude.
+//
+// `threshold_db` is above the measured noise floor (the 25th percentile
+// of the block envelope, which stays robust when the band is busy).
+// Bursts shorter than a plausible frame are dropped, and at most
+// `max_bursts` are returned in chronological order.
+std::vector<BurstWindow> detect_bursts(const std::complex<float>* x, size_t n,
+                                        double sample_rate_hz, double threshold_db,
+                                        size_t max_bursts);
+
+// Nominal 802.11 beacon interval: 100 TU, 1 TU = 1024us. Every BSS
+// beacons on this cadence with its own independent phase, which is what
+// makes co-channel emitters separable without decoding anything.
+constexpr double BEACON_INTERVAL_S = 0.1024;
+
+// One inferred transmitting source on a channel, recovered by finding a
+// repeating beacon cadence - NOT a decoded identity. See
+// find_beacon_sources().
+struct BeaconSource {
+    double first_offset_s = 0.0;  // when in the capture its train starts
+    double period_s = 0.0;        // measured interval, ~BEACON_INTERVAL_S
+    int burst_count = 0;          // how many beacons of this train were seen
+    double mean_power_db = 0.0;
+};
+
+// Groups bursts into beacon trains, so one channel can report several
+// distinct sources instead of collapsing to a single row.
+//
+// Why timing rather than a signal property: a radio's beacon cadence is
+// a per-BSS clock phase, and independent BSSes land anywhere in the
+// 102.4ms window. Allowing ~2ms for CSMA deferral and TSF drift that is
+// ~50 distinguishable slots - far more separating power than carrier
+// frequency offset offers (~6 slots on an 8us OFDM preamble, ~25 on a
+// long DSSS burst), and it needs no new DSP at all: detect_bursts()
+// already reports each burst's sample offset.
+//
+// It also self-filters. Data frames arrive whenever traffic demands and
+// so form no consistent cadence; only a genuine beacon train produces
+// evenly spaced repeats, so ordinary traffic falls out rather than
+// inflating the count.
+//
+// `burst_starts_s`/`burst_power_db` are parallel arrays of every
+// classified burst in ONE capture, in any order. Trains shorter than
+// `min_repeats` are discarded. Returns one entry per inferred source.
+//
+// IMPORTANT: this under-counts and never over-counts. Two BSSes whose
+// phases coincide merge into one train, and virtual/multi-BSSID
+// networks sharing one radio are physically identical here by
+// construction - one transmitter, one clock. Treat the result as "at
+// least N sources", never as an exact device count.
+std::vector<BeaconSource> find_beacon_sources(const std::vector<double>& burst_starts_s,
+                                               const std::vector<double>& burst_power_db,
+                                               double tolerance_s = 1e-3, int min_repeats = 5);
 
 // Mixes `iq` (captured at `sample_rate_hz`, centered on the tuned
 // frequency) down so the candidate at `freq_offset_hz` away from that

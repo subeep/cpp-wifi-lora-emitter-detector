@@ -90,6 +90,35 @@ std::vector<std::complex<float>> synth_noise(size_t n, float amp, unsigned seed)
     return out;
 }
 
+// Complex white noise plus one unmodulated carrier at `tone_offset_hz`
+// from the capture's tuned center - a stand-in for the 40-50dB LO
+// leakage spike config.hpp documents as sitting at every tuned center
+// and NOT removable by set_rx_dc_offset/set_rx_iq_balance.
+//
+// Why this is the decisive negative case: a pure carrier is perfectly
+// self-similar at EVERY lag, so a delayed-conjugate autocorrelator sees
+// M = (A^2/(A^2+sigma^2))^2 sustained for the entire buffer regardless
+// of where in the band the carrier sits. At the amplitudes used below
+// that lands around 0.69 - above SC_PLATEAU_THRESHOLD (0.6) - so
+// without a channel-select filter ahead of it, Schmidl-Cox reports a
+// confident OFDM plateau on what is really just receiver self-noise.
+std::vector<std::complex<float>> synth_noise_plus_tone(size_t n, float noise_amp, float tone_amp,
+                                                        double tone_offset_hz,
+                                                        double sample_rate_hz, unsigned seed) {
+    std::mt19937 rng(seed);
+    std::normal_distribution<float> noise(0.0f, noise_amp);
+    std::vector<std::complex<float>> out(n);
+    double phase = 0.0;
+    double inc = 2.0 * M_PI * tone_offset_hz / sample_rate_hz;
+    for (size_t i = 0; i < n; ++i) {
+        out[i] = std::complex<float>(noise(rng), noise(rng)) +
+                 tone_amp * std::complex<float>(float(std::cos(phase)), float(std::sin(phase)));
+        phase += inc;
+        if (phase > M_PI) phase -= 2 * M_PI;
+    }
+    return out;
+}
+
 // Shift a baseband-synthesized test signal up by `offset_hz` so the
 // end-to-end classify_modulation() call (which mixes back down given
 // that same offset) is exercised the same way scanner.cpp uses it -
@@ -290,6 +319,228 @@ int main() {
         check(p_loud > p_quiet + 15.0, "mean_power_db_tracks_amplitude",
               "expected a 10x amplitude increase (~20dB) to show up, got quiet=" +
                   std::to_string(p_quiet) + "dB loud=" + std::to_string(p_loud) + "dB");
+    }
+
+    // 11. THE decisive negative case, and the one the suite never had:
+    // receiver LO leakage must not read as OFDM. The tone sits at the
+    // capture's own tuned center (offset 0) and is de-mixed with the
+    // real -1.5MHz WIFI_CHANNEL_CAPTURE_OFFSET_HZ scanner.cpp uses, so
+    // this reproduces the live geometry exactly - the spike lands
+    // +1.5MHz off baseband, still fully inside the captured band, with
+    // nothing filtering it out before the autocorrelator sees it.
+    // Amplitudes: per-component noise sigma 1.0 (total complex noise
+    // power 2.0) against tone power 10.0 - a 7dB carrier-to-noise
+    // ratio, which is what the documented 40-50dB per-bin LO spike
+    // works out to in total power over a 2048-point FFT.
+    {
+        double rate = 20e6;
+        double capture_center = 2434.5e6;
+        double segment_center = capture_center - 1.5e6;
+        auto iq = synth_noise_plus_tone(size_t(rate * 0.02), 1.0f, 3.162f, /*tone_offset_hz=*/0.0,
+                                         rate, 20);
+        auto r = classify_modulation(iq, rate, capture_center, segment_center, /*try_dsss=*/true);
+        check(r.mod == ModClass::Unknown, "lo_leakage_tone_is_not_ofdm",
+              "a bare carrier must never classify as a modulation, got " +
+                  std::to_string(int(r.mod)) + " conf=" + std::to_string(r.confidence));
+    }
+
+    // 12. Same on the 5GHz path, where try_dsss=false leaves Schmidl-Cox
+    // as the ONLY classification path - there is no competing
+    // hypothesis for a false OFDM plateau to lose to, so a false
+    // positive here is unconditional.
+    {
+        double rate = 20e6;
+        double capture_center = 5240e6;
+        double segment_center = capture_center - 1.5e6;
+        auto iq = synth_noise_plus_tone(size_t(rate * 0.02), 1.0f, 3.162f, /*tone_offset_hz=*/0.0,
+                                         rate, 21);
+        auto r = classify_modulation(iq, rate, capture_center, segment_center, /*try_dsss=*/false);
+        check(r.mod == ModClass::Unknown, "lo_leakage_tone_is_not_ofdm_5ghz",
+              "a bare carrier must never classify as a modulation, got " +
+                  std::to_string(int(r.mod)) + " conf=" + std::to_string(r.confidence));
+    }
+
+    // 13. A narrowband interferer well away from the channel of interest
+    // (e.g. a Bluetooth/ISM emitter elsewhere in the captured span) must
+    // also not be claimed as this channel's modulation - the same
+    // missing-channel-filter problem, but sourced externally rather than
+    // from the receiver itself.
+    {
+        double rate = 20e6;
+        double capture_center = 2434.5e6;
+        double segment_center = capture_center - 1.5e6;
+        auto iq = synth_noise_plus_tone(size_t(rate * 0.02), 1.0f, 3.162f,
+                                         /*tone_offset_hz=*/7.5e6, rate, 22);
+        auto r = classify_modulation(iq, rate, capture_center, segment_center, /*try_dsss=*/true);
+        check(r.mod == ModClass::Unknown, "out_of_channel_carrier_is_not_ofdm",
+              "a carrier 7.5MHz off-channel must not be this channel's modulation, got " +
+                  std::to_string(int(r.mod)) + " conf=" + std::to_string(r.confidence));
+    }
+
+    // 14. The live "~0MHz" bug: a genuine 20MHz-wide signal with the
+    // documented 40-50dB LO spike sitting on top of it at the tuned
+    // centre. Peak-relative measurement against that spike collapses
+    // the -6dB span to a bin or two, so the GUI reported ~0MHz on
+    // channels that really did have 20MHz APs on them.
+    {
+        double sample_rate = 20e6, true_bw = 16e6;
+        auto iq = band_limited_noise(8192, sample_rate, true_bw, 1.0, 0.0, 0.0, 30);
+        // LO leakage: a constant complex offset, i.e. a DC tone, at an
+        // amplitude far above the per-bin signal level.
+        for (auto& s : iq) s += std::complex<float>(30.0f, 10.0f);
+        double measured = estimate_occupied_bandwidth_hz(iq.data(), iq.size(), sample_rate);
+        double err = std::abs(measured - true_bw);
+        check(err <= 3e6, "occupied_bandwidth_survives_lo_spike",
+              "measured " + std::to_string(measured / 1e6) + "MHz against a true " +
+                  std::to_string(true_bw / 1e6) + "MHz signal buried under an LO spike");
+    }
+
+    // 15. The signal must be found wherever it sits in the buffer, not
+    // only in its opening microseconds - this previously FFT'd just the
+    // first 256 samples of the capture, so a burst later in the buffer
+    // was invisible no matter how strong.
+    {
+        double sample_rate = 20e6, true_bw = 16e6;
+        auto quiet = synth_noise(60000, 0.01f, 31);
+        auto burst = band_limited_noise(8192, sample_rate, true_bw, 1.0, 0.0, 0.0, 32);
+        // Bury the burst two thirds of the way into an otherwise quiet
+        // buffer, well past any opening-window-only measurement.
+        std::vector<std::complex<float>> iq = quiet;
+        size_t at = (quiet.size() * 2) / 3;
+        for (size_t i = 0; i < burst.size() && at + i < iq.size(); ++i) iq[at + i] = burst[i];
+        double measured = estimate_occupied_bandwidth_hz(iq.data(), iq.size(), sample_rate);
+        check(measured >= true_bw * 0.5, "occupied_bandwidth_finds_burst_late_in_buffer",
+              "measured " + std::to_string(measured / 1e6) + "MHz for a " +
+                  std::to_string(true_bw / 1e6) + "MHz burst sitting late in the capture");
+    }
+
+    // 16. Burst segmentation: three separated transmissions in an
+    // otherwise quiet capture must come back as three distinct windows
+    // at roughly the right places and lengths.
+    {
+        double rate = 20e6;
+        auto iq = synth_noise(200000, 0.01f, 40);
+        struct Placed { size_t at; size_t len; };
+        Placed placed[3] = {{20000, 4000}, {80000, 6000}, {150000, 3000}};
+        std::mt19937 rng(41);
+        std::normal_distribution<float> sig(0.0f, 1.0f);
+        for (auto& p : placed) {
+            for (size_t i = 0; i < p.len; ++i) iq[p.at + i] = {sig(rng), sig(rng)};
+        }
+        auto bursts = rfmon::wifi::detect_bursts(iq.data(), iq.size(), rate, 12.0, 64);
+        check(bursts.size() == 3, "detect_bursts_finds_three_transmissions",
+              "expected 3, got " + std::to_string(bursts.size()));
+        if (bursts.size() == 3) {
+            bool placed_ok = true;
+            for (int i = 0; i < 3; ++i) {
+                long start_err = long(bursts[size_t(i)].start) - long(placed[i].at);
+                long len_err = long(bursts[size_t(i)].length) - long(placed[i].len);
+                if (std::labs(start_err) > 200 || std::labs(len_err) > 400) placed_ok = false;
+            }
+            check(placed_ok, "detect_bursts_locates_them_accurately",
+                  "starts/lengths landed within a microsecond or two of the real ones");
+        }
+    }
+
+    // 17. Quiet air must produce no bursts at all - otherwise the
+    // packet list fills with noise and the correlators get handed
+    // thousands of meaningless windows.
+    {
+        auto iq = synth_noise(200000, 1.0f, 42);
+        auto bursts = rfmon::wifi::detect_bursts(iq.data(), iq.size(), 20e6, 12.0, 64);
+        check(bursts.empty(), "detect_bursts_silent_on_pure_noise",
+              "expected 0 bursts in pure noise, got " + std::to_string(bursts.size()));
+    }
+
+    // 18. A transmission shorter than a plausible frame is not a
+    // packet - it is a noise spike, and classify_modulation() could not
+    // classify a window that brief anyway.
+    {
+        double rate = 20e6;
+        auto iq = synth_noise(100000, 0.01f, 43);
+        std::mt19937 rng(44);
+        std::normal_distribution<float> sig(0.0f, 1.0f);
+        for (size_t i = 0; i < 60; ++i) iq[50000 + i] = {sig(rng), sig(rng)};  // 3us
+        auto bursts = rfmon::wifi::detect_bursts(iq.data(), iq.size(), rate, 12.0, 64);
+        check(bursts.empty(), "detect_bursts_rejects_too_short_spike",
+              "expected a 3us spike to be rejected, got " + std::to_string(bursts.size()));
+    }
+
+    // 19. The per-capture ceiling must hold on a saturated channel.
+    {
+        double rate = 20e6;
+        auto iq = synth_noise(400000, 0.01f, 45);
+        std::mt19937 rng(46);
+        std::normal_distribution<float> sig(0.0f, 1.0f);
+        for (int b = 0; b < 40; ++b) {
+            size_t at = size_t(b) * 9000;
+            for (size_t i = 0; i < 3000 && at + i < iq.size(); ++i) iq[at + i] = {sig(rng), sig(rng)};
+        }
+        auto bursts = rfmon::wifi::detect_bursts(iq.data(), iq.size(), rate, 12.0, 10);
+        check(bursts.size() <= 10, "detect_bursts_respects_max_bursts",
+              "expected at most 10, got " + std::to_string(bursts.size()));
+    }
+
+    // 20. Beacon-train clustering: three BSSes beaconing at 102.4ms with
+    // different phases must come back as three sources.
+    {
+        std::vector<double> starts, powers;
+        double phases[3] = {0.004, 0.041, 0.077};
+        for (double ph : phases) {
+            for (int k = 0; k < 9; ++k) {
+                starts.push_back(ph + k * rfmon::wifi::BEACON_INTERVAL_S);
+                powers.push_back(-40.0);
+            }
+        }
+        auto src = rfmon::wifi::find_beacon_sources(starts, powers);
+        check(src.size() == 3, "beacon_sources_separates_three_bss",
+              "expected 3, got " + std::to_string(src.size()));
+        if (!src.empty()) {
+            bool periods_ok = true;
+            for (const auto& s : src) {
+                if (std::abs(s.period_s - rfmon::wifi::BEACON_INTERVAL_S) > 1e-4) periods_ok = false;
+            }
+            check(periods_ok, "beacon_sources_recover_period", "each train measured ~102.4ms");
+        }
+    }
+
+    // 21. Ordinary data traffic has no cadence and must NOT be counted
+    // as a source - otherwise a busy channel invents emitters.
+    {
+        std::mt19937 rng(77);
+        std::uniform_real_distribution<double> t(0.0, 1.0);
+        std::vector<double> starts, powers;
+        for (int i = 0; i < 60; ++i) {
+            starts.push_back(t(rng));
+            powers.push_back(-40.0);
+        }
+        auto src = rfmon::wifi::find_beacon_sources(starts, powers);
+        check(src.empty(), "beacon_sources_ignores_random_traffic",
+              "expected 0 sources from aperiodic traffic, got " + std::to_string(src.size()));
+    }
+
+    // 22. A dropped beacon (collision with a co-channel BSS) must not
+    // split one real source into two phantom ones.
+    {
+        std::vector<double> starts, powers;
+        for (int k = 0; k < 9; ++k) {
+            if (k == 4) continue;  // this one collided and was lost
+            starts.push_back(0.01 + k * rfmon::wifi::BEACON_INTERVAL_S);
+            powers.push_back(-40.0);
+        }
+        auto src = rfmon::wifi::find_beacon_sources(starts, powers);
+        check(src.size() == 1, "beacon_sources_bridges_missed_beacon",
+              "expected 1 source despite a dropped beacon, got " + std::to_string(src.size()));
+    }
+
+    // 23. Too few repeats is not a train - a couple of coincidentally
+    // spaced frames must not become a "source".
+    {
+        std::vector<double> starts{0.01, 0.01 + rfmon::wifi::BEACON_INTERVAL_S};
+        std::vector<double> powers{-40.0, -40.0};
+        auto src = rfmon::wifi::find_beacon_sources(starts, powers);
+        check(src.empty(), "beacon_sources_requires_min_repeats",
+              "expected 0 from only 2 bursts, got " + std::to_string(src.size()));
     }
 
     if (failures > 0) {

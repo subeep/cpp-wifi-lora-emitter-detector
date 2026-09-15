@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -21,6 +23,7 @@
 
 #include "config.hpp"
 #include "fingerprint.hpp"
+#include "lora_master.hpp"
 #include "registry.hpp"
 #include "scanner.hpp"
 
@@ -77,7 +80,26 @@ void draw_frequency_track(const BandRange& range, const std::vector<DeviceRow>& 
     ImGui::Dummy(ImVec2(width, height + 6));
 }
 
-void draw_device_table(const std::vector<DeviceRow>& devices, float height) {
+// Nearest numbered Wi-Fi channel, or 0 for bands that have no channel
+// numbering (sub-GHz), where the column renders as "--".
+int device_row_channel(const DeviceRow& d) {
+    if (d.band != BAND_WIFI_2G4 && d.band != BAND_WIFI_5G) return 0;
+    const auto& channels = (d.band == BAND_WIFI_2G4) ? wifi_2g4_channels() : wifi_5g_channels();
+    double freq_hz = d.freq_mhz * 1e6;
+    int best_ch = channels.begin()->first;
+    double best_dist = std::abs(channels.begin()->second - freq_hz);
+    for (const auto& [ch, f] : channels) {
+        double dist = std::abs(f - freq_hz);
+        if (dist < best_dist) {
+            best_dist = dist;
+            best_ch = ch;
+        }
+    }
+    return best_ch;
+}
+
+void draw_device_table(const std::vector<DeviceRow>& devices, float height,
+                        const std::map<int, int>& source_counts) {
     if (devices.empty()) {
         ImGui::TextDisabled("No active emitters right now.");
         return;
@@ -87,14 +109,16 @@ void draw_device_table(const std::vector<DeviceRow>& devices, float height) {
                                    ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
                                    ImGuiTableFlags_ScrollY;
     ImVec2 outer_size(0.0f, height);
-    if (!ImGui::BeginTable("devices", 8, flags, outer_size)) return;
+    if (!ImGui::BeginTable("devices", 10, flags, outer_size)) return;
 
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("Freq (MHz)",
                             ImGuiTableColumnFlags_DefaultSort | ImGuiTableColumnFlags_WidthFixed,
                             100.0f);
+    ImGui::TableSetupColumn("Ch", ImGuiTableColumnFlags_WidthFixed, 40.0f);
     ImGui::TableSetupColumn("BW (kHz)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
     ImGui::TableSetupColumn("Protocol guess", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Sources", ImGuiTableColumnFlags_WidthFixed, 70.0f);
     ImGui::TableSetupColumn("Power (dB, rel.)", ImGuiTableColumnFlags_WidthFixed, 120.0f);
     ImGui::TableSetupColumn("Cycles seen", ImGuiTableColumnFlags_WidthFixed, 90.0f);
     ImGui::TableSetupColumn("Age (s)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
@@ -111,12 +135,14 @@ void draw_device_table(const std::vector<DeviceRow>& devices, float height) {
                 bool less;
                 switch (col) {
                     case 0: less = a.freq_mhz < b.freq_mhz; break;
-                    case 1: less = a.bandwidth_khz < b.bandwidth_khz; break;
-                    case 2: less = a.protocol_guess < b.protocol_guess; break;
-                    case 3: less = a.power_db < b.power_db; break;
-                    case 4: less = a.hit_count < b.hit_count; break;
-                    case 5: less = a.age_s < b.age_s; break;
-                    case 6: less = a.last_seen_s_ago < b.last_seen_s_ago; break;
+                    case 1: less = device_row_channel(a) < device_row_channel(b); break;
+                    case 2: less = a.bandwidth_khz < b.bandwidth_khz; break;
+                    case 3: less = a.protocol_guess < b.protocol_guess; break;
+                    case 4: less = a.freq_mhz < b.freq_mhz; break;  // Sources: no stable key, fall back
+                    case 5: less = a.power_db < b.power_db; break;
+                    case 6: less = a.hit_count < b.hit_count; break;
+                    case 7: less = a.age_s < b.age_s; break;
+                    case 8: less = a.last_seen_s_ago < b.last_seen_s_ago; break;
                     default: less = a.band < b.band; break;
                 }
                 return asc ? less : !less;
@@ -130,9 +156,27 @@ void draw_device_table(const std::vector<DeviceRow>& devices, float height) {
         ImGui::TableNextColumn();
         ImGui::Text("%.4f", d.freq_mhz);
         ImGui::TableNextColumn();
+        {
+            int ch = device_row_channel(d);
+            if (ch > 0) ImGui::Text("%d", ch);
+            else ImGui::TextDisabled("--");
+        }
+        ImGui::TableNextColumn();
         ImGui::Text("%.1f", d.bandwidth_khz);
         ImGui::TableNextColumn();
         ImGui::TextColored(category_color(d.protocol_guess), "%s", d.protocol_guess.c_str());
+        ImGui::TableNextColumn();
+        {
+            // Inferred lower bound from beacon-cadence clustering, not a
+            // decoded device count - see Scanner::wifi_source_counts().
+            int ch = device_row_channel(d);
+            auto it = source_counts.find(ch);
+            if (ch > 0 && it != source_counts.end() && it->second > 0) {
+                ImGui::Text(">=%d", it->second);
+            } else {
+                ImGui::TextDisabled("--");
+            }
+        }
         ImGui::TableNextColumn();
         ImGui::Text("%.1f", d.power_db);
         ImGui::TableNextColumn();
@@ -145,6 +189,143 @@ void draw_device_table(const std::vector<DeviceRow>& devices, float height) {
         ImGui::TextUnformatted(d.band == BAND_SUB_GHZ    ? "Sub-GHz ISM"
                                 : d.band == BAND_WIFI_2G4 ? "2.4GHz Wi-Fi"
                                                           : "5GHz Wi-Fi");
+    }
+    ImGui::EndTable();
+}
+
+// Permanent, cross-run LoRa identity list (see lora_master.hpp) -
+// deliberately a separate table from draw_device_table() above: that
+// one is a generic multi-band energy-detection view (including
+// narrowband/"Unknown" segments with no fingerprint at all), while
+// this one only ever shows devices with real accepted fingerprint
+// history, kept forever across restarts rather than for one session.
+void draw_lora_master_table(const std::vector<lora_master::LoraMasterRow>& rows, float height) {
+    if (rows.empty()) {
+        ImGui::TextDisabled("No master LoRa emitters recorded yet.");
+        return;
+    }
+
+    static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
+                                   ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
+                                   ImGuiTableFlags_ScrollX;
+    ImVec2 outer_size(0.0f, height);
+    if (!ImGui::BeginTable("lora_master", 11, flags, outer_size)) return;
+
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Device ID", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+    ImGui::TableSetupColumn("First seen", ImGuiTableColumnFlags_WidthFixed, 190.0f);
+    ImGui::TableSetupColumn("Last seen", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+    ImGui::TableSetupColumn("Readings", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+    ImGui::TableSetupColumn("Freq (MHz)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+    ImGui::TableSetupColumn("SF", ImGuiTableColumnFlags_WidthFixed, 40.0f);
+    ImGui::TableSetupColumn("BW (kHz)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+    ImGui::TableSetupColumn("IRR (dB)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+    ImGui::TableSetupColumn("IQ eps", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+    ImGui::TableSetupColumn("IQ phi (deg)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+    ImGui::TableSetupColumn("DC (dBc)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+    ImGui::TableHeadersRow();
+
+    // Already sorted by last_seen_ts (most recent first) by
+    // LoraMasterList::snapshot() itself - not re-sortable by column
+    // here, unlike draw_device_table(), since "last seen" ordering is
+    // the whole point of this particular table.
+    std::time_t now = std::time(nullptr);
+    for (const auto& row : rows) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(row.device_id_str.c_str());
+
+        ImGui::TableNextColumn();
+        {
+            std::time_t fs = std::time_t(row.first_seen_ts);
+            std::tm tm_buf{};
+            localtime_r(&fs, &tm_buf);
+            char buf[32];
+            std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm_buf);
+            double age_days = double(now - row.first_seen_ts) / 86400.0;
+            ImGui::Text("%s (%.1fd ago)", buf, age_days);
+        }
+
+        ImGui::TableNextColumn();
+        {
+            double ago_s = double(now - row.last_seen_ts);
+            if (ago_s < 120.0) ImGui::Text("%.0fs ago", ago_s);
+            else if (ago_s < 7200.0) ImGui::Text("%.1fm ago", ago_s / 60.0);
+            else if (ago_s < 172800.0) ImGui::Text("%.1fh ago", ago_s / 3600.0);
+            else ImGui::Text("%.1fd ago", ago_s / 86400.0);
+        }
+
+        ImGui::TableNextColumn();
+        ImGui::Text("%d / %d", row.reading_count, lora_master::MAX_READINGS_PER_DEVICE);
+        ImGui::TableNextColumn();
+        ImGui::Text("%.4f", row.last_freq_hz / 1e6);
+        ImGui::TableNextColumn();
+        ImGui::Text("%d", row.last_sf);
+        ImGui::TableNextColumn();
+        ImGui::Text("%.1f", row.last_bw_hz / 1e3);
+        ImGui::TableNextColumn();
+        ImGui::Text("%.2f", row.latest.irr_db);
+        ImGui::TableNextColumn();
+        ImGui::Text("%.4f", row.latest.iq_eps);
+        ImGui::TableNextColumn();
+        ImGui::Text("%.2f", row.latest.iq_phi_deg);
+        ImGui::TableNextColumn();
+        ImGui::Text("%.2f", row.latest.dc_dbc);
+    }
+    ImGui::EndTable();
+}
+
+// Individually detected Wi-Fi transmissions, most recent first - one
+// row per burst found by wifi::detect_bursts() and classified on its
+// own window. Detection only: no PLCP/payload decode, so there is
+// deliberately no rate, length or MAC address here.
+void draw_wifi_packet_table(const std::vector<WifiPacketRow>& packets, float height) {
+    if (packets.empty()) {
+        ImGui::TextDisabled("No Wi-Fi packets detected yet.");
+        return;
+    }
+
+    static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
+                                   ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
+                                   ImGuiTableFlags_ScrollX;
+    ImVec2 outer_size(0.0f, height);
+    if (!ImGui::BeginTable("wifi_packets", 8, flags, outer_size)) return;
+
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+    ImGui::TableSetupColumn("Freq (MHz)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+    ImGui::TableSetupColumn("Ch", ImGuiTableColumnFlags_WidthFixed, 40.0f);
+    ImGui::TableSetupColumn("Modulation", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+    ImGui::TableSetupColumn("Power (dB)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+    ImGui::TableSetupColumn("BW (MHz)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+    ImGui::TableSetupColumn("Duration (us)", ImGuiTableColumnFlags_WidthFixed, 110.0f);
+    ImGui::TableSetupColumn("Confidence", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+    ImGui::TableHeadersRow();
+
+    const ImVec4 dsss_color(0.36f, 0.68f, 0.93f, 1.0f);
+    const ImVec4 ofdm_color(0.25f, 0.73f, 0.31f, 1.0f);
+
+    // Most recent first - the log itself is appended chronologically.
+    for (size_t i = packets.size(); i-- > 0;) {
+        const auto& p = packets[i];
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(p.time.c_str());
+        ImGui::TableNextColumn();
+        ImGui::Text("%.4f", p.freq_mhz);
+        ImGui::TableNextColumn();
+        ImGui::Text("%d", p.channel);
+        ImGui::TableNextColumn();
+        ImGui::TextColored(p.modulation == "DSSS" ? dsss_color : ofdm_color, "%s",
+                            p.modulation.c_str());
+        ImGui::TableNextColumn();
+        ImGui::Text("%.1f", p.power_db);
+        ImGui::TableNextColumn();
+        ImGui::Text("%.2f", p.bandwidth_khz / 1e3);
+        ImGui::TableNextColumn();
+        ImGui::Text("%.1f", p.duration_us);
+        ImGui::TableNextColumn();
+        ImGui::Text("%.3f", p.confidence);
     }
     ImGui::EndTable();
 }
@@ -501,11 +682,26 @@ int main() {
         ImGui::TextUnformatted("Active emitters");
 
         bool show_lora_packets = (active_band == BAND_SUB_GHZ);
+        bool show_wifi_packets = (active_band == BAND_WIFI_2G4 || active_band == BAND_WIFI_5G);
         float remaining = ImGui::GetContentRegionAvail().y;
-        // Split remaining space: energy-detection device list gets ~40%
-        // when the LoRa packet list is also shown below it, else all of it.
-        float device_table_height = show_lora_packets ? remaining * 0.4f : remaining;
-        draw_device_table(scanner.snapshot(active_band), device_table_height);
+        // Split remaining space three ways when the two LoRa-only
+        // tables are shown below it, in half when the Wi-Fi packet list
+        // is, else give it all to the generic energy-detection list.
+        float device_table_height = remaining;
+        if (show_lora_packets) device_table_height = remaining * 0.3f;
+        else if (show_wifi_packets) device_table_height = remaining * 0.45f;
+        draw_device_table(scanner.snapshot(active_band), device_table_height,
+                           scanner.wifi_source_counts(active_band));
+
+        if (show_wifi_packets) {
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Detected Wi-Fi packets");
+            ImGui::TextDisabled(
+                "One row per individually detected burst, classified on its own window. "
+                "Detection only - no header/payload decode, so no rate or MAC address. "
+                "Sampled, not exhaustive: only the channel currently being swept is heard.");
+            draw_wifi_packet_table(scanner.wifi_packets(), ImGui::GetContentRegionAvail().y);
+        }
 
         if (show_lora_packets) {
             ImGui::Spacing();
@@ -513,7 +709,16 @@ int main() {
             ImGui::TextDisabled(
                 "Decoded = full payload recovered. Detected = a real chirp preamble locked but "
                 "header/payload didn't fully decode (third-party hardware, see docs).");
-            draw_lora_packet_table(scanner.lora_packets(), ImGui::GetContentRegionAvail().y);
+            float lora_packets_height = ImGui::GetContentRegionAvail().y * 0.5f;
+            draw_lora_packet_table(scanner.lora_packets(), lora_packets_height);
+
+            ImGui::Spacing();
+            ImGui::TextUnformatted("LoRa Master Emitters (persistent across restarts)");
+            ImGui::TextDisabled(
+                "Every accepted fingerprint reading ever recorded for a device - kept forever "
+                "until manually deleted. Matched on IRR/DC/IQ-imbalance only, not CFO (see docs) "
+                "- a placeholder comparison, not the final model.");
+            draw_lora_master_table(scanner.lora_master_snapshot(), ImGui::GetContentRegionAvail().y);
         }
 
         ImGui::End();

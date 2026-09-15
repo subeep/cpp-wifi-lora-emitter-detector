@@ -36,6 +36,11 @@ band_smoke_test
 # Temporary / log files
 *.log
 *.tmp
+data/
+test_lora_master_tmp/
+
+# Test executables at root
+/test_*
 
 # Python cache
 __pycache__/

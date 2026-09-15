@@ -69,6 +69,21 @@ struct Detection {
     // Set only for a LoRa "detected" burst that cleared the SNR gate
     // (see fingerprint.hpp) - a single raw reading, not yet aggregated.
     std::optional<FingerprintSnapshot> fingerprint;
+    // True when a correlator positively identified the modulation (see
+    // wifi_phy.hpp), rather than this being a bare energy segment.
+    //
+    // Needed because both kinds of detection for the same Wi-Fi channel
+    // land in the SAME frequency bucket, and the bucket previously kept
+    // whichever had the higher peak_db - but those two peak_db values
+    // come from different measurements on wildly different scales
+    // (estimate_mean_power_db()'s time-domain mean, around -40dB, versus
+    // spectrogram_max_db()'s un-normalized |FFT|^2, around +14dB). The
+    // energy segment therefore won every time, and the modulation label
+    // was silently discarded before it could ever reach the GUI. An
+    // identified modulation is strictly more informative than unlabelled
+    // energy, so it wins on that basis rather than on an incomparable
+    // number.
+    bool modulation_confirmed = false;
 };
 
 class DeviceRegistry {
