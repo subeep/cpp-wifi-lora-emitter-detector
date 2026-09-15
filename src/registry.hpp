@@ -25,6 +25,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <tuple>
 #include <string>
 #include <utility>
 #include <vector>
@@ -84,6 +85,12 @@ struct Detection {
     // energy, so it wins on that basis rather than on an incomparable
     // number.
     bool modulation_confirmed = false;
+    // Optional per-source identity WITHIN a frequency bucket, so one
+    // Wi-Fi channel can carry several tracked emitters (see Key). Empty
+    // means "no per-source identity", which is the case for every
+    // sub-GHz/LoRa detection and reproduces the previous
+    // one-device-per-bucket behaviour exactly.
+    std::string source_id;
 };
 
 class DeviceRegistry {
@@ -114,9 +121,25 @@ private:
         std::deque<FingerprintSnapshot> fp_history;      // raw readings, capped
     };
 
-    using Key = std::pair<std::string, double>;  // (band, bucket_hz)
+    // (band, bucket_hz, source_id). The third element lets ONE frequency
+    // bucket hold several independently-tracked emitters, which a Wi-Fi
+    // channel genuinely needs - six BSSIDs sharing channel 9 is normal,
+    // and keying purely by channel centre could only ever represent one
+    // of them.
+    //
+    // source_id is EMPTY for everything that has no per-source identity,
+    // which is every sub-GHz/LoRa detection and any Wi-Fi row not
+    // attributed to a specific source. An empty id reproduces the old
+    // one-device-per-bucket behaviour exactly, so nothing outside the
+    // Wi-Fi multi-source path changes.
+    //
+    // It is deliberately an opaque string rather than a cluster index:
+    // the only identity stable enough to persist across sweeps is a
+    // decoded BSSID, so this is shaped to carry one.
+    using Key = std::tuple<std::string, double, std::string>;
 
-    static Key bucket_key(const std::string& band, double freq_hz);
+    static Key bucket_key(const std::string& band, double freq_hz,
+                           const std::string& source_id = std::string());
     // Searches every existing device in `band` with an established
     // fingerprint (>= MIN_READINGS_TO_MATCH readings) for one whose
     // rolling snapshot is within tolerance of `fp` - see registry.cpp.

@@ -215,6 +215,47 @@ int main() {
                                                           : rows[0].protocol_guess) + "'");
     }
 
+    // 7. Several emitters on ONE Wi-Fi channel must each get their own
+    // row. Keying purely by channel centre could only ever represent
+    // one of them, which is wrong for a band where six BSSIDs sharing a
+    // channel is completely ordinary.
+    {
+        DeviceRegistry reg;
+        std::vector<Detection> dets;
+        for (const char* id : {"aa:bb:cc:00:00:01", "aa:bb:cc:00:00:02", "aa:bb:cc:00:00:03"}) {
+            Detection d;
+            d.band = BAND_WIFI_2G4;
+            d.segment = Segment{2452e6, 20e6, -30.0};
+            d.protocol_guess = std::string("WiFi-like (") + id + ")";
+            d.modulation_confirmed = true;
+            d.source_id = id;
+            dets.push_back(d);
+        }
+        reg.update_cycle(dets, 0.0);
+        auto rows = reg.snapshot(0.0);
+        check(rows.size() == 3, "multiple_sources_share_one_channel",
+              "expected 3 rows on one channel, got " + std::to_string(rows.size()));
+    }
+
+    // 7b. An empty source_id must behave exactly as before - one device
+    // per bucket - so nothing outside the Wi-Fi multi-source path
+    // changes. This is what keeps the sub-GHz/LoRa side untouched.
+    {
+        DeviceRegistry reg;
+        std::vector<Detection> dets;
+        for (int i = 0; i < 3; ++i) {
+            Detection d;
+            d.band = BAND_SUB_GHZ;
+            d.segment = Segment{866.9e6, 125e3, -30.0 + i};
+            d.protocol_guess = "LoRa-like";
+            dets.push_back(d);  // source_id left empty
+        }
+        reg.update_cycle(dets, 0.0);
+        auto rows = reg.snapshot(0.0);
+        check(rows.size() == 1, "empty_source_id_keeps_one_device_per_bucket",
+              "expected 1 row, got " + std::to_string(rows.size()));
+    }
+
     if (failures > 0) {
         std::printf("\n%d check(s) FAILED.\n", failures);
         return 1;

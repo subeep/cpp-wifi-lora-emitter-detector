@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <tuple>
 
 namespace rfmon {
 
@@ -47,10 +48,11 @@ double median_of(const std::deque<FingerprintSnapshot>& history,
 
 DeviceRegistry::DeviceRegistry(double alpha) : alpha_(alpha) {}
 
-DeviceRegistry::Key DeviceRegistry::bucket_key(const std::string& band, double freq_hz) {
+DeviceRegistry::Key DeviceRegistry::bucket_key(const std::string& band, double freq_hz,
+                                                const std::string& source_id) {
     if (band == BAND_SUB_GHZ) {
         double bucket_hz = std::round(freq_hz / 50e3) * 50e3;  // 50 kHz buckets
-        return {band, bucket_hz};
+        return {band, bucket_hz, source_id};
     }
     const std::map<int, double>& channels =
         (band == BAND_WIFI_2G4) ? wifi_2g4_channels() : wifi_5g_channels();
@@ -64,13 +66,13 @@ DeviceRegistry::Key DeviceRegistry::bucket_key(const std::string& band, double f
             best = f;
         }
     }
-    return {band, best};
+    return {band, best, source_id};
 }
 
 std::optional<DeviceRegistry::Key> DeviceRegistry::find_fingerprint_match(
     const std::string& band, const FingerprintSnapshot& fp) const {
     for (const auto& [key, dev] : devices_) {
-        if (key.first != band || !dev.fingerprint.has_value()) continue;
+        if (std::get<0>(key) != band || !dev.fingerprint.has_value()) continue;
         if (dev.fingerprint->n_readings >= MIN_READINGS_TO_MATCH &&
             fingerprints_match(*dev.fingerprint, fp)) {
             return key;
@@ -111,7 +113,7 @@ void DeviceRegistry::update_cycle(const std::vector<Detection>& detections, doub
             fingerprinted.push_back(&d);
             continue;
         }
-        Key key = bucket_key(d.band, d.segment.center_hz);
+        Key key = bucket_key(d.band, d.segment.center_hz, d.source_id);
         auto it = best_per_bucket.find(key);
         if (it == best_per_bucket.end()) {
             best_per_bucket[key] = BucketBest{d.segment, d.protocol_guess, d.modulation_confirmed};
@@ -146,7 +148,7 @@ void DeviceRegistry::update_cycle(const std::vector<Detection>& detections, doub
     for (const Detection* dp : fingerprinted) {
         const Detection& d = *dp;
         std::optional<Key> matched = find_fingerprint_match(d.band, *d.fingerprint);
-        Key key = matched.value_or(bucket_key(d.band, d.segment.center_hz));
+        Key key = matched.value_or(bucket_key(d.band, d.segment.center_hz, d.source_id));
         update_one(key, d.segment, d.protocol_guess, now, &(*d.fingerprint));
     }
 }
@@ -160,7 +162,7 @@ void DeviceRegistry::update_one(const Key& key, const Segment& segment,
     auto it = devices_.find(key);
     if (it == devices_.end()) {
         Device dev;
-        dev.band = key.first;
+        dev.band = std::get<0>(key);
         dev.freq_mhz = freq_mhz;
         dev.bandwidth_khz = bw_khz;
         dev.protocol_guess = protocol_guess;

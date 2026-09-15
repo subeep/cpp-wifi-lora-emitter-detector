@@ -142,6 +142,18 @@ target_include_directories(test_wifi_phy PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_wifi_phy PRIVATE PkgConfig::KISSFFT)
 
 # ---------------------------------------------------------------------------
+# 802.11 frame-layer decode (PLCP header, FCS, descrambler, beacon
+# MAC/IE parsing) - see src/wifi_frame.hpp. Pure byte logic, no DSP and
+# no hardware; every checksum is asserted against a PUBLISHED vector
+# rather than against anything this codebase generates.
+# ---------------------------------------------------------------------------
+add_executable(test_wifi_frame
+  tests/test_wifi_frame.cpp
+  src/wifi_frame.cpp
+)
+target_include_directories(test_wifi_frame PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+# ---------------------------------------------------------------------------
 # Adversarial stress matrix for the 2.4GHz classifier - detection rate
 # and misclassification rate vs SNR, plus a false-positive battery
 # against carriers/noise. Uses spec-faithful signal generators that do
