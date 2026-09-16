@@ -1,0 +1,789 @@
+<title>Emitter to Packet</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+  :root{
+    --ink: #15181c;
+    --ink-muted: #55606a;
+    --paper: #eef0f0;
+    --paper-raised: #f8f9f9;
+    --line: #c7cdd1;
+    --grid: rgba(21,24,28,0.05);
+    --accent: #b5651d;
+    --accent-ink: #7a4310;
+    --accent-soft: rgba(181,101,29,0.12);
+    --ok: #3f7d4a;
+    --bad: #a83b32;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ink: #e7e9ea;
+      --ink-muted: #9aa4ab;
+      --paper: #0d0f12;
+      --paper-raised: #16191d;
+      --line: #33393f;
+      --grid: rgba(231,233,234,0.05);
+      --accent: #d98a3f;
+      --accent-ink: #f0b57a;
+      --accent-soft: rgba(217,138,63,0.14);
+      --ok: #6bbf78;
+      --bad: #e37167;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ink: #e7e9ea;
+    --ink-muted: #9aa4ab;
+    --paper: #0d0f12;
+    --paper-raised: #16191d;
+    --line: #33393f;
+    --grid: rgba(231,233,234,0.05);
+    --accent: #d98a3f;
+    --accent-ink: #f0b57a;
+    --accent-soft: rgba(217,138,63,0.14);
+    --ok: #6bbf78;
+    --bad: #e37167;
+  }
+
+  *{ box-sizing: border-box; }
+  ::selection{ background: var(--accent); color: var(--paper); }
+
+  body{
+    background-color: var(--paper);
+    background-image:
+      repeating-linear-gradient(0deg, var(--grid) 0 1px, transparent 1px 28px),
+      repeating-linear-gradient(90deg, var(--grid) 0 1px, transparent 1px 28px);
+    color: var(--ink);
+    font-family: 'IBM Plex Sans', -apple-system, 'Segoe UI', Roboto, sans-serif;
+    line-height: 1.6;
+  }
+
+  main{
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 56px 24px 96px;
+    display: flex;
+    flex-direction: column;
+    gap: 64px;
+  }
+
+  h1,h2,h3{
+    font-family: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+    font-weight: 700;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  code, .mono, .mono * { font-family: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace; }
+
+  /* ---------- masthead ---------- */
+  .masthead{ display:flex; flex-direction:column; gap:14px; border-bottom: 1px solid var(--line); padding-bottom: 32px; }
+  .kicker{
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12.5px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .kicker .dot{ width:7px; height:7px; border-radius:50%; background: var(--accent); flex: none; }
+  h1{ font-size: 34px; letter-spacing: -0.01em; }
+  .lede{ max-width: 64ch; color: var(--ink-muted); font-size: 16px; }
+  .status-strip{
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12.5px;
+    color: var(--ink-muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+  }
+  .status-strip b{ color: var(--ink); font-weight: 600; }
+  .status-strip .sep{ color: var(--line); }
+
+  /* ---------- table of contents ---------- */
+  .toc{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 6px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+  }
+  .toc a{
+    color: var(--ink-muted);
+    text-decoration: none;
+    border: 1px solid var(--line);
+    padding: 5px 10px;
+    background: var(--paper-raised);
+  }
+  .toc a:hover{ color: var(--accent-ink); border-color: var(--accent-ink); }
+
+  /* ---------- intro ---------- */
+  .intro-split{
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+  .intro-card{
+    border: 1px solid var(--line);
+    background: var(--paper-raised);
+    padding: 18px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .intro-card .tag{ font-family:'IBM Plex Mono',monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted); }
+  .intro-card .name{ font-family:'IBM Plex Mono',monospace; font-weight: 700; font-size: 15px; }
+  .intro-card p{ margin: 4px 0 0; font-size: 13.5px; color: var(--ink-muted); }
+  .intro-card .feeds{ margin-top: 10px; font-size: 12px; font-family:'IBM Plex Mono',monospace; color: var(--accent-ink); }
+  @media (max-width: 720px){ .intro-split{ grid-template-columns: 1fr; } }
+
+  /* ---------- sections ---------- */
+  section.pipeline{ display:flex; flex-direction:column; gap: 24px; scroll-margin-top: 24px; }
+  .eyebrow{
+    font-family:'IBM Plex Mono',monospace;
+    font-size: 12.5px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--accent-ink);
+  }
+  h2{ font-size: 23px; margin-top: 4px; }
+  h3{ font-size: 16px; }
+  .section-sub{ color: var(--ink-muted); font-size: 15px; max-width: 64ch; }
+
+  figure{ margin: 0; }
+  figure svg{ width: 100%; height: auto; display: block; }
+  figcaption{
+    margin-top: 10px;
+    font-family:'IBM Plex Mono',monospace;
+    font-size: 12px;
+    color: var(--ink-muted);
+    text-align: center;
+  }
+
+  /* ---------- snapshot tables ---------- */
+  .snapshot{ display:flex; flex-direction: column; gap: 10px; }
+  .snapshot-label{ font-family:'IBM Plex Mono',monospace; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-muted); }
+  .table-wrap{ overflow-x: auto; border: 1px solid var(--line); background: var(--paper-raised); }
+  table{ border-collapse: collapse; width: 100%; font-family:'IBM Plex Mono',monospace; font-size: 12.5px; white-space: nowrap; }
+  th,td{ padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  thead th{ font-weight: 600; color: var(--ink-muted); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; border-bottom: 1px solid var(--ink); }
+  tbody tr:last-child td{ border-bottom: none; }
+  .status-decoded{ color: var(--ok); font-weight: 600; }
+  .status-detected{ color: var(--ink-muted); }
+  .crc-invalid{ color: var(--bad); }
+  .cell-empty{ color: var(--line); }
+  .num-hi{ color: var(--accent-ink); font-weight: 600; }
+
+  .legend{ display:flex; flex-wrap: wrap; gap: 16px; font-family:'IBM Plex Mono',monospace; font-size: 12px; color: var(--ink-muted); }
+  .legend span{ display:inline-flex; align-items:center; gap: 6px; }
+  .legend i{ width: 8px; height: 8px; border-radius: 50%; display:inline-block; }
+  .legend .lg-ok{ background: var(--ok); }
+  .legend .lg-det{ background: none; border: 1.5px solid var(--ink-muted); }
+  .legend .lg-bad{ background: var(--bad); }
+  .legend .lg-accent{ background: var(--accent); }
+  .footnote{ font-size: 13px; color: var(--ink-muted); max-width: 70ch; }
+  .footnote b{ color: var(--ink); font-weight: 600; }
+
+  /* ---------- formula blocks ---------- */
+  .formula{
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent-ink);
+    background: var(--paper-raised);
+    padding: 14px 18px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13.5px;
+    color: var(--ink);
+    overflow-x: auto;
+  }
+  .formula .lbl{ display:block; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-muted); margin-bottom: 6px; }
+  .formula-row{ display:flex; flex-direction:column; gap: 10px; }
+
+  /* ---------- stat row ---------- */
+  .stat-row{ display:grid; grid-template-columns: repeat(auto-fit, minmax(130px,1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); }
+  .stat-tile{ background: var(--paper-raised); padding: 14px 16px; display:flex; flex-direction:column; gap: 4px; }
+  .stat-tile .v{ font-family:'IBM Plex Mono',monospace; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat-tile .v.hi{ color: var(--accent-ink); }
+  .stat-tile .k{ font-size: 11.5px; color: var(--ink-muted); }
+
+  /* ---------- callout ---------- */
+  .callout{
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    background: var(--paper-raised);
+    padding: 22px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .callout .eyebrow{ color: var(--bad); }
+  .callout p{ margin: 0; font-size: 14.5px; color: var(--ink-muted); max-width: 70ch; }
+  .callout p b{ color: var(--ink); font-weight: 600; }
+  .callout ul{ margin: 4px 0 0; padding-left: 20px; font-size: 14.5px; color: var(--ink-muted); display:flex; flex-direction:column; gap: 6px; }
+  .callout li b{ color: var(--ink); font-weight: 600; }
+
+  .note{
+    border: 1px solid var(--line);
+    background: var(--paper-raised);
+    padding: 16px 18px;
+    font-size: 14px;
+    color: var(--ink-muted);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .note b{ color: var(--ink); font-weight: 600; }
+
+  footer{
+    border-top: 1px solid var(--line);
+    padding-top: 24px;
+    font-family:'IBM Plex Mono',monospace;
+    font-size: 12px;
+    color: var(--ink-muted);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  /* ---------- SVG diagram ink ---------- */
+  .diagram text{ fill: var(--ink); }
+  .diagram .sub{ fill: var(--ink-muted); }
+  .diagram rect{ fill: var(--paper-raised); stroke: var(--ink); }
+  .diagram circle.chip{ fill: var(--paper-raised); stroke: var(--ink); }
+  .diagram line{ stroke: var(--ink); }
+  .diagram path.stroke{ fill: none; stroke: var(--ink); }
+  .diagram .cond{ fill: var(--ink-muted); }
+  .diagram .accent-fill{ fill: var(--accent); }
+  .diagram .accent-stroke{ stroke: var(--accent-ink); }
+  .diagram .accent-soft-fill{ fill: var(--accent-soft); stroke: var(--accent-ink); }
+  .diagram .muted-fill{ fill: var(--paper); stroke: var(--line); }
+  .diagram .ok-stroke{ stroke: var(--ok); }
+</style>
+
+<main>
+
+  <div class="masthead">
+    <div class="kicker"><span class="dot"></span>rf monitor &mdash; sub-ghz ism 863&ndash;868&nbsp;mhz (in865)</div>
+    <h1>Emitter to Packet</h1>
+    <p class="lede">The scanner runs two passes over the same radio, then hands anything it decodes to a third stage that tries to remember it. This is the full chain end to end &mdash; including the two mechanisms underneath it that are usually left as a black box: how a chirp collapses to a symbol, and how the spreading factor is actually decided rather than known.</p>
+    <div class="status-strip">
+      <span>radio: <b>USRP X310</b></span>
+      <span class="sep">/</span>
+      <span>target: <b>TarangMini ST22LR01</b> (Melange Systems)</span>
+      <span class="sep">/</span>
+      <span>band: <b>863&ndash;868 MHz</b></span>
+      <span class="sep">/</span>
+      <span>live store: <b>32 devices</b> / <b>209 readings</b></span>
+    </div>
+    <nav class="toc">
+      <a href="#p1">01 Recognizing an emitter</a>
+      <a href="#p2">02 Capturing a packet</a>
+      <a href="#p3">03 How dechirping works</a>
+      <a href="#p4">04 Deciding SF and bandwidth</a>
+      <a href="#p5">05 Packet to persistent identity</a>
+      <a href="#stuck">Where we're stuck</a>
+    </nav>
+  </div>
+
+  <div class="intro-split">
+    <div class="intro-card">
+      <div class="tag">Stage 1 &middot; wideband</div>
+      <div class="name">Recognizing an emitter</div>
+      <p>A coarse sweep across the whole band, on a ~6.5&nbsp;s cycle. Cheap and wide &mdash; only good enough to say &ldquo;something is transmitting here, and it looks like&hellip;&rdquo;</p>
+      <div class="feeds">&rarr; Active emitters table</div>
+    </div>
+    <div class="intro-card">
+      <div class="tag">Stage 2 &middot; narrowband</div>
+      <div class="name">Capturing a packet</div>
+      <p>One 2&nbsp;s locked capture, tried against 24 (bandwidth, SF) hypotheses and up to two codecs each &mdash; the chirp&rarr;symbol&rarr;header decode chain, in full.</p>
+      <div class="feeds">&rarr; LoRa PHY packets table</div>
+    </div>
+    <div class="intro-card">
+      <div class="tag">Stage 3 &middot; cross-session</div>
+      <div class="name">Packet to identity</div>
+      <p>Every fingerprinted burst is matched against a permanent, on-disk device list by four RF impairment features &mdash; or spawns a new one.</p>
+      <div class="feeds">&rarr; LoRa master list table</div>
+    </div>
+  </div>
+
+  <!-- ================= PIPELINE 1 ================= -->
+  <section class="pipeline" id="p1">
+    <div>
+      <div class="eyebrow">01 &mdash; wideband sweep</div>
+      <h2>Recognizing an emitter</h2>
+      <p class="section-sub">Runs every cycle while the sub-GHz band is active. It never tries to decode anything &mdash; it just measures where energy is, how wide it is, and whether that shape looks like a known protocol.</p>
+    </div>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 640 760" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Flowchart: capture four one-second sub-captures at 865.5 MHz, combine by max-hold into one power spectrum, detect peaks above a 20th-percentile noise floor, estimate occupied bandwidth, classify by bandwidth signature, then update the emitter registry once per cycle, feeding the Active emitters table.">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="var(--ink)"></path>
+          </marker>
+        </defs>
+
+        <rect x="40" y="20" width="560" height="76" stroke-width="1.5"></rect>
+        <circle class="chip" cx="66" cy="58" r="15" stroke-width="1.5"></circle>
+        <text x="66" y="63" text-anchor="middle" font-size="13" font-weight="700">1</text>
+        <text x="96" y="54" font-size="17" font-weight="700">Capture 865.5&nbsp;MHz, one wide step</text>
+        <text class="sub" x="96" y="76" font-size="12.5">4 &times; 1.0&nbsp;s sub-captures + 0.1&nbsp;s retune settle each &asymp; 4.4&nbsp;s</text>
+        <line x1="320" y1="96" x2="320" y2="132" stroke-width="1.5" marker-end="url(#arrow)"></line>
+
+        <rect x="40" y="136" width="560" height="76" stroke-width="1.5"></rect>
+        <circle class="chip" cx="66" cy="174" r="15" stroke-width="1.5"></circle>
+        <text x="66" y="179" text-anchor="middle" font-size="13" font-weight="700">2</text>
+        <text x="96" y="170" font-size="17" font-weight="700">Power spectrum, max-hold</text>
+        <text class="sub" x="96" y="192" font-size="12.5">2048-pt FFT, Hann window, max |FFT|&sup2; across the 4 captures</text>
+        <line x1="320" y1="212" x2="320" y2="248" stroke-width="1.5" marker-end="url(#arrow)"></line>
+
+        <rect x="40" y="252" width="560" height="76" stroke-width="1.5"></rect>
+        <circle class="chip" cx="66" cy="290" r="15" stroke-width="1.5"></circle>
+        <text x="66" y="295" text-anchor="middle" font-size="13" font-weight="700">3</text>
+        <text x="96" y="286" font-size="17" font-weight="700">Peak / threshold detect</text>
+        <text class="sub" x="96" y="308" font-size="12.5">bins above a 20th-percentile noise floor + threshold, DC and edge guarded</text>
+        <line x1="320" y1="328" x2="320" y2="364" stroke-width="1.5" marker-end="url(#arrow)"></line>
+
+        <rect x="40" y="368" width="560" height="76" stroke-width="1.5"></rect>
+        <circle class="chip" cx="66" cy="406" r="15" stroke-width="1.5"></circle>
+        <text x="66" y="411" text-anchor="middle" font-size="13" font-weight="700">4</text>
+        <text x="96" y="402" font-size="17" font-weight="700">Estimate occupied bandwidth</text>
+        <text class="sub" x="96" y="424" font-size="12.5">width of each flagged peak, in kHz</text>
+        <line x1="320" y1="444" x2="320" y2="480" stroke-width="1.5" marker-end="url(#arrow)"></line>
+
+        <rect x="40" y="484" width="560" height="76" stroke-width="1.5"></rect>
+        <circle class="chip" cx="66" cy="522" r="15" stroke-width="1.5"></circle>
+        <text x="66" y="527" text-anchor="middle" font-size="13" font-weight="700">5</text>
+        <text x="96" y="518" font-size="17" font-weight="700">Classify by bandwidth signature</text>
+        <text class="sub" x="96" y="540" font-size="12.5">LoRa-like &middot; WiFi-like &middot; Narrowband &middot; Unknown</text>
+        <line x1="320" y1="560" x2="320" y2="596" stroke-width="1.5" marker-end="url(#arrow)"></line>
+
+        <rect x="40" y="600" width="560" height="76" stroke-width="1.5"></rect>
+        <circle class="chip" cx="66" cy="638" r="15" stroke-width="1.5"></circle>
+        <text x="66" y="643" text-anchor="middle" font-size="13" font-weight="700">6</text>
+        <text x="96" y="634" font-size="17" font-weight="700">Update the emitter registry, once per cycle</text>
+        <text class="sub" x="96" y="656" font-size="12.5">freq, power, cycles seen, age, last seen</text>
+        <line x1="320" y1="676" x2="320" y2="706" stroke-width="1.5" marker-end="url(#arrow)"></line>
+
+        <text x="320" y="734" text-anchor="middle" font-size="14" font-weight="700" font-family="'IBM Plex Mono',monospace">&rarr; Active emitters table</text>
+      </svg>
+      <figcaption>spectrum.cpp &middot; detector.cpp &middot; classifier.cpp &middot; registry.cpp</figcaption>
+    </figure>
+
+    <div class="note">
+      <span><b>The &ldquo;power&rdquo; column is not calibrated.</b> <code>psd_db = 10&middot;log&#8321;&#8320;(max|FFT|&sup2; + 1e-15)</code> &mdash; no division by FFT size, no window-energy correction, no per-Hz normalization. It reads relative to itself (that's all the threshold needs), not against a real reference like dBm.</span>
+    </div>
+
+    <div class="snapshot">
+      <div class="snapshot-label">what actually landed in the table, one real scan cycle</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Freq (MHz)</th><th>Ch</th><th>BW (kHz)</th><th>Protocol guess</th><th>Sources</th><th>Power (dB, rel.)</th><th>Cycles seen</th><th>Age (s)</th><th>Last seen (s ago)</th></tr></thead>
+          <tbody>
+            <tr><td>864.0002</td><td class="cell-empty">&ndash;&ndash;</td><td>4.9</td><td>Unknown sub-GHz emitter</td><td class="cell-empty">&ndash;&ndash;</td><td>&minus;5.9</td><td>1</td><td>0.3</td><td>0.3</td></tr>
+            <tr><td>866.9027</td><td class="cell-empty">&ndash;&ndash;</td><td>234.4</td><td>LoRa-like (BW~250kHz)</td><td class="cell-empty">&ndash;&ndash;</td><td>26.0</td><td>1</td><td>8.0</td><td>8.0</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="footnote"><b>Ch</b> and <b>Sources</b> only populate for Wi-Fi rows (channel number, beacon-cadence source count) &mdash; IN865 has no equivalent channel numbering, so LoRa rows always show &ldquo;&ndash;&ndash;&rdquo; there. The 866.9027&nbsp;MHz row is a real TarangMini burst the wideband sweep happened to catch; most of the time it doesn&rsquo;t, since a LoRa transmission lasts well under a second and this sweep spends only about two-thirds of each ~6.5&nbsp;s cycle looking at the band at all &mdash; the rest goes to the narrowband listen below.</p>
+    </div>
+  </section>
+
+  <!-- ================= PIPELINE 2 ================= -->
+  <section class="pipeline" id="p2">
+    <div>
+      <div class="eyebrow">02 &mdash; locked narrowband listen</div>
+      <h2>Capturing a packet</h2>
+      <p class="section-sub">Runs every single cycle the sub-GHz band is active &mdash; it is not gated behind a manual lock. What locking a frequency changes is only <i>which</i> frequency is used, and whether the wideband sweep above runs at all that cycle.</p>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-tile"><span class="v hi">2.0 s</span><span class="k">capture length</span></div>
+      <div class="stat-tile"><span class="v">500 kHz</span><span class="k">base capture rate</span></div>
+      <div class="stat-tile"><span class="v">4</span><span class="k">round-robin channels</span></div>
+      <div class="stat-tile"><span class="v hi">~2.1 s</span><span class="k">cycle when locked</span></div>
+      <div class="stat-tile"><span class="v">~6.5 s</span><span class="k">cycle when sweeping too</span></div>
+    </div>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 640 890" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Flowchart: capture 2 seconds at one of four rotating channels, feed the Active emitters table from the same capture, then hand the IQ buffer to a nested bandwidth-by-spreading-factor search that tries every combination in turn, branching to Decoded on a header checksum pass, Detected plus fingerprinted on a bare preamble lock, and nothing logged otherwise.">
+        <rect x="40" y="20" width="560" height="76" stroke-width="1.5"></rect>
+        <circle class="chip" cx="66" cy="58" r="15" stroke-width="1.5"></circle>
+        <text x="66" y="63" text-anchor="middle" font-size="13" font-weight="700">1</text>
+        <text x="96" y="54" font-size="17" font-weight="700">Capture one rotating channel</text>
+        <text class="sub" x="96" y="76" font-size="12.5">865.0625 / 865.4025 / 865.985 / 866.9&nbsp;MHz &mdash; one per cycle unless locked</text>
+        <line x1="320" y1="96" x2="320" y2="132" stroke-width="1.5" marker-end="url(#arrow)"></line>
+
+        <rect x="40" y="136" width="560" height="60" stroke-width="1.5"></rect>
+        <circle class="chip" cx="66" cy="166" r="15" stroke-width="1.5"></circle>
+        <text x="66" y="171" text-anchor="middle" font-size="13" font-weight="700">2</text>
+        <text x="96" y="171" font-size="15" font-weight="700">Energy-detect this same capture &rarr; Active emitters table</text>
+        <line x1="320" y1="196" x2="320" y2="232" stroke-width="1.5" marker-end="url(#arrow)"></line>
+
+        <rect x="40" y="236" width="560" height="76" stroke-width="1.5"></rect>
+        <circle class="chip" cx="66" cy="274" r="15" stroke-width="1.5"></circle>
+        <text x="66" y="279" text-anchor="middle" font-size="13" font-weight="700">3</text>
+        <text x="96" y="270" font-size="17" font-weight="700">Search 24 (bandwidth, SF) hypotheses</text>
+        <text class="sub" x="96" y="292" font-size="12.5">3 bandwidths &times; 8 spreading factors &mdash; see &sect;04 below</text>
+        <line x1="320" y1="312" x2="320" y2="348" stroke-width="1.5" marker-end="url(#arrow)"></line>
+
+        <rect x="40" y="352" width="560" height="76" stroke-width="1.5"></rect>
+        <circle class="chip" cx="66" cy="390" r="15" stroke-width="1.5"></circle>
+        <text x="66" y="395" text-anchor="middle" font-size="13" font-weight="700">4</text>
+        <text x="96" y="386" font-size="17" font-weight="700">Per hypothesis: lock preamble, dechirp</text>
+        <text class="sub" x="96" y="408" font-size="12.5">6 consistent symbols, CFO, sync + SFD &mdash; see &sect;03 below</text>
+        <line x1="320" y1="428" x2="320" y2="452" stroke-width="1.5"></line>
+
+        <line x1="140" y1="452" x2="500" y2="452" stroke-width="1.5"></line>
+
+        <line x1="140" y1="452" x2="140" y2="468" stroke-width="1.5"></line>
+        <text class="cond" x="140" y="480" text-anchor="middle" font-size="11.5" font-style="italic">no preamble</text>
+        <line x1="140" y1="486" x2="140" y2="500" stroke-width="1.5" marker-end="url(#arrow)"></line>
+
+        <line x1="320" y1="452" x2="320" y2="468" stroke-width="1.5"></line>
+        <text class="cond" x="320" y="480" text-anchor="middle" font-size="11.5" font-style="italic">preamble, no header match</text>
+        <line x1="320" y1="486" x2="320" y2="500" stroke-width="1.5" marker-end="url(#arrow)"></line>
+
+        <line x1="500" y1="452" x2="500" y2="468" stroke-width="1.5"></line>
+        <text class="cond" x="500" y="480" text-anchor="middle" font-size="11.5" font-style="italic">header checksum passes</text>
+        <line x1="500" y1="486" x2="500" y2="500" stroke-width="1.5" marker-end="url(#arrow)"></line>
+
+        <rect x="40" y="500" width="180" height="70" stroke-width="1.5" class="muted-fill"></rect>
+        <text x="130" y="530" text-anchor="middle" font-size="14" font-weight="700">Nothing logged</text>
+        <text class="sub" x="130" y="550" text-anchor="middle" font-size="11">this hypothesis, this channel</text>
+
+        <rect x="230" y="500" width="180" height="70" stroke-width="1.5"></rect>
+        <text x="320" y="528" text-anchor="middle" font-size="15" font-weight="700">Detected</text>
+        <text class="sub" x="320" y="548" text-anchor="middle" font-size="11">preamble + CFO/SF recorded,</text>
+        <text class="sub" x="320" y="562" text-anchor="middle" font-size="11">RF fingerprint extracted</text>
+
+        <rect x="420" y="500" width="180" height="70" stroke-width="1.5"></rect>
+        <text x="510" y="528" text-anchor="middle" font-size="15" font-weight="700">Decoded</text>
+        <text class="sub" x="510" y="548" text-anchor="middle" font-size="11">payload + CRC recorded,</text>
+        <text class="sub" x="510" y="562" text-anchor="middle" font-size="11">not fingerprinted</text>
+
+        <line x1="320" y1="570" x2="320" y2="606" stroke-width="1.5" marker-end="url(#arrow)"></line>
+        <text class="cond" x="345" y="592" font-size="11" font-style="italic">fingerprint gates pass</text>
+
+        <rect x="40" y="610" width="560" height="70" stroke-width="1.5" class="accent-soft-fill"></rect>
+        <text x="320" y="640" text-anchor="middle" font-size="15" font-weight="700">Persistent identity match &mdash; &sect;05</text>
+        <text class="sub" x="320" y="660" text-anchor="middle" font-size="11.5">only the &ldquo;Detected&rdquo; branch ever reaches the master list</text>
+
+        <line x1="320" y1="680" x2="320" y2="700" stroke-width="1.5"></line>
+        <line x1="230" y1="570" x2="230" y2="700" stroke-width="1.5"></line>
+        <line x1="510" y1="570" x2="510" y2="700" stroke-width="1.5"></line>
+        <line x1="130" y1="570" x2="130" y2="700" stroke-width="1.5"></line>
+        <line x1="130" y1="700" x2="600" y2="700" stroke-width="1.5"></line>
+        <line x1="320" y1="700" x2="320" y2="730" stroke-width="1.5" marker-end="url(#arrow)"></line>
+
+        <text x="320" y="758" text-anchor="middle" font-size="14" font-weight="700" font-family="'IBM Plex Mono',monospace">&rarr; LoRa PHY packets table</text>
+
+        <text class="sub" x="320" y="790" text-anchor="middle" font-size="12">Loop repeats for all 24 hypotheses &mdash; no arbitration, no early exit.</text>
+        <text class="sub" x="320" y="810" text-anchor="middle" font-size="12">A single 2&nbsp;s capture can legitimately produce several independent rows.</text>
+      </svg>
+      <figcaption>run_lora_listen_step() &middot; scanner.cpp &middot; every combination tried independently, not just the first hit</figcaption>
+    </figure>
+
+    <div class="snapshot">
+      <div class="snapshot-label">what actually landed in the table, one real listening session</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Time</th><th>Status</th><th>Freq (MHz)</th><th>SF</th><th>BW (kHz)</th><th>CR</th><th>Len</th><th>CRC</th><th>CFO (bins)</th><th>Payload</th></tr></thead>
+          <tbody>
+            <tr><td>16:33:11</td><td class="status-detected">Detected</td><td>866.9000</td><td>5</td><td>125</td><td class="cell-empty">&ndash;&ndash;</td><td class="cell-empty">&ndash;&ndash;</td><td class="cell-empty">&ndash;&ndash;</td><td>34</td><td class="cell-empty">&ndash;&ndash;</td></tr>
+            <tr><td>16:32:06</td><td class="status-detected">Detected</td><td>866.9000</td><td>6</td><td>250</td><td class="cell-empty">&ndash;&ndash;</td><td class="cell-empty">&ndash;&ndash;</td><td class="cell-empty">&ndash;&ndash;</td><td>139</td><td class="cell-empty">&ndash;&ndash;</td></tr>
+            <tr><td>15:33:58</td><td class="status-decoded">Decoded</td><td>866.9000</td><td>7</td><td>125</td><td>1</td><td>37</td><td class="crc-invalid">invalid</td><td>24</td><td>b&#39;\xd6\x05\xf1\xfbg\xee&hellip;</td></tr>
+            <tr><td>15:33:14</td><td class="status-detected">Detected</td><td>866.9000</td><td>7</td><td>125</td><td class="cell-empty">&ndash;&ndash;</td><td class="cell-empty">&ndash;&ndash;</td><td class="cell-empty">&ndash;&ndash;</td><td>&minus;36</td><td class="cell-empty">&ndash;&ndash;</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="legend">
+        <span><i class="lg-ok"></i>Decoded &mdash; header checksum + payload CRC both valid</span>
+        <span><i class="lg-det"></i>Detected &mdash; real chirp, header never validated, fingerprint extracted</span>
+        <span><i class="lg-bad"></i>invalid &mdash; CRC mismatch on a claimed decode</span>
+      </div>
+      <p class="footnote">Almost every real TarangMini burst ends up <b>Detected</b>, not <b>Decoded</b> &mdash; the chirp is unmistakably real (that's what CFO and SF confirm), but the header never checks out. The one <b>Decoded</b> row above is a false positive, not a breakthrough: the header checksum is only 5&nbsp;bits, so it accepts random noise roughly 1 time in 32. A length of 37 (far past anything we ever sent) with an invalid CRC right behind it is exactly that signature.</p>
+    </div>
+  </section>
+
+  <!-- ================= SECTION 03: DECHIRPING ================= -->
+  <section class="pipeline" id="p3">
+    <div>
+      <div class="eyebrow">03 &mdash; the physics inside step&nbsp;4</div>
+      <h2>How dechirping recovers a symbol</h2>
+      <p class="section-sub">A LoRa symbol is not a tone, it's a chirp &mdash; a linear frequency sweep across the whole channel bandwidth, with the <i>starting</i> frequency encoding which of <code>2^SF</code> symbol values was sent. Dechirping is the trick that turns that sweep back into something an FFT can read off directly.</p>
+    </div>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Four-stage diagram: a received chirp symbol, multiplied by the conjugate reference upchirp, collapses to a single constant-frequency tone, whose FFT is one sharp peak at the bin equal to the symbol value.">
+        <defs>
+          <marker id="arrow2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="var(--ink)"></path>
+          </marker>
+        </defs>
+
+        <!-- panel A: chirp -->
+        <rect x="10" y="20" width="150" height="150" stroke-width="1.5"></rect>
+        <path class="stroke" stroke-width="1.6" d="M 20 150 Q 35 148 45 140 Q 60 128 70 105 Q 82 78 95 60 Q 108 42 120 35 Q 135 28 150 26"></path>
+        <path class="stroke" stroke-width="1.6" d="M 20 130 Q 35 122 45 108 Q 60 88 70 70 Q 82 52 95 42 Q 108 34 120 40 Q 135 48 150 44" opacity="0.45"></path>
+        <text x="85" y="188" text-anchor="middle" font-size="12.5" font-weight="700">received symbol</text>
+        <text class="sub" x="85" y="203" text-anchor="middle" font-size="11" font-family="'IBM Plex Mono',monospace">s_k[n] = upchirp[n]&middot;e^(j2&pi;kn/N)</text>
+        <line x1="165" y1="95" x2="195" y2="95" stroke-width="1.5" marker-end="url(#arrow2)"></line>
+        <text x="180" y="85" text-anchor="middle" font-size="16" font-weight="700">&times;</text>
+
+        <!-- panel B: reference -->
+        <rect x="200" y="20" width="150" height="150" stroke-width="1.5"></rect>
+        <path class="stroke" stroke-width="1.6" d="M 210 26 Q 225 28 240 35 Q 252 42 265 60 Q 278 78 290 105 Q 300 128 315 140 Q 325 148 340 150"></path>
+        <text x="275" y="188" text-anchor="middle" font-size="12.5" font-weight="700">reference downchirp</text>
+        <text class="sub" x="275" y="203" text-anchor="middle" font-size="11" font-family="'IBM Plex Mono',monospace">conj(upchirp[n])</text>
+        <line x1="355" y1="95" x2="385" y2="95" stroke-width="1.5" marker-end="url(#arrow2)"></line>
+        <text x="370" y="85" text-anchor="middle" font-size="16" font-weight="700">=</text>
+
+        <!-- panel C: constant tone -->
+        <rect x="390" y="20" width="150" height="150" stroke-width="1.5"></rect>
+        <path class="stroke" stroke-width="1.6" d="M 400 95 Q 407 65 415 95 Q 422 125 430 95 Q 437 65 445 95 Q 452 125 460 95 Q 467 65 475 95 Q 482 125 490 95 Q 497 65 505 95 Q 512 125 520 95 Q 527 65 530 95"></path>
+        <text x="465" y="188" text-anchor="middle" font-size="12.5" font-weight="700">constant tone</text>
+        <text class="sub" x="465" y="203" text-anchor="middle" font-size="11" font-family="'IBM Plex Mono',monospace">v[n] = e^(j2&pi;kn/N)</text>
+        <line x1="545" y1="95" x2="575" y2="95" stroke-width="1.5" marker-end="url(#arrow2)"></line>
+        <text x="560" y="85" text-anchor="middle" font-size="13" font-weight="700">FFT</text>
+
+        <!-- panel D: FFT peak -->
+        <rect x="580" y="20" width="115" height="150" stroke-width="1.5"></rect>
+        <g stroke-width="1.4" class="stroke" opacity="0.55">
+          <line x1="592" y1="160" x2="592" y2="150"></line>
+          <line x1="602" y1="160" x2="602" y2="145"></line>
+          <line x1="612" y1="160" x2="612" y2="153"></line>
+          <line x1="622" y1="160" x2="622" y2="148"></line>
+          <line x1="632" y1="160" x2="632" y2="152"></line>
+        </g>
+        <line x1="642" y1="160" x2="642" y2="35" stroke-width="2.4" class="accent-stroke"></line>
+        <g stroke-width="1.4" class="stroke" opacity="0.55">
+          <line x1="652" y1="160" x2="652" y2="150"></line>
+          <line x1="662" y1="160" x2="662" y2="154"></line>
+          <line x1="672" y1="160" x2="672" y2="147"></line>
+          <line x1="682" y1="160" x2="682" y2="153"></line>
+        </g>
+        <text x="637" y="188" text-anchor="middle" font-size="12.5" font-weight="700">peak bin = k</text>
+        <text class="sub" x="637" y="203" text-anchor="middle" font-size="11" font-family="'IBM Plex Mono',monospace">symbol value</text>
+      </svg>
+      <figcaption>dechirp_analyze() &middot; lora_phy.cpp:63&ndash;84 &middot; N = 2^SF samples = FFT size = symbol alphabet</figcaption>
+    </figure>
+
+    <div class="formula-row">
+      <div class="formula">
+        <span class="lbl">1 &middot; the reference chirp sweeps the full channel in one symbol</span>
+        &phi;(n) = 2&pi; &middot; ( n&sup2;/(2N) &minus; n/2 ),  n = 0&hellip;N&minus;1 &nbsp;&mdash;&nbsp; instantaneous frequency runs &minus;BW/2 &rarr; +BW/2 linearly
+      </div>
+      <div class="formula">
+        <span class="lbl">2 &middot; a symbol is that same chirp, frequency-shifted by its value</span>
+        s<sub>k</sub>[n] = upchirp[n] &middot; e<sup>j2&pi;kn/N</sup>  &nbsp;&mdash;&nbsp;  the shift <i>is</i> the symbol: k &isin; {0 &hellip; N&minus;1}
+      </div>
+      <div class="formula">
+        <span class="lbl">3 &middot; multiplying by the conjugate reference cancels the sweep</span>
+        v[n] = s<sub>k</sub>[n] &middot; conj(upchirp[n]) = e<sup>j2&pi;kn/N</sup>  &nbsp;&mdash;&nbsp;  a plain tone at frequency k/N, no sweep left
+      </div>
+      <div class="formula">
+        <span class="lbl">4 &middot; an N-point FFT of an exact integer-periodic tone is one bin</span>
+        X[m] = &Sigma;<sub>n</sub> e<sup>j2&pi;kn/N</sup>&middot;e<sup>&minus;j2&pi;mn/N</sup> = N&middot;&delta;(m&minus;k) &nbsp;&mdash;&nbsp; argmax|X[m]| = k, read directly off the peak bin
+      </div>
+    </div>
+
+    <div class="note">
+      <span><b>What's cheap here is also what's crude here.</b> The whole demodulator is critically sampled &mdash; N = 2^SF is simultaneously the samples-per-symbol, the FFT size, and the bin count, with no oversampling anywhere. The peak bin is an <i>integer</i>: CFO resolution is one bin (BW/N Hz) with no sub-bin interpolation in the decode path itself &mdash; that refinement exists only downstream, in the fingerprint extractor (&sect;05), and never feeds back into decoding. The only quality gate is <code>peak_mag / sum_mag &gt; 0.5</code>, checked at three places: locking 6 consecutive preamble symbols to the identical bin, measuring how many preamble symbols follow, and confirming the 2.25-symbol SFD (frame-sync downchirp) &mdash; whose own peak bin is discarded, so the code never disentangles a timing offset from a frequency offset.</span>
+    </div>
+  </section>
+
+  <!-- ================= SECTION 04: SF / BW DECODE ================= -->
+  <section class="pipeline" id="p4">
+    <div>
+      <div class="eyebrow">04 &mdash; the search inside step&nbsp;3</div>
+      <h2>Deciding spreading factor and bandwidth</h2>
+      <p class="section-sub">This is the answer to &ldquo;how do we decode SF?&rdquo; &mdash; and it's worth being precise, because <b>we don't decode it. There is no SF estimator anywhere in the codebase.</b> SF is a mandatory function argument, and the only way this project ever learns it is by trying every plausible value and seeing which one dechirps cleanly.</p>
+    </div>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 640 210" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="One 2-second capture at 500 kilosamples per second is decimated three ways for the three bandwidth hypotheses, and each decimated stream is dechirped against all eight spreading factor hypotheses, for 24 total attempts.">
+        <rect x="20" y="20" width="140" height="60" stroke-width="1.5"></rect>
+        <text x="90" y="45" text-anchor="middle" font-size="13" font-weight="700">1 capture</text>
+        <text class="sub" x="90" y="65" text-anchor="middle" font-size="11">500 kHz, 2.0 s</text>
+        <line x1="160" y1="50" x2="200" y2="50" stroke-width="1.5" marker-end="url(#arrow2)"></line>
+
+        <rect x="205" y="10" width="150" height="30" stroke-width="1.2"></rect>
+        <text x="280" y="30" text-anchor="middle" font-size="11.5">decim &divide;4 &rarr; BW125</text>
+        <rect x="205" y="45" width="150" height="30" stroke-width="1.2"></rect>
+        <text x="280" y="65" text-anchor="middle" font-size="11.5">decim &divide;2 &rarr; BW250</text>
+        <rect x="205" y="80" width="150" height="30" stroke-width="1.2"></rect>
+        <text x="280" y="100" text-anchor="middle" font-size="11.5">decim &divide;1 &rarr; BW500</text>
+
+        <line x1="360" y1="25" x2="390" y2="25" stroke-width="1.2" marker-end="url(#arrow2)"></line>
+        <line x1="360" y1="60" x2="390" y2="60" stroke-width="1.2" marker-end="url(#arrow2)"></line>
+        <line x1="360" y1="95" x2="390" y2="95" stroke-width="1.2" marker-end="url(#arrow2)"></line>
+
+        <text x="420" y="14" font-size="10.5" class="sub">&times; 8 SF hypotheses each (5&hellip;12)</text>
+        <g font-size="10" font-family="'IBM Plex Mono',monospace">
+          <rect x="395" y="18" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="415" y="18" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="435" y="18" width="18" height="14" class="accent-soft-fill" stroke-width="1"></rect>
+          <rect x="455" y="18" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="475" y="18" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="495" y="18" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="515" y="18" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="535" y="18" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+
+          <rect x="395" y="53" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="415" y="53" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="435" y="53" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="455" y="53" width="18" height="14" class="accent-soft-fill" stroke-width="1"></rect>
+          <rect x="475" y="53" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="495" y="53" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="515" y="53" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="535" y="53" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+
+          <rect x="395" y="88" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="415" y="88" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="435" y="88" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="455" y="88" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="475" y="88" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="495" y="88" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="515" y="88" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+          <rect x="535" y="88" width="18" height="14" class="muted-fill" stroke-width="1"></rect>
+        </g>
+        <path class="stroke accent-stroke" stroke-width="1.3" stroke-dasharray="3 2" d="M 444 32 Q 460 43 464 53" fill="none"></path>
+        <text class="cond" x="500" y="130" font-size="11" text-anchor="middle">24 (BW, SF) attempts per capture &mdash; every one tried, no early exit</text>
+
+        <line x1="90" y1="80" x2="90" y2="180" stroke-width="0" opacity="0"></line>
+        <text x="320" y="165" text-anchor="middle" font-size="11.5" font-weight="700">real burst, true SF7 / BW125:</text>
+        <text class="sub" x="320" y="182" text-anchor="middle" font-size="11">the highlighted SF7/BW125 <i>and</i> SF9/BW250 cells both lock &mdash; identical chirp rate, see below</text>
+        <text class="sub" x="320" y="198" text-anchor="middle" font-size="10.5">columns: SF5&nbsp;&nbsp;SF6&nbsp;&nbsp;SF7&nbsp;&nbsp;SF8&nbsp;&nbsp;SF9&nbsp;&nbsp;SF10&nbsp;&nbsp;SF11&nbsp;&nbsp;SF12</text>
+      </svg>
+      <figcaption>run_lora_listen_step() &middot; scanner.cpp:333&ndash;339 &middot; config.hpp: LORA_LISTEN_BW_LIST_HZ &times; LORA_LISTEN_SF_LIST</figcaption>
+    </figure>
+
+    <p class="section-sub">Once a hypothesis is picked, acceptance is a hard boolean per hypothesis &mdash; header checksum passes, or a bare preamble locks &mdash; with <b>no scoring, no ranking, and no winner selection</b> across the 24 attempts. The loop runs to completion every time, so one real burst can legitimately produce more than one logged row.</p>
+
+    <h3>Why two different hypotheses can both look right</h3>
+    <p class="section-sub">The dechirp match depends only on the reference chirp's sweep <i>rate</i>, not on SF and bandwidth individually. That rate is BW&sup2;/2^SF &mdash; and (SF,&nbsp;BW) and (SF+2, 2&times;BW) always produce the exact same number:</p>
+
+    <div class="formula">
+      <span class="lbl">chirp rate is identical across the alias family</span>
+      rate = BW&sup2; / 2^SF &nbsp;&mdash;&nbsp; e.g. SF7/BW125k and SF9/BW250k both give 122.07 MHz/s exactly
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-tile"><span class="v hi">11 / 11</span><span class="k">ambiguous captures in the live store share an identical chirp rate</span></div>
+      <div class="stat-tile"><span class="v">0.81&ndash;1.00</span><span class="k">peak/sum ratio for the true hypothesis (simulated)</span></div>
+      <div class="stat-tile"><span class="v">0.86&ndash;0.93</span><span class="k">ratio for its alias &mdash; also clears the 0.5 floor</span></div>
+    </div>
+
+    <p class="footnote">This is confirmed, not theoretical: re-simulating <code>dechirp_analyze()</code> exactly and sweeping it against every (BW,&nbsp;SF) hypothesis shows every rate-matched pair clears the preamble floor together. Cross-checking the live master-list store finds every one of the 11 timestamps where two device rows share an identical capture &mdash; all 11 &mdash; have exactly matching chirp rate, not a near miss. In the real example above (866.9&nbsp;MHz, one TarangMini burst), SF7/BW125 scored sync_corr 0.821 and its SF9/BW250 alias scored 0.868 &mdash; the alias actually fit <i>better</i>, which is why arbitrating &ldquo;pick the higher score&rdquo; would not reliably resolve it either.</p>
+
+    <div class="note">
+      <span><b>This aliasing explains duplicate rows in the packet table &mdash; it is not the main cause of device fragmentation below.</b> Isolating to SF7 alone, with bandwidth and alias effects removed entirely, still splits 118 real readings from the one physical TarangMini into 23 separate device entries (&sect;05). Two different degeneracies are stacked here: one in the PHY search, one in the identity matcher &mdash; and the identity matcher's is the larger of the two.</span>
+    </div>
+  </section>
+
+  <!-- ================= SECTION 05: MASTER LIST ================= -->
+  <section class="pipeline" id="p5">
+    <div>
+      <div class="eyebrow">05 &mdash; after a &ldquo;Detected&rdquo; row</div>
+      <h2>Packet to persistent identity</h2>
+      <p class="section-sub">Every fingerprinted burst is checked against a permanent, on-disk device list &mdash; one <code>.ndjson</code> file per device under <code>data/lora_master/</code>, reloaded on startup, never auto-deleted. A successfully <i>decoded</i> packet never reaches this stage; only the fingerprinted &ldquo;Detected&rdquo; branch does.</p>
+    </div>
+
+    <figure class="diagram">
+      <svg viewBox="0 0 640 430" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Flowchart: four RF impairment features from the new reading are each compared against a device's trailing median within a fixed tolerance; all four must pass for that device to qualify; among qualifying devices the closest by weighted distance wins and the reading is appended to it, otherwise a new device is created immediately matchable from its first reading.">
+        <rect x="20" y="20" width="600" height="50" stroke-width="1.5"></rect>
+        <text x="320" y="42" text-anchor="middle" font-size="14" font-weight="700">new reading: irr_db, dc_dbc, iq_eps, iq_phi_deg</text>
+        <text class="sub" x="320" y="60" text-anchor="middle" font-size="11">cfo_ppm, dc_ang_deg, snr, evm, sync_corr, freq, sf, bw are stored but NOT compared</text>
+        <line x1="320" y1="70" x2="320" y2="98" stroke-width="1.5" marker-end="url(#arrow2)"></line>
+
+        <text x="320" y="112" text-anchor="middle" font-size="12" font-weight="700">for every existing device, compare against its trailing-20-reading median</text>
+
+        <g font-size="12">
+          <rect x="20" y="126" width="140" height="60" stroke-width="1.3"></rect>
+          <text x="90" y="150" text-anchor="middle" font-weight="700">IRR</text>
+          <text class="sub" x="90" y="168" text-anchor="middle" font-size="11">&plusmn;8.0 dB</text>
+
+          <rect x="170" y="126" width="140" height="60" stroke-width="1.3"></rect>
+          <text x="240" y="150" text-anchor="middle" font-weight="700">DC leakage</text>
+          <text class="sub" x="240" y="168" text-anchor="middle" font-size="11">&plusmn;8.0 dBc</text>
+
+          <rect x="330" y="126" width="140" height="60" stroke-width="1.3"></rect>
+          <text x="400" y="150" text-anchor="middle" font-weight="700">IQ &epsilon;</text>
+          <text class="sub" x="400" y="168" text-anchor="middle" font-size="11">&plusmn;0.02</text>
+
+          <rect x="480" y="126" width="140" height="60" stroke-width="1.3"></rect>
+          <text x="550" y="150" text-anchor="middle" font-weight="700">IQ &phi;</text>
+          <text class="sub" x="550" y="168" text-anchor="middle" font-size="11">&plusmn;3.0&deg;</text>
+        </g>
+
+        <line x1="90" y1="186" x2="90" y2="210" stroke-width="1.3"></line>
+        <line x1="240" y1="186" x2="240" y2="210" stroke-width="1.3"></line>
+        <line x1="400" y1="186" x2="400" y2="210" stroke-width="1.3"></line>
+        <line x1="550" y1="186" x2="550" y2="210" stroke-width="1.3"></line>
+        <line x1="90" y1="210" x2="550" y2="210" stroke-width="1.3"></line>
+        <line x1="320" y1="210" x2="320" y2="230" stroke-width="1.3" marker-end="url(#arrow2)"></line>
+
+        <circle class="chip" cx="320" cy="252" r="22" stroke-width="1.5"></circle>
+        <text x="320" y="257" text-anchor="middle" font-size="13" font-weight="700">AND</text>
+
+        <line x1="320" y1="274" x2="320" y2="298" stroke-width="1.5"></line>
+        <line x1="150" y1="298" x2="500" y2="298" stroke-width="1.5"></line>
+        <line x1="150" y1="298" x2="150" y2="314" stroke-width="1.5" marker-end="url(#arrow2)"></line>
+        <text class="cond" x="150" y="330" text-anchor="middle" font-size="11" font-style="italic">any gate fails</text>
+        <line x1="500" y1="298" x2="500" y2="314" stroke-width="1.5" marker-end="url(#arrow2)"></line>
+        <text class="cond" x="500" y="330" text-anchor="middle" font-size="11" font-style="italic">all four pass</text>
+
+        <rect x="60" y="334" width="180" height="60" stroke-width="1.5"></rect>
+        <text x="150" y="358" text-anchor="middle" font-size="13" font-weight="700">device rejected</text>
+        <text class="sub" x="150" y="376" text-anchor="middle" font-size="11">try the next device</text>
+
+        <rect x="410" y="334" width="180" height="60" stroke-width="1.5"></rect>
+        <text x="500" y="356" text-anchor="middle" font-size="13" font-weight="700">device qualifies</text>
+        <text class="sub" x="500" y="374" text-anchor="middle" font-size="10.5">closest by weighted L1 wins</text>
+        <text class="sub" x="500" y="388" text-anchor="middle" font-size="10.5">among all qualifiers</text>
+      </svg>
+      <figcaption>LoraMasterList::find_match() &middot; lora_master.cpp:138&ndash;177 &middot; a single raw reading vs. each device's own trailing median</figcaption>
+    </figure>
+
+    <p class="section-sub">If no device qualifies, a new one is created &mdash; display ID <code>LORA-%04d</code> &mdash; and is <b>immediately matchable from its very first reading</b> (unlike the session-only registry, which requires 3 readings first). There is no merge, split, or rename path anywhere in the class: once two entries exist for the same radio, nothing in the code ever puts them back together.</p>
+
+    <h3>The evidence: one physical radio, isolated to one unambiguous hypothesis</h3>
+    <p class="section-sub">Removing the &sect;04 aliasing entirely by looking only at SF7 &mdash; a single, unambiguous hypothesis &mdash; still fragments badly:</p>
+
+    <div class="stat-row">
+      <div class="stat-tile"><span class="v hi">118 &rarr; 23</span><span class="k">SF7-only readings &rarr; devices, one physical TarangMini</span></div>
+      <div class="stat-tile"><span class="v">209</span><span class="k">total stored readings, all SF/BW combined</span></div>
+      <div class="stat-tile"><span class="v hi">32</span><span class="k">devices in the live store today</span></div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>feature</th><th>tolerance window</th><th>observed spread, one radio</th><th>spread &divide; window</th></tr></thead>
+        <tbody>
+          <tr><td>IQ &epsilon;</td><td>0.040</td><td>0.264</td><td class="num-hi">6.60&times;</td></tr>
+          <tr><td>IRR</td><td>16.0 dB</td><td>51.1 dB</td><td class="num-hi">3.19&times;</td></tr>
+          <tr><td>DC leakage</td><td>16.0 dB</td><td>46.8 dB</td><td class="num-hi">2.93&times;</td></tr>
+          <tr><td>IQ &phi;</td><td>6.0&deg;</td><td>17.1&deg;</td><td class="num-hi">2.86&times;</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="footnote">Every one of the four matched features drifts, on its own, well past its acceptance window over the life of one physical device &mdash; IQ&nbsp;&epsilon; the worst, by a wide margin. Because the four gates are <b>ANDed</b>, any single one of them tripping is enough to spawn a new device, and with four independent noisy features all exceeding tolerance, that happens often. It is not one bad gate; it's that a single raw reading is a poor proxy for a device that is this noisy from burst to burst, compared against a trailing median that is easily pulled off by the last few outliers.</p>
+  </section>
+
+  <div class="callout" id="stuck">
+    <div class="eyebrow">where we're stuck</div>
+    <p><b>TarangMini's header still doesn't decode, and it's probably not a bug in our codec anymore.</b> Every formula in the standards-compliant decoder &mdash; header checksum, Hamming FEC, diagonal interleaver, whitening &mdash; was transcribed and verified character-by-character against the reference LoRa-SDR implementation.</p>
+    <ul>
+      <li><b>Working theory:</b> TarangMini runs in implicit-header mode. TarangNet's own API never exposes a coding-rate setting &mdash; only spreading factor and bandwidth &mdash; which fits a proprietary stack that skips the standard explicit header entirely.</li>
+      <li><b>Tested directly:</b> decoding raw payload blocks (no header assumed) across every coding-rate guess. Repeated real captures of the identical payload agreed with each other ~80% of the time bit-for-bit &mdash; proof the PHY lock is genuinely reading real signal &mdash; but matched the known plaintext 0% of the time, under every byte/nibble/bit ordering tried.</li>
+      <li><b>Newly found gap, worth ruling out:</b> the standards codec has no low-data-rate-optimize (LDRO) path at all &mdash; a repo-wide search turns up zero hits. Real SX127x hardware mandates LDRO at SF11/SF12 on 125&nbsp;kHz, which this decoder doesn't implement. That can't be the whole story (TarangMini fails to decode at SF7 too), but it is a confirmed fidelity gap against real hardware that hasn't been closed.</li>
+      <li><b>Current read:</b> TarangNet likely encrypts or scrambles the payload above the PHY layer. That would make full payload recovery a protocol question, not a signal-processing one.</li>
+    </ul>
+  </div>
+
+  <footer>
+    <span>rf_monitor_gui &middot; lora_phy.cpp &middot; lora_phy_std.cpp &middot; lora_master.cpp</span>
+    <span>reference session &middot; USRP X310 &rarr; TarangMini ST22LR01</span>
+  </footer>
+
+</main>

@@ -154,6 +154,19 @@ add_executable(test_wifi_frame
 target_include_directories(test_wifi_frame PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 # ---------------------------------------------------------------------------
+# End-to-end 802.11b 1 Mbps DSSS receive chain - see src/wifi_dsss_rx.hpp.
+# The test's transmitter is written independently of the receiver so a
+# pass means it decodes 802.11, not that two copies of the same mistake
+# agree. Pure software, no hardware.
+# ---------------------------------------------------------------------------
+add_executable(test_wifi_dsss_rx
+  tests/test_wifi_dsss_rx.cpp
+  src/wifi_dsss_rx.cpp
+  src/wifi_frame.cpp
+)
+target_include_directories(test_wifi_dsss_rx PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+# ---------------------------------------------------------------------------
 # Adversarial stress matrix for the 2.4GHz classifier - detection rate
 # and misclassification rate vs SNR, plus a false-positive battery
 # against carriers/noise. Uses spec-faithful signal generators that do
@@ -176,6 +189,34 @@ add_executable(test_fingerprint
   src/fingerprint.cpp
 )
 target_include_directories(test_fingerprint PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
+# ---------------------------------------------------------------------------
+# Synthetic correctness test for Wi-Fi RF fingerprint extraction - see
+# src/wifi_fingerprint.hpp. A separate engine from the LoRa one above
+# (different PHY, different preamble structure) - see that file's own
+# header for why. Pure software, no hardware.
+# ---------------------------------------------------------------------------
+add_executable(test_wifi_fingerprint
+  tests/test_wifi_fingerprint.cpp
+  src/wifi_fingerprint.cpp
+  src/wifi_phy.cpp
+  src/wifi_dsss_rx.cpp
+  src/wifi_frame.cpp
+)
+target_include_directories(test_wifi_fingerprint PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_wifi_fingerprint PRIVATE PkgConfig::KISSFFT)
+
+# ---------------------------------------------------------------------------
+# Correctness test for WifiMasterList - persistence and MAC-vs-
+# fingerprint-cluster matching. Pure software, no hardware. Points at
+# temp directories rather than PROJECT_ROOT_DIR (mirrors
+# test_lora_master's own reasoning), so no compile definition needed.
+# ---------------------------------------------------------------------------
+add_executable(test_wifi_master
+  tests/test_wifi_master.cpp
+  src/wifi_master.cpp
+)
+target_include_directories(test_wifi_master PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 # ---------------------------------------------------------------------------
 # Correctness test for DeviceRegistry - permanence and RF-fingerprint
@@ -202,6 +243,24 @@ add_executable(test_lora_master
 target_include_directories(test_lora_master PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 # ---------------------------------------------------------------------------
+# Validation spike (see tools/sf_estimator_spike.cpp) for a proposed
+# non-brute-force SF/BW estimator - NOT wired into the production
+# scanner. Needs the real X310 + a live TarangMini burst to be useful.
+# ---------------------------------------------------------------------------
+add_executable(sf_estimator_spike
+  tools/sf_estimator_spike.cpp
+  src/sdr_capture.cpp
+  src/spectrum.cpp
+  src/detector.cpp
+  src/classifier.cpp
+  src/wifi_phy.cpp
+  src/lora_phy.cpp
+  src/lora_phy_std.cpp
+)
+target_include_directories(sf_estimator_spike PRIVATE ${CMAKE_SOURCE_DIR}/src ${UHD_INCLUDE_DIRS})
+target_link_libraries(sf_estimator_spike PRIVATE PkgConfig::KISSFFT Threads::Threads dl ${UHD_LIBRARIES})
+
+# ---------------------------------------------------------------------------
 # Manual hardware validation tool (see tools/band_smoke_test.cpp) - not
 # part of the GUI, needs the real B210 and a couple minutes to run.
 # ---------------------------------------------------------------------------
@@ -217,6 +276,10 @@ add_executable(band_smoke_test
   src/lora_phy.cpp
   src/lora_phy_std.cpp
   src/wifi_phy.cpp
+  src/wifi_frame.cpp
+  src/wifi_dsss_rx.cpp
+  src/wifi_fingerprint.cpp
+  src/wifi_master.cpp
   src/fingerprint.cpp
   src/lora_master.cpp
 )

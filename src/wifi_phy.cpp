@@ -7,6 +7,55 @@
 
 namespace rfmon::wifi {
 
+// Receiver LO leakage sits at exactly the tuned centre - i.e. DC of the
+// raw capture, before any mixing. config.hpp documents it as a 40-50dB
+// spike that set_rx_dc_offset()/set_rx_iq_balance() do not remove.
+// Subtracting the complex mean kills it at the one point in the chain
+// where its position is known exactly; this MUST run before
+// mix_to_baseband(), after which the spike is no longer at DC and a
+// mean is no longer the right tool.
+//
+// Why this matters more than it looks: an unmodulated carrier is
+// perfectly self-similar at every lag, so it drives the Schmidl-Cox
+// metric below to a sustained ~0.7 - above the plateau threshold - for
+// the entire buffer. Before this existed, the classifier reported OFDM
+// on receiver self-noise with HIGHER confidence than on real OFDM
+// (measured: 3.17 vs 2.56), which inverted the whole decision.
+//
+// Declared here (external linkage, not file-local) rather than in the
+// anonymous namespace below - see wifi_phy.hpp's own comment on why
+// wifi_fingerprint.cpp needs this exact function, not an approximation
+// of it.
+std::vector<std::complex<float>> remove_dc(const std::vector<std::complex<float>>& iq) {
+    if (iq.empty()) return iq;
+    std::complex<double> mean(0.0, 0.0);
+    for (const auto& s : iq) mean += std::complex<double>(s.real(), s.imag());
+    mean /= double(iq.size());
+    std::complex<float> m(float(mean.real()), float(mean.imag()));
+    std::vector<std::complex<float>> out(iq.size());
+    for (size_t i = 0; i < iq.size(); ++i) out[i] = iq[i] - m;
+    return out;
+}
+
+// Shifts the candidate `freq_offset_hz` away from the tuned center down
+// to 0 Hz. Phase is kept wrapped to +/-pi rather than accumulated
+// unboundedly - these buffers run into the millions of samples. Also
+// external linkage - see remove_dc()'s comment just above.
+std::vector<std::complex<float>> mix_to_baseband(const std::vector<std::complex<float>>& iq,
+                                                  double sample_rate_hz, double freq_offset_hz) {
+    std::vector<std::complex<float>> out(iq.size());
+    double phase_inc = -2.0 * M_PI * freq_offset_hz / sample_rate_hz;
+    double phase = 0.0;
+    for (size_t n = 0; n < iq.size(); ++n) {
+        std::complex<float> rot(float(std::cos(phase)), float(std::sin(phase)));
+        out[n] = iq[n] * rot;
+        phase += phase_inc;
+        if (phase > M_PI) phase -= 2.0 * M_PI;
+        else if (phase < -M_PI) phase += 2.0 * M_PI;
+    }
+    return out;
+}
+
 namespace {
 
 // --- shared helpers -------------------------------------------------
@@ -52,54 +101,11 @@ std::vector<std::complex<float>> resample_linear(const std::vector<std::complex<
     return out;
 }
 
-// Shifts the candidate `freq_offset_hz` away from the tuned center down
-// to 0 Hz. Phase is kept wrapped to +/-pi rather than accumulated
-// unboundedly - these buffers run into the millions of samples.
-std::vector<std::complex<float>> mix_to_baseband(const std::vector<std::complex<float>>& iq,
-                                                  double sample_rate_hz, double freq_offset_hz) {
-    std::vector<std::complex<float>> out(iq.size());
-    double phase_inc = -2.0 * M_PI * freq_offset_hz / sample_rate_hz;
-    double phase = 0.0;
-    for (size_t n = 0; n < iq.size(); ++n) {
-        std::complex<float> rot(float(std::cos(phase)), float(std::sin(phase)));
-        out[n] = iq[n] * rot;
-        phase += phase_inc;
-        if (phase > M_PI) phase -= 2.0 * M_PI;
-        else if (phase < -M_PI) phase += 2.0 * M_PI;
-    }
-    return out;
-}
-
 // Decimate the mixed baseband slice before correlating - both
 // correlators below only need a handful of samples per chip/symbol,
 // not the full capture rate, and this is where that cost reduction
 // happens (see wifi_phy.hpp's file header re: skipping VOLK for now).
 constexpr int MOD_DECIM_FACTOR = 2;
-
-// Receiver LO leakage sits at exactly the tuned centre - i.e. DC of the
-// raw capture, before any mixing. config.hpp documents it as a 40-50dB
-// spike that set_rx_dc_offset()/set_rx_iq_balance() do not remove.
-// Subtracting the complex mean kills it at the one point in the chain
-// where its position is known exactly; this MUST run before
-// mix_to_baseband(), after which the spike is no longer at DC and a
-// mean is no longer the right tool.
-//
-// Why this matters more than it looks: an unmodulated carrier is
-// perfectly self-similar at every lag, so it drives the Schmidl-Cox
-// metric below to a sustained ~0.7 - above the plateau threshold - for
-// the entire buffer. Before this existed, the classifier reported OFDM
-// on receiver self-noise with HIGHER confidence than on real OFDM
-// (measured: 3.17 vs 2.56), which inverted the whole decision.
-std::vector<std::complex<float>> remove_dc(const std::vector<std::complex<float>>& iq) {
-    if (iq.empty()) return iq;
-    std::complex<double> mean(0.0, 0.0);
-    for (const auto& s : iq) mean += std::complex<double>(s.real(), s.imag());
-    mean /= double(iq.size());
-    std::complex<float> m(float(mean.real()), float(mean.imag()));
-    std::vector<std::complex<float>> out(iq.size());
-    for (size_t i = 0; i < iq.size(); ++i) out[i] = iq[i] - m;
-    return out;
-}
 
 // Fraction of the spectrum SPANNED by bins within `within_db` of the
 // peak - outermost-above-threshold minus innermost, not a count. This
@@ -311,6 +317,11 @@ struct PlateauEvidence {
     double confidence = 0.0;
     size_t start = 0;  // where the plateau began, for the spectral check
     int length = 0;    // plateau length in samples
+    // Coarse CFO estimate, phase(P) averaged (circular mean, via a
+    // running unit-phasor sum) over the run that won - see
+    // wifi_phy.hpp's ModClassification::cfo_coarse_hz for the formula
+    // and unambiguous-range note. Only meaningful when length > 0.
+    double cfo_hz = 0.0;
 };
 
 // Longest run, anywhere in `baseband`, of consecutive samples where
@@ -343,6 +354,11 @@ PlateauEvidence schmidl_cox_evidence(const std::vector<std::complex<float>>& bas
     int run = 0;
     size_t run_start = 0;
     double run_sum = 0.0;
+    // Circular mean of phase(P) across the run: a unit-phasor sum
+    // rather than an arithmetic mean of angles, since angles wrap and a
+    // plain average near +/-pi would be meaningless. Reset alongside
+    // run/run_sum in the same two places.
+    std::complex<double> phasor_sum(0.0, 0.0);
 
     auto close_run = [&]() {
         if (run >= min_len && run <= max_len) {
@@ -351,10 +367,20 @@ PlateauEvidence schmidl_cox_evidence(const std::vector<std::complex<float>>& bas
                 best.confidence = std::min(1.0, mean_m);
                 best.start = run_start;
                 best.length = run;
+                // delta_f = angle(P) / (2*pi*L*Ts) = angle(P)*Fs/(2*pi*L) -
+                // the textbook Schmidl-Cox coarse CFO estimator. L cancels
+                // sample_rate_hz's own units here since both are passed
+                // into this function together; compute using L samples'
+                // worth of time as the estimator's delay.
+                if (std::abs(phasor_sum) > 1e-12) {
+                    double mean_angle = std::arg(phasor_sum);
+                    best.cfo_hz = mean_angle * sample_rate_hz / (2.0 * M_PI * double(L));
+                }
             }
         }
         run = 0;
         run_sum = 0.0;
+        phasor_sum = std::complex<double>(0.0, 0.0);
     };
 
     for (size_t d = 0; d < n_d; ++d) {
@@ -364,6 +390,8 @@ PlateauEvidence schmidl_cox_evidence(const std::vector<std::complex<float>>& bas
             if (run == 0) run_start = d;
             ++run;
             run_sum += std::min(1.0, m_metric);
+            double p_mag = std::sqrt(double(p_mag2));
+            if (p_mag > 1e-12) phasor_sum += std::complex<double>(P) / p_mag;
         } else {
             close_run();
         }
@@ -626,6 +654,42 @@ ModClassification classify_modulation(const std::vector<std::complex<float>>& iq
     } else if (sc_conf > 0.0) {
         result.mod = ModClass::OFDM;
         result.confidence = sc_conf;
+
+        // See ModClassification::l_stf_start's comment: sc.start/length
+        // index into `baseband`, which is sample-index-identical to the
+        // caller's own `iq` (remove_dc/mix_to_baseband are both 1:1,
+        // same-length transforms) - safe to expose directly.
+        result.has_preamble_range = true;
+        result.l_stf_start = sc.start;
+        result.l_stf_length = size_t(sc.length);
+        result.cfo_coarse_hz = sc.cfo_hz;
+
+        size_t ltf_symbols_samples = size_t(std::lround(2.0 * 3.2e-6 * sample_rate_hz));
+        // Anchor off sc.start (the plateau's measured START) plus the
+        // FIXED, standard-defined L-STF+guard duration (8us + 1.6us =
+        // 9.6us), NOT sc.length (the plateau's measured END) - sc.start
+        // is a sharp noise-to-periodicity transition, closely tracking
+        // the true preamble start, while sc.length is a truncated
+        // measurement (the sliding plateau test cannot confirm
+        // periodicity for the last short symbol or two, since doing so
+        // needs a full look-ahead still inside the periodic region) -
+        // confirmed on a synthetic signal to undershoot the true L-STF
+        // span by ~20 samples, which put a length-based estimate
+        // inside the guard/L-STF tail rather than at the true clean
+        // long symbols. The standard's own fixed timing is exact and
+        // doesn't have that truncation problem.
+        size_t preamble_to_ltf_samples = size_t(std::lround(9.6e-6 * sample_rate_hz));
+        size_t ltf_start = sc.start + preamble_to_ltf_samples;
+        if (ltf_start < baseband.size()) {
+            result.l_ltf_start = ltf_start;
+            result.l_ltf_length = std::min(ltf_symbols_samples, baseband.size() - ltf_start);
+        } else {
+            // No room left for L-LTF in this capture. Leave
+            // l_ltf_length at 0; wifi_fingerprint.cpp treats that as
+            // "no L-LTF available".
+            result.l_ltf_start = baseband.size();
+            result.l_ltf_length = 0;
+        }
     }
     return result;
 }

@@ -271,6 +271,28 @@ struct DeviceProfile {
 // issue at all, so it also just requests the 500kHz base rate.
 inline DeviceProfile device_profile(SdrDeviceType type) {
     if (type == SdrDeviceType::X310) {
+        // 20 Msps, and NOT the 22.222 that 1 Mbps DSSS decoding needs.
+        //
+        // Tried and reverted: 22.222 Msps (200MHz master clock / decim
+        // 9) gives 2.02 samples per 11 Mchip/s chip, which is what the
+        // Barker despreader in wifi_dsss_rx.cpp requires - at 20 Msps it
+        // gets only 1.818, below the floor, and recovers nothing. On
+        // paper 22.222 Msps is ~89 MB/s against a 1GbE link's ~100 MB/s,
+        // so it should fit.
+        //
+        // It does not. Measured on this machine it starved the RFNoC
+        // control channel within seconds - "Timed out getting recv buff
+        // for management transaction", then a stream of OpTimeout
+        // dropped captures, then an uncaught uhd::op_timeout during
+        // teardown that aborted the process. The practical ceiling here
+        // is below the theoretical one, plausibly because the path has
+        // MTU 1500 (no jumbo frames) and net.core.wmem_max is still at
+        // the 1MB default.
+        //
+        // Consequence, stated plainly: live 1 Mbps beacon decoding is
+        // blocked by transport capacity, not by the decoder. Raising
+        // this needs a 10GbE NIC, jumbo frames, or moving Wi-Fi to the
+        // B210 (56 Msps over USB3).
         return {std::string("addr=") + X310_ADDR, "RX2", 20.0, 31.5, false, 20e6, 500e3};
     }
     return {DEVICE_ARGS, ANTENNA, DEFAULT_GAIN_DB, 70.0, true, 56e6, 500e3};

@@ -45,6 +45,36 @@ struct ModClassification {
     // different scales entirely. Callers may compare these across
     // sub-captures and across modulations.
     double confidence = 0.0;
+
+    // OFDM-only (mod == ModClass::OFDM), for src/wifi_fingerprint.cpp -
+    // this is what was previously computed transiently inside
+    // classify_modulation()/schmidl_cox_evidence() and then discarded.
+    // Indices are into the SAME buffer the caller passed to
+    // classify_modulation() as `iq` - safe to reuse directly, because
+    // remove_dc()/mix_to_baseband() are both sample-index-preserving
+    // (same length in, same length out, one sample in maps to exactly
+    // that sample out), so an index into the internal DC-removed,
+    // baseband-mixed copy is numerically identical to the same index
+    // into the caller's own original `iq`.
+    bool has_preamble_range = false;
+    size_t l_stf_start = 0;   // where the L-STF autocorrelation plateau began
+    size_t l_stf_length = 0;  // plateau run length, in samples
+    // Structural estimate, not independently verified: L-STF's own
+    // measured plateau end, plus the standard's 1.6us L-LTF cyclic-
+    // prefix guard. Matches this project's existing pattern for
+    // structural-not-measured positions (see lora_phy.cpp's SFD
+    // handling) - a wrong alignment here is caught downstream by
+    // wifi_fingerprint.cpp's EVM/sync_corr quality gate, not assumed
+    // correct on faith.
+    size_t l_ltf_start = 0;
+    size_t l_ltf_length = 0;  // 2 * 3.2us worth of samples at sample_rate_hz
+    // Coarse CFO from the Schmidl-Cox plateau's own delay-and-conjugate
+    // sum (phase(P), the textbook estimator - previously computed
+    // nowhere, only |P|^2 was used for the plateau test itself).
+    // Unambiguous range is +/-1/(2*L*Ts) = +/-625kHz at the 0.8us short
+    // symbol period - coarser but far more robust than the fine L-LTF
+    // estimate wifi_fingerprint.cpp refines it with.
+    double cfo_coarse_hz = 0.0;
 };
 
 // Minimum occupied bandwidth for a burst to be plausibly Wi-Fi at all.
@@ -135,6 +165,30 @@ struct BeaconSource {
 std::vector<BeaconSource> find_beacon_sources(const std::vector<double>& burst_starts_s,
                                                const std::vector<double>& burst_power_db,
                                                double tolerance_s = 1e-3, int min_repeats = 5);
+
+// Receiver LO leakage sits at exactly the tuned centre - i.e. DC of the
+// raw capture, before any mixing. Subtracting the complex mean kills
+// it at the one point in the chain where its position is known exactly
+// - MUST run before mix_to_baseband(), after which the spike is no
+// longer at DC and a mean is no longer the right tool. Exposed (not
+// file-local) so callers outside classify_modulation() - specifically
+// wifi_fingerprint.cpp, which needs the SAME baseband domain
+// classify_modulation() measured ModClassification's L-STF/L-LTF
+// indices and CFO in, not raw un-mixed samples - can reproduce that
+// domain exactly rather than approximating it.
+std::vector<std::complex<float>> remove_dc(const std::vector<std::complex<float>>& iq);
+
+// Mixes `iq` (captured at `sample_rate_hz`, centered on the tuned
+// frequency) down so the candidate at `freq_offset_hz` away from that
+// tuned center lands at 0 Hz. Phase starts at 0 at iq[0] and
+// accumulates linearly (wrapped to +/-pi) - callers needing phase
+// continuity with a PREVIOUS call against a different sub-range of the
+// same physical capture (see remove_dc()'s comment on why
+// wifi_fingerprint.cpp needs this) must mix one contiguous range
+// covering everything they need in a single call, not stitch together
+// separately-mixed pieces.
+std::vector<std::complex<float>> mix_to_baseband(const std::vector<std::complex<float>>& iq,
+                                                  double sample_rate_hz, double freq_offset_hz);
 
 // Mixes `iq` (captured at `sample_rate_hz`, centered on the tuned
 // frequency) down so the candidate at `freq_offset_hz` away from that

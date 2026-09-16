@@ -19,6 +19,7 @@
 #include "lora_master.hpp"
 #include "registry.hpp"
 #include "sdr_capture.hpp"
+#include "wifi_master.hpp"
 
 namespace rfmon {
 
@@ -91,6 +92,26 @@ struct WifiPacketRow {
     double bandwidth_khz = 0.0;
     double duration_us = 0.0;
     double confidence = 0.0;  // [0,1], comparable across modulations
+
+    // RF fingerprint (see wifi_fingerprint.hpp) - unset when extraction
+    // wasn't attempted for this row (OFDM without a usable L-LTF range,
+    // or a DSSS burst too short to be beacon-plausible - see
+    // scanner.cpp's own comment on that scope limit) or was gated out
+    // (fp_gate_reason set in that case). irr_db/iq_eps/iq_phi_deg stay
+    // unset on every DSSS row even when the rest of the fingerprint
+    // passed - see wifi_fingerprint.cpp's own comment on why a
+    // real-valued BPSK reference can't resolve those three via this
+    // technique, not a gating decision.
+    std::optional<double> fp_cfo_ppm;
+    std::optional<double> fp_irr_db;
+    std::optional<double> fp_iq_eps;
+    std::optional<double> fp_iq_phi_deg;
+    std::optional<double> fp_dc_dbc;
+    std::optional<double> fp_dc_ang_deg;
+    std::optional<double> fp_snr_db;
+    std::optional<double> fp_evm_pct;
+    std::optional<double> fp_sync_corr;
+    std::optional<std::string> fp_gate_reason;  // set only when attempted but gated out
 };
 
 class Scanner {
@@ -150,6 +171,13 @@ public:
     // physically indistinguishable here by construction.
     std::map<int, int> wifi_source_counts(const std::string& band) const;
 
+    // Persistent, cross-run Wi-Fi "master emitter" list (see
+    // wifi_master.hpp) - the Wi-Fi analog of lora_master_snapshot()
+    // above, fed only by non-gated Wi-Fi fingerprint readings. Keyed
+    // by decoded MAC/BSSID when one is available (currently only
+    // DSSS beacons decode one), fingerprint-cluster otherwise.
+    std::vector<wifi_master::WifiMasterRow> wifi_master_snapshot() const;
+
 private:
     void run();
     // Appends any energy-detected segment(s) found in this same
@@ -200,6 +228,7 @@ private:
     std::map<std::string, std::map<int, int>> wifi_source_counts_;
 
     lora_master::LoraMasterList lora_master_;
+    wifi_master::WifiMasterList wifi_master_;
 
     int rx_fail_streak_ = 0;
     static constexpr int kRxStallThreshold = 3;

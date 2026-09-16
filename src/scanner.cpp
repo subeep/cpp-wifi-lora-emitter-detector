@@ -11,6 +11,8 @@
 #include "lora_phy.hpp"
 #include "lora_phy_std.hpp"
 #include "spectrum.hpp"
+#include "wifi_dsss_rx.hpp"
+#include "wifi_fingerprint.hpp"
 #include "wifi_phy.hpp"
 
 // PROJECT_ROOT_DIR is set by CMakeLists.txt to the source tree root for
@@ -107,7 +109,9 @@ std::vector<std::complex<float>> decimate_boxcar(const std::vector<std::complex<
 }
 }  // namespace
 
-Scanner::Scanner() : lora_master_(std::string(PROJECT_ROOT_DIR) + "/data/lora_master") {}
+Scanner::Scanner()
+    : lora_master_(std::string(PROJECT_ROOT_DIR) + "/data/lora_master"),
+      wifi_master_(std::string(PROJECT_ROOT_DIR) + "/data/wifi_master") {}
 
 Scanner::~Scanner() { stop(); }
 
@@ -191,6 +195,10 @@ std::vector<LoraPacketRow> Scanner::lora_packets() const {
 
 std::vector<lora_master::LoraMasterRow> Scanner::lora_master_snapshot() const {
     return lora_master_.snapshot();
+}
+
+std::vector<wifi_master::WifiMasterRow> Scanner::wifi_master_snapshot() const {
+    return wifi_master_.snapshot();
 }
 
 std::vector<WifiPacketRow> Scanner::wifi_packets() const {
@@ -586,6 +594,7 @@ void Scanner::run() {
                 // channels where it dominated - a channel carrying
                 // mostly 1 Mbps beacons was still labelled OFDM because
                 // one short OFDM frame edged it out.
+                std::map<std::string, wifi::BeaconInfo> decoded_beacons;
                 double airtime_dsss = 0.0, airtime_ofdm = 0.0;
                 double best_bw_dsss = 0.0, best_power_dsss = -200.0;
                 double best_bw_ofdm = 0.0, best_power_ofdm = -200.0;
@@ -618,6 +627,25 @@ void Scanner::run() {
                         double power_db =
                             wifi::estimate_mean_power_db(window.data(), window.size());
                         double duration_s = double(b.length) / actual_rate;
+
+                        // RF fingerprint extraction (see
+                        // wifi_fingerprint.hpp - a separate engine from
+                        // LoRa's) - OFDM runs unconditionally on every
+                        // burst that already cleared the bandwidth gate
+                        // above; DSSS is scoped to the SAME beacon-
+                        // duration-gated bursts as the decode attempt
+                        // below (see that block's own comment for the
+                        // "why beacon-plausible only" reasoning, which
+                        // applies equally here - a documented scope
+                        // limit, not a hard requirement of the math).
+                        std::optional<wifi_fingerprint::WifiFingerprint> fp_opt;
+                        std::optional<std::string> fp_mac;
+                        if (result.mod == wifi::ModClass::OFDM && result.has_preamble_range) {
+                            fp_opt = wifi_fingerprint::extract_ofdm_fingerprint(
+                                cap.data(), cap.size(), b.start, b.length, actual_rate,
+                                step.center_hz, real_channel_hz, real_channel_hz, result);
+                        }
+
                         // Only feed BEACON-PLAUSIBLE bursts to the
                         // cadence clustering. This is not an
                         // optimisation, it is what makes the method work
@@ -639,6 +667,39 @@ void Scanner::run() {
                             duration_s >= WIFI_BEACON_MIN_DURATION_S) {
                             burst_starts_s.push_back(double(b.start) / actual_rate);
                             burst_powers_db.push_back(power_db);
+
+                            // A beacon-shaped DSSS burst is worth a full
+                            // decode attempt: it is the one frame that
+                            // names its own network. Cheap to try and
+                            // self-validating - the FCS either passes or
+                            // the frame is discarded, so a returned
+                            // beacon is real identity rather than
+                            // inference.
+                            auto dec = wifi::decode_dsss_burst(window.data(), window.size(),
+                                                                actual_rate, step.center_hz,
+                                                                real_channel_hz);
+                            if (dec.beacon) {
+                                decoded_beacons[dec.beacon->bssid] = *dec.beacon;
+                                // A decoded beacon's BSSID is a real,
+                                // zero-ambiguity 48-bit MAC - use it as
+                                // the master-list's primary key rather
+                                // than fingerprint-cluster matching
+                                // (see wifi_master.hpp's file header).
+                                fp_mac = dec.beacon->bssid;
+                            }
+                            if (dec.preamble_found && !dec.sync_symbols.empty()) {
+                                fp_opt = wifi_fingerprint::extract_dsss_fingerprint(real_channel_hz,
+                                                                                     dec);
+                            }
+                        }
+
+                        if (fp_opt.has_value() && !fp_opt->gated_out) {
+                            wifi_master_.record_reading(fp_mac,
+                                                         result.mod == wifi::ModClass::DSSS
+                                                             ? "DSSS"
+                                                             : "OFDM",
+                                                         real_channel_hz, bw_hz, *fp_opt,
+                                                         now_epoch_seconds());
                         }
 
                         WifiPacketRow row;
@@ -651,6 +712,24 @@ void Scanner::run() {
                         row.bandwidth_khz = bw_hz / 1e3;
                         row.duration_us = duration_s * 1e6;
                         row.confidence = result.confidence;
+                        if (fp_opt.has_value()) {
+                            row.fp_cfo_ppm = fp_opt->cfo_ppm;
+                            row.fp_dc_dbc = fp_opt->dc_dbc;
+                            row.fp_dc_ang_deg = fp_opt->dc_ang_deg;
+                            row.fp_snr_db = fp_opt->snr_db;
+                            row.fp_evm_pct = fp_opt->evm_pct;
+                            row.fp_sync_corr = fp_opt->sync_corr;
+                            // Left unset on every DSSS row regardless
+                            // of gate outcome - see WifiPacketRow's own
+                            // comment on why (structurally unset, not
+                            // gated).
+                            if (result.mod == wifi::ModClass::OFDM) {
+                                row.fp_irr_db = fp_opt->irr_db;
+                                row.fp_iq_eps = fp_opt->iq_eps;
+                                row.fp_iq_phi_deg = fp_opt->iq_phi_deg;
+                            }
+                            if (fp_opt->gated_out) row.fp_gate_reason = fp_opt->gate_reason;
+                        }
                         {
                             std::lock_guard<std::mutex> lock(wifi_log_mutex_);
                             wifi_packet_log_.push_back(std::move(row));
@@ -690,6 +769,30 @@ void Scanner::run() {
                 {
                     std::lock_guard<std::mutex> lock(wifi_log_mutex_);
                     wifi_source_counts_[step.band][channel_num] = source_count;
+                }
+
+                // Every decoded beacon becomes its own registry entry,
+                // keyed by BSSID - real per-network identity rather than
+                // one aggregate row per channel. The channel comes from
+                // the beacon's OWN DS Parameter Set, not from whatever
+                // we were tuned to: at this capture width an adjacent
+                // channel's beacons decode here too, and attributing
+                // them to the tuned channel would invent co-channel
+                // emitters.
+                for (const auto& [bssid, info] : decoded_beacons) {
+                    double own_hz = real_channel_hz;
+                    const auto& chans = wifi_2g4_channels();
+                    auto cit = chans.find(info.channel);
+                    if (cit != chans.end()) own_hz = cit->second;
+
+                    Segment seg{own_hz, best_bw > 0.0 ? best_bw : 20e6, best_power};
+                    std::string label = "WiFi AP " + bssid;
+                    if (!info.ssid.empty()) label += " \"" + info.ssid + "\"";
+                    else label += " (hidden)";
+                    Detection det{step.band, seg, label};
+                    det.modulation_confirmed = true;
+                    det.source_id = bssid;
+                    detections.push_back(std::move(det));
                 }
 
                 // The Active-emitters row for this channel is the best
