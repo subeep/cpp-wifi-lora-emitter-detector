@@ -80,9 +80,8 @@ struct LoraPacketRow {
 
 // One detected Wi-Fi transmission - a single burst found by
 // wifi::detect_bursts() and then classified on its own window, rather
-// than a whole-capture verdict. Deliberately detection-only: no PLCP or
-// payload decode, so there is no rate/length/MAC here (see the session
-// notes on why decode is out of scope for this hardware).
+// than a whole-capture verdict. FCS-valid DSSS beacon/probe responses
+// additionally carry decoded identity and the persistent record key.
 struct WifiPacketRow {
     std::string time;  // HH:MM:SS
     double freq_mhz = 0.0;
@@ -92,6 +91,8 @@ struct WifiPacketRow {
     double bandwidth_khz = 0.0;
     double duration_us = 0.0;
     double confidence = 0.0;  // [0,1], comparable across modulations
+    std::optional<wifi::BeaconInfo> identity;  // FCS-valid decoded beacon/probe response
+    std::string master_key;  // persistent BSSID or accepted fingerprint-cluster key
 
     // RF fingerprint (see wifi_fingerprint.hpp) - unset when extraction
     // wasn't attempted for this row (OFDM without a usable L-LTF range,
@@ -173,10 +174,11 @@ public:
 
     // Persistent, cross-run Wi-Fi "master emitter" list (see
     // wifi_master.hpp) - the Wi-Fi analog of lora_master_snapshot()
-    // above, fed only by non-gated Wi-Fi fingerprint readings. Keyed
+    // above, fed by FCS-valid identities and accepted RF readings independently. Keyed
     // by decoded MAC/BSSID when one is available (currently only
     // DSSS beacons decode one), fingerprint-cluster otherwise.
     std::vector<wifi_master::WifiMasterRow> wifi_master_snapshot() const;
+    std::string wifi_storage_error() const { return wifi_master_.storage_error(); }
 
 private:
     void run();

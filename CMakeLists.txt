@@ -287,3 +287,32 @@ target_include_directories(band_smoke_test PRIVATE ${CMAKE_SOURCE_DIR}/src ${UHD
 target_link_libraries(band_smoke_test PRIVATE PkgConfig::KISSFFT Threads::Threads dl ${UHD_LIBRARIES})
 # See rf_monitor_gui's own compile definition above for why.
 target_compile_definitions(band_smoke_test PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
+
+# Wi-Fi identity persistence uses a real JSON parser for arbitrary SSID/WPS strings.
+find_path(WIFI_JSON_INCLUDE_DIR nlohmann/json.hpp)
+if(NOT WIFI_JSON_INCLUDE_DIR)
+  message(FATAL_ERROR "Wi-Fi identity storage requires nlohmann JSON >= 3.9 (nlohmann-json3-dev)")
+endif()
+foreach(target rf_monitor_gui band_smoke_test test_wifi_master)
+  target_include_directories(${target} PRIVATE ${WIFI_JSON_INCLUDE_DIR})
+endforeach()
+# Application sources already include wifi_vendor.cpp via APP_SOURCES.
+foreach(target band_smoke_test test_wifi_master)
+  target_sources(${target} PRIVATE src/wifi_vendor.cpp)
+endforeach()
+target_sources(test_wifi_master PRIVATE src/wifi_frame.cpp)
+
+add_executable(test_wifi_identity tests/test_wifi_identity.cpp src/wifi_frame.cpp
+               src/wifi_master.cpp src/wifi_vendor.cpp)
+target_include_directories(test_wifi_identity PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+
+# Optional offscreen validation of the actual Wi-Fi GUI (no radio or display server).
+find_path(WIFI_EGL_INCLUDE_DIR EGL/egl.h)
+find_library(WIFI_EGL_LIBRARY EGL)
+if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
+  add_executable(test_wifi_gui tests/test_wifi_gui.cpp src/wifi_gui.cpp src/wifi_frame.cpp
+      ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp
+      ${IMGUI_DIR}/imgui_widgets.cpp ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
+  target_include_directories(test_wifi_gui PRIVATE ${CMAKE_SOURCE_DIR}/src ${IMGUI_DIR} ${WIFI_EGL_INCLUDE_DIR})
+  target_link_libraries(test_wifi_gui PRIVATE OpenGL::GL ${WIFI_EGL_LIBRARY} dl)
+endif()

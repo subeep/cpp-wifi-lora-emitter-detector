@@ -138,6 +138,125 @@ std::optional<PlcpHeader> parse_plcp_header(const uint8_t* bytes, size_t len) {
     return h;
 }
 
+namespace {
+uint16_t le16(const uint8_t* p) { return uint16_t(p[0] | (uint16_t(p[1]) << 8)); }
+uint16_t be16(const uint8_t* p) { return uint16_t((uint16_t(p[0]) << 8) | p[1]); }
+void add_label(std::string& out, const std::string& value) {
+    if (!out.empty()) out += ", ";
+    out += value;
+}
+std::string selector_name(const uint8_t* p, bool akm, bool wpa) {
+    bool known_oui = p[0] == 0 && p[1] == (wpa ? 0x50 : 0x0f) && p[2] == (wpa ? 0xf2 : 0xac);
+    if (known_oui) {
+        if (akm) {
+            switch (p[3]) {
+                case 1: return "802.1X";
+                case 2: return "PSK";
+                case 3: if (!wpa) return "FT-802.1X"; break;
+                case 4: if (!wpa) return "FT-PSK"; break;
+                case 5: if (!wpa) return "802.1X-SHA256"; break;
+                case 6: if (!wpa) return "PSK-SHA256"; break;
+                case 8: if (!wpa) return "SAE (WPA3-Personal)"; break;
+                case 9: if (!wpa) return "FT-SAE (WPA3-Personal)"; break;
+                case 11: if (!wpa) return "802.1X Suite-B"; break;
+                case 12: if (!wpa) return "802.1X Suite-B-192"; break;
+                case 13: if (!wpa) return "FT-802.1X-SHA384"; break;
+                case 18: if (!wpa) return "OWE (Enhanced Open)"; break;
+            }
+        } else {
+            switch (p[3]) {
+                case 0: return "Use group cipher";
+                case 1: return "WEP-40";
+                case 2: return "TKIP";
+                case 4: return "CCMP-128";
+                case 5: return "WEP-104";
+                case 8: if (!wpa) return "GCMP-128"; break;
+                case 9: if (!wpa) return "GCMP-256"; break;
+                case 10: if (!wpa) return "CCMP-256"; break;
+            }
+        }
+    }
+    char buf[40];
+    std::snprintf(buf, sizeof(buf), "Unknown %02x:%02x:%02x:%u", p[0], p[1], p[2], p[3]);
+    return buf;
+}
+// WPA/RSN common mandatory fields. Optional RSN capabilities, PMKID list and
+// group-management suite are length checked. No inference from the privacy bit alone.
+bool parse_security(const uint8_t* p, size_t n, bool wpa, std::string& auth,
+                    std::string& cipher, std::string& pmf) {
+    if (n < 8 || le16(p) != 1) return false;
+    std::string group = selector_name(p + 2, false, wpa);
+    size_t pos = 6;
+    auto suites = [&](bool akm, std::string& out) {
+        if (n - pos < 2) return false;
+        size_t count = le16(p + pos); pos += 2;
+        if (!count || count > (n - pos) / 4) return false;
+        for (size_t i = 0; i < count; ++i, pos += 4) add_label(out, selector_name(p + pos, akm, wpa));
+        return true;
+    };
+    std::string pairwise, keys;
+    if (!suites(false, pairwise) || !suites(true, keys)) return false;
+    uint16_t caps = 0;
+    if (pos < n) {
+        if (n - pos < 2) return false;
+        caps = le16(p + pos); pos += 2;
+    }
+    if (!wpa && pos < n) {
+        if (n - pos < 2) return false;
+        size_t count = le16(p + pos); pos += 2;
+        if (count > (n - pos) / 16) return false;
+        pos += count * 16;
+        if (pos < n) {
+            if (n - pos != 4) return false;
+            pos += 4;
+        }
+    }
+    if (pos != n) return false;
+    auth = (wpa ? "WPA: " : "RSN: ") + keys;
+    cipher = pairwise + " (group: " + group + ")";
+    if (!wpa) {
+        pmf = (caps & 0x40) ? ((caps & 0x80) ? "Required" : "Invalid PMF flags")
+                            : ((caps & 0x80) ? "Capable" : "Not advertised");
+    }
+    return true;
+}
+void parse_wps(const std::vector<uint8_t>& bytes, BeaconInfo& info) {
+    size_t pos = 0;
+    while (pos < bytes.size()) {
+        if (bytes.size() - pos < 4) { info.ies_complete = false; break; }
+        uint16_t tag = be16(bytes.data() + pos), len = be16(bytes.data() + pos + 2);
+        pos += 4;
+        if (len > bytes.size() - pos) { info.ies_complete = false; break; }
+        std::string* target = nullptr;
+        size_t limit = 32;
+        switch (tag) {
+            case 0x1021: target = &info.wps_manufacturer; limit = 64; break;
+            case 0x1023: target = &info.wps_model_name; break;
+            case 0x1024: target = &info.wps_model_number; break;
+            case 0x1011: target = &info.wps_device_name; break;
+        }
+        if (target) {
+            if (len <= limit) target->assign(reinterpret_cast<const char*>(bytes.data() + pos), len);
+            else info.ies_complete = false;
+        }
+        pos += len;
+    }
+}
+} // namespace
+
+std::string display_text(const std::string& bytes) {
+    std::string out;
+    for (unsigned char c : bytes) {
+        if (c >= 32 && c < 127 && c != '\\') out += char(c);
+        else {
+            char escaped[5];
+            std::snprintf(escaped, sizeof(escaped), "\\x%02X", c);
+            out += escaped;
+        }
+    }
+    return out;
+}
+
 std::optional<BeaconInfo> parse_beacon(const uint8_t* mpdu, size_t len) {
     if (len < kMacHeaderLen + kFixedParamsLen + kFcsLen) return std::nullopt;
 
@@ -148,6 +267,7 @@ std::optional<BeaconInfo> parse_beacon(const uint8_t* mpdu, size_t len) {
     if (subtype != kSubtypeBeacon && subtype != kSubtypeProbeResponse) return std::nullopt;
 
     BeaconInfo info;
+    info.frame_source = subtype == kSubtypeBeacon ? "Beacon" : "Probe response";
     // The FCS covers the whole MPDU except itself, and is stored
     // little-endian at the very end.
     size_t body_len = len - kFcsLen;
@@ -164,13 +284,18 @@ std::optional<BeaconInfo> parse_beacon(const uint8_t* mpdu, size_t len) {
     info.capability = uint16_t(uint16_t(fixed[10]) | (uint16_t(fixed[11]) << 8));
 
     // Tagged information elements: [tag][len][payload...]
+    std::vector<uint8_t> wps_bytes;
+    bool security_seen = false;
+    int ht_channel = 0;
     size_t pos = kMacHeaderLen + kFixedParamsLen;
     while (pos + 2 <= body_len) {
         uint8_t tag = mpdu[pos];
         uint8_t tag_len = mpdu[pos + 1];
         size_t payload = pos + 2;
-        if (payload + tag_len > body_len) break;  // truncated / malformed
+        if (payload + tag_len > body_len) { info.ies_complete = false; break; }
         if (tag == kIeSsid) {
+            if (tag_len > 32) { info.ies_complete = false; pos = payload + tag_len; continue; }
+            info.ssid_present = true;
             // A zero-length or all-zero SSID is a hidden network, which
             // is legitimate - leave the field empty rather than
             // inventing a name.
@@ -181,10 +306,49 @@ std::optional<BeaconInfo> parse_beacon(const uint8_t* mpdu, size_t len) {
             if (!all_zero) {
                 info.ssid.assign(reinterpret_cast<const char*>(mpdu + payload), tag_len);
             }
-        } else if (tag == kIeDsParameterSet && tag_len >= 1) {
-            info.channel = int(mpdu[payload]);
+        } else if (tag == kIeDsParameterSet) {
+            if (tag_len == 1 && mpdu[payload] >= 1 && mpdu[payload] <= 14) {
+                info.channel = int(mpdu[payload]);
+                info.channel_source = "DS Parameter Set";
+            } else info.ies_complete = false;
+        } else if (tag == 61) {
+            if (tag_len == 22 && mpdu[payload] != 0) ht_channel = mpdu[payload];
+            else info.ies_complete = false;
+        } else if (tag == 45 || tag == 191) {
+            if (tag_len == (tag == 45 ? 26 : 12)) add_label(info.standards, tag == 45 ? "HT (802.11n)" : "VHT (802.11ac)");
+            else info.ies_complete = false;
+        } else if (tag == 255 && tag_len > 0 && mpdu[payload] == 35) {
+            // HE MAC(6), PHY(11), and minimum MCS/NSS(4), plus extension ID.
+            if (tag_len >= 22) add_label(info.standards, "HE (802.11ax)");
+            else info.ies_complete = false;
+        } else if (tag == 48 || (tag == 221 && tag_len >= 4 &&
+                   mpdu[payload] == 0 && mpdu[payload+1] == 0x50 && mpdu[payload+2] == 0xf2 && mpdu[payload+3] == 1)) {
+            bool wpa = tag == 221;
+            security_seen = true;
+            std::string auth, cipher, pmf;
+            size_t skip = wpa ? 4 : 0;
+            if (parse_security(mpdu + payload + skip, tag_len - skip, wpa, auth, cipher, pmf)) {
+                add_label(info.security, auth);
+                add_label(info.ciphers, cipher);
+                if (!pmf.empty()) info.pmf = pmf;
+            } else {
+                info.ies_complete = false;
+                add_label(info.security, wpa ? "WPA (malformed)" : "RSN (malformed)");
+            }
+        } else if (tag == 221 && tag_len >= 4 && mpdu[payload] == 0 &&
+                   mpdu[payload+1] == 0x50 && mpdu[payload+2] == 0xf2 && mpdu[payload+3] == 4) {
+            info.wps_present = true;
+            // WPS attributes can span consecutive vendor IEs; concatenate before TLV parsing.
+            wps_bytes.insert(wps_bytes.end(), mpdu + payload + 4, mpdu + payload + tag_len);
         }
         pos = payload + tag_len;
+    }
+    if (pos != body_len) info.ies_complete = false;
+    if (!info.channel && ht_channel) { info.channel = ht_channel; info.channel_source = "HT Operation"; }
+    if (info.wps_present) parse_wps(wps_bytes, info);
+    if (!security_seen) {
+        info.security = !info.ies_complete ? "Unknown (incomplete IEs)" :
+                        ((info.capability & 0x10) ? "Privacy set (legacy/unknown)" : "Open (no privacy advertised)");
     }
     return info;
 }

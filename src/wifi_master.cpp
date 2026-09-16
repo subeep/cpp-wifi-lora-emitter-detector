@@ -1,172 +1,173 @@
 #include "wifi_master.hpp"
-
+#include "wifi_vendor.hpp"
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <nlohmann/json.hpp>
 
 namespace rfmon::wifi_master {
+using json = nlohmann::json;
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WifiMasterReading, ts, channel_hz,
+    bandwidth_hz, phy, cfo_ppm, irr_db, iq_eps, iq_phi_deg, dc_dbc, dc_ang_deg,
+    snr_db, evm_pct, sync_corr)
 
 namespace {
-
-std::string fmt_double(double v) {
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "%.8g", v);
-    return std::string(buf);
-}
-
-// Same tolerant field extraction as lora_master.cpp - a substring
-// search for "key": followed by strtod/strtoll, not a general JSON
-// parser (this project has no JSON dependency).
-double parse_double_field(const std::string& line, const std::string& key) {
-    std::string needle = "\"" + key + "\":";
-    size_t pos = line.find(needle);
-    if (pos == std::string::npos) return 0.0;
-    return std::strtod(line.c_str() + pos + needle.size(), nullptr);
-}
-
-int64_t parse_int64_field(const std::string& line, const std::string& key) {
-    std::string needle = "\"" + key + "\":";
-    size_t pos = line.find(needle);
-    if (pos == std::string::npos) return 0;
-    return std::strtoll(line.c_str() + pos + needle.size(), nullptr, 10);
-}
-
-bool parse_bool_field(const std::string& line, const std::string& key) {
-    std::string needle = "\"" + key + "\":";
-    size_t pos = line.find(needle);
-    if (pos == std::string::npos) return false;
-    size_t start = pos + needle.size();
-    return line.compare(start, 4, "true") == 0;
-}
-
-// Extracts a double-quoted string value: "key":"value". Stops at the
-// first unescaped closing quote - device keys (MAC strings, WIFI-FP-*
-// cluster ids) never contain a quote or backslash, so no escaping
-// logic is needed.
-std::string parse_string_field(const std::string& line, const std::string& key) {
-    std::string needle = "\"" + key + "\":\"";
-    size_t pos = line.find(needle);
-    if (pos == std::string::npos) return "";
-    size_t start = pos + needle.size();
-    size_t end = line.find('"', start);
-    if (end == std::string::npos) return "";
-    return line.substr(start, end - start);
-}
-
-std::string format_reading_line(const WifiMasterReading& r) {
+std::string hex(const std::string& s) {
+    const char* digits = "0123456789abcdef";
     std::string out;
-    out += "{\"ts\":" + std::to_string(r.ts);
-    out += ",\"channel_hz\":" + std::to_string(std::llround(r.channel_hz));
-    out += ",\"bandwidth_hz\":" + std::to_string(std::llround(r.bandwidth_hz));
-    out += ",\"phy\":\"" + r.phy + "\"";
-    out += ",\"cfo_ppm\":" + fmt_double(r.cfo_ppm);
-    out += ",\"irr_db\":" + fmt_double(r.irr_db);
-    out += ",\"iq_eps\":" + fmt_double(r.iq_eps);
-    out += ",\"iq_phi_deg\":" + fmt_double(r.iq_phi_deg);
-    out += ",\"dc_dbc\":" + fmt_double(r.dc_dbc);
-    out += ",\"dc_ang_deg\":" + fmt_double(r.dc_ang_deg);
-    out += ",\"snr_db\":" + fmt_double(r.snr_db);
-    out += ",\"evm_pct\":" + fmt_double(r.evm_pct);
-    out += ",\"sync_corr\":" + fmt_double(r.sync_corr);
-    out += "}\n";
+    for (unsigned char c : s) { out += digits[c >> 4]; out += digits[c & 15]; }
     return out;
 }
-
-std::string format_meta_line(const std::string& key, bool key_is_mac, int64_t first_seen_ts) {
-    return "{\"meta\":1,\"key\":\"" + key + "\",\"key_is_mac\":" + (key_is_mac ? "true" : "false") +
-           ",\"first_seen_ts\":" + std::to_string(first_seen_ts) + "}\n";
+std::string unhex(const std::string& s) {
+    if (s.size() % 2) throw std::runtime_error("Odd hex string");
+    auto digit = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        throw std::runtime_error("Invalid hex string");
+    };
+    std::string out;
+    for (size_t i = 0; i < s.size(); i += 2) out += char((digit(s[i]) << 4) | digit(s[i+1]));
+    return out;
 }
-
+json beacon_json(const wifi::BeaconInfo& b) {
+    json j = {{"bssid", b.bssid}, {"ssid_present", b.ssid_present}, {"channel", b.channel},
+        {"channel_source", b.channel_source}, {"beacon_interval_tu", b.beacon_interval_tu},
+        {"capability", b.capability}, {"fcs_valid", b.fcs_valid}, {"ies_complete", b.ies_complete},
+        {"frame_source", b.frame_source}, {"security", b.security}, {"ciphers", b.ciphers},
+        {"pmf", b.pmf}, {"standards", b.standards}, {"wps_present", b.wps_present}};
+    // SSID/WPS are arbitrary octets, not guaranteed UTF-8. Store exact bytes
+    // alongside an escaped human-readable representation; JSON never loses bytes.
+    auto text = [&](const char* key, const std::string& s) {
+        j[key] = wifi::display_text(s);
+        j[std::string(key) + "_hex"] = hex(s);
+    };
+    text("ssid", b.ssid); text("wps_manufacturer", b.wps_manufacturer);
+    text("wps_model_name", b.wps_model_name); text("wps_model_number", b.wps_model_number);
+    text("wps_device_name", b.wps_device_name);
+    return j;
+}
+wifi::BeaconInfo read_beacon(const json& j) {
+    wifi::BeaconInfo b;
+    b.bssid = j.at("bssid").get<std::string>();
+    b.ssid_present = j.value("ssid_present", false);
+    b.channel = j.value("channel", 0); b.channel_source = j.value("channel_source", "");
+    b.beacon_interval_tu = j.value("beacon_interval_tu", uint16_t(0));
+    b.capability = j.value("capability", uint16_t(0));
+    b.fcs_valid = j.value("fcs_valid", false); b.ies_complete = j.value("ies_complete", true);
+    b.frame_source = j.value("frame_source", ""); b.security = j.value("security", "");
+    b.ciphers = j.value("ciphers", ""); b.pmf = j.value("pmf", "");
+    b.standards = j.value("standards", ""); b.wps_present = j.value("wps_present", false);
+    b.ssid = unhex(j.value("ssid_hex", ""));
+    b.wps_manufacturer = unhex(j.value("wps_manufacturer_hex", ""));
+    b.wps_model_name = unhex(j.value("wps_model_name_hex", ""));
+    b.wps_model_number = unhex(j.value("wps_model_number_hex", ""));
+    b.wps_device_name = unhex(j.value("wps_device_name_hex", ""));
+    return b;
+}
+json meta_json(const std::string& key, bool mac, int64_t first_seen) {
+    return {{"meta", 1}, {"schema", 2}, {"key", key}, {"key_is_mac", mac}, {"first_seen_ts", first_seen}};
+}
 double median_of(std::vector<double> v) {
-    if (v.empty()) return 0.0;
+    if (v.empty()) return 0;
     std::sort(v.begin(), v.end());
     size_t n = v.size();
-    if (n % 2 == 1) return v[n / 2];
-    return 0.5 * (v[n / 2 - 1] + v[n / 2]);
+    return n % 2 ? v[n/2] : 0.5 * (v[n/2-1] + v[n/2]);
 }
-
-// Filesystem-safe filename from a device key - MAC strings and
-// WIFI-FP-* cluster ids never contain '/', but replace it defensively
-// rather than assume that always stays true.
-std::string sanitize_filename(const std::string& key) {
-    std::string out = key;
-    std::replace(out.begin(), out.end(), '/', '_');
-    return out;
+bool safe_key(const std::string& key, bool mac) {
+    if (mac) return wifi::canonical_mac(key).has_value();
+    if (key.rfind("WIFI-FP-", 0) != 0 || key.size() <= 8) return false;
+    return std::all_of(key.begin()+8, key.end(), [](char c) { return c >= '0' && c <= '9'; });
 }
-
-}  // namespace
+}
 
 WifiMasterList::WifiMasterList(std::string dir) : dir_(std::move(dir)) { load_all_devices(); }
-
-std::string WifiMasterList::device_path(const std::string& key) const {
-    return dir_ + "/" + sanitize_filename(key) + ".ndjson";
+std::string WifiMasterList::device_path(const std::string& key) const { return dir_ + "/" + key + ".ndjson"; }
+std::string WifiMasterList::storage_error() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return storage_error_;
 }
-
 void WifiMasterList::load_all_devices() {
     namespace fs = std::filesystem;
     std::error_code ec;
     fs::create_directories(dir_, ec);
-    if (!fs::exists(dir_)) return;
-
-    for (const auto& entry : fs::directory_iterator(dir_)) {
-        if (!entry.is_regular_file() || entry.path().extension() != ".ndjson") continue;
+    if (ec) { storage_error_ = "Cannot create Wi-Fi storage: " + ec.message(); return; }
+    fs::directory_iterator end, it(dir_, ec);
+    if (ec) { storage_error_ = "Cannot read Wi-Fi storage: " + ec.message(); return; }
+    for (; it != end; it.increment(ec)) {
+        if (ec) { storage_error_ = "Cannot enumerate Wi-Fi storage: " + ec.message(); break; }
+        const auto& entry = *it;
+        if (!entry.is_regular_file(ec) || entry.path().extension() != ".ndjson") continue;
         std::ifstream in(entry.path());
-        if (!in.is_open()) continue;
-
+        if (!in) { storage_error_ = "Cannot read " + entry.path().string(); continue; }
         Device dev;
         bool have_meta = false;
         std::string line;
         while (std::getline(in, line)) {
             if (line.empty()) continue;
-            if (!have_meta) {
-                dev.key = parse_string_field(line, "key");
-                dev.key_is_mac = parse_bool_field(line, "key_is_mac");
-                dev.first_seen_ts = parse_int64_field(line, "first_seen_ts");
-                have_meta = true;
-                continue;
+            try {
+                auto j = json::parse(line);
+                if (!j.is_object()) throw std::runtime_error("Expected object");
+                if (!have_meta) {
+                    dev.key = j.at("key").get<std::string>();
+                    dev.key_is_mac = j.at("key_is_mac").get<bool>();
+                    dev.first_seen_ts = j.at("first_seen_ts").get<int64_t>();
+                    if (!safe_key(dev.key, dev.key_is_mac)) throw std::runtime_error("Invalid key");
+                    if (dev.key_is_mac) dev.key = *wifi::canonical_mac(dev.key);
+                    have_meta = true;
+                    continue;
+                }
+                if (j.value("type", "") == "identity") {
+                    auto b = read_beacon(j.at("identity"));
+                    if (!dev.key_is_mac || b.bssid != dev.key || !b.fcs_valid) throw std::runtime_error("Invalid identity");
+                    int64_t ts = j.at("ts").get<int64_t>();
+                    // Validate the whole record before updating the loaded state.
+                    auto count = j.at("identity_count").get<uint64_t>();
+                    auto ssid_ts = j.value("ssid_seen_ts", int64_t(0));
+                    auto wps_ts = j.value("wps_seen_ts", int64_t(0));
+                    auto ssid_source = j.value("ssid_source", "");
+                    auto wps_source = j.value("wps_source", "");
+                    auto monitored = j.at("monitored_channel_hz").get<double>();
+                    if (!dev.identity || ts >= dev.identity_ts) {
+                        dev.identity = std::move(b); dev.identity_ts = ts;
+                        dev.identity_count = count; dev.ssid_seen_ts = ssid_ts; dev.wps_seen_ts = wps_ts;
+                        dev.ssid_source = std::move(ssid_source); dev.wps_source = std::move(wps_source);
+                        dev.monitored_channel_hz = monitored;
+                    }
+                    ++dev.identity_lines;
+                    continue;
+                }
+                if (!j.contains("ts") || !j.contains("phy") || !j.contains("cfo_ppm"))
+                    throw std::runtime_error("Unknown record");
+                auto r = j.get<WifiMasterReading>();
+                dev.readings.push_back(r);
+            } catch (const std::exception&) {
+                storage_error_ = "Skipped malformed Wi-Fi record in " + entry.path().filename().string();
+                // A damaged meta line cannot safely identify any subsequent readings.
+                if (!have_meta) break;
             }
-            WifiMasterReading r;
-            r.ts = parse_int64_field(line, "ts");
-            r.channel_hz = parse_double_field(line, "channel_hz");
-            r.bandwidth_hz = parse_double_field(line, "bandwidth_hz");
-            r.phy = parse_string_field(line, "phy");
-            r.cfo_ppm = parse_double_field(line, "cfo_ppm");
-            r.irr_db = parse_double_field(line, "irr_db");
-            r.iq_eps = parse_double_field(line, "iq_eps");
-            r.iq_phi_deg = parse_double_field(line, "iq_phi_deg");
-            r.dc_dbc = parse_double_field(line, "dc_dbc");
-            r.dc_ang_deg = parse_double_field(line, "dc_ang_deg");
-            r.snr_db = parse_double_field(line, "snr_db");
-            r.evm_pct = parse_double_field(line, "evm_pct");
-            r.sync_corr = parse_double_field(line, "sync_corr");
-            dev.readings.push_back(r);
         }
-        if (!have_meta || dev.key.empty() || dev.readings.empty()) continue;
-
+        if (!have_meta || (dev.readings.empty() && !dev.identity)) continue;
         while (dev.readings.size() > size_t(MAX_READINGS_PER_DEVICE)) dev.readings.pop_front();
-
-        dev.last_seen_ts = dev.readings.back().ts;
-        dev.last_channel_hz = dev.readings.back().channel_hz;
-        dev.last_phy = dev.readings.back().phy;
-
+        if (!dev.readings.empty()) {
+            dev.last_seen_ts = dev.readings.back().ts;
+            dev.last_channel_hz = dev.readings.back().channel_hz;
+            dev.last_phy = dev.readings.back().phy;
+        }
+        if (dev.identity && (dev.readings.empty() || dev.identity_ts >= dev.last_seen_ts)) {
+            dev.last_seen_ts = dev.identity_ts;
+            dev.last_channel_hz = dev.monitored_channel_hz;
+            dev.last_phy = "DSSS";
+        }
         if (!dev.key_is_mac) {
-            // Cluster ids are "WIFI-FP-%04d" - recover the numeric
-            // suffix to keep next_fp_id_ monotonic across a reload,
-            // same pattern as lora_master.cpp's next_id_ re-seeding.
-            size_t dash = dev.key.find_last_of('-');
-            if (dash != std::string::npos) {
-                int n = int(std::strtol(dev.key.c_str() + dash + 1, nullptr, 10));
-                next_fp_id_ = std::max(next_fp_id_, n + 1);
-            }
+            try { next_fp_id_ = std::max(next_fp_id_, std::stoi(dev.key.substr(8)) + 1); }
+            catch (const std::exception&) { continue; }
         }
         devices_.push_back(std::move(dev));
     }
 }
-
 int WifiMasterList::find_mac_match(const std::string& mac) const {
     for (size_t i = 0; i < devices_.size(); ++i) {
         if (devices_[i].key_is_mac && devices_[i].key == mac) return int(i);
@@ -211,104 +212,139 @@ int WifiMasterList::find_fp_match(double irr_db, double dc_dbc, double iq_eps,
     return best_idx;
 }
 
-void WifiMasterList::append_reading_to_disk(const std::string& key,
-                                             const WifiMasterReading& r) const {
-    std::ofstream out(device_path(key), std::ios::app);
-    if (!out.is_open()) return;
-    out << format_reading_line(r);
-}
-
-void WifiMasterList::compact_device_file(const Device& dev) const {
-    std::string tmp_path = device_path(dev.key) + ".tmp";
+void WifiMasterList::append_line(const std::string& key, const std::string& line) {
+    const auto path = device_path(key);
+    // A crash may leave a partial last line. Keep the next valid observation
+    // separate so it can still be recovered on restart.
+    bool missing_newline = false;
     {
-        std::ofstream out(tmp_path, std::ios::trunc);
-        if (!out.is_open()) return;
-        out << format_meta_line(dev.key, dev.key_is_mac, dev.first_seen_ts);
-        for (const auto& r : dev.readings) out << format_reading_line(r);
+        std::ifstream in(path, std::ios::binary | std::ios::ate);
+        if (in && in.tellg() > 0) {
+            in.seekg(-1, std::ios::end);
+            char last = '\n'; in.get(last); missing_newline = last != '\n';
+        }
     }
-    std::rename(tmp_path.c_str(), device_path(dev.key).c_str());
+    std::ofstream out(path, std::ios::app);
+    if (missing_newline) out << '\n';
+    out << line << '\n';
+    out.flush();
+    if (!out) storage_error_ = "Cannot save Wi-Fi record: " + device_path(key);
 }
-
-void WifiMasterList::record_reading(std::optional<std::string> mac, const std::string& phy,
-                                     double channel_hz, double bandwidth_hz,
-                                     const wifi_fingerprint::WifiFingerprint& fp, int64_t ts) {
-    WifiMasterReading r;
-    r.ts = ts;
-    r.channel_hz = channel_hz;
-    r.bandwidth_hz = bandwidth_hz;
-    r.phy = phy;
-    r.cfo_ppm = fp.cfo_ppm;
-    r.irr_db = fp.irr_db;
-    r.iq_eps = fp.iq_eps;
-    r.iq_phi_deg = fp.iq_phi_deg;
-    r.dc_dbc = fp.dc_dbc;
-    r.dc_ang_deg = fp.dc_ang_deg;
-    r.snr_db = fp.snr_db;
-    r.evm_pct = fp.evm_pct;
-    r.sync_corr = fp.sync_corr;
-
+std::string WifiMasterList::identity_line(const Device& dev) const {
+    return json{{"type", "identity"}, {"ts", dev.identity_ts}, {"identity_count", dev.identity_count},
+        { "ssid_seen_ts", dev.ssid_seen_ts}, {"wps_seen_ts", dev.wps_seen_ts},
+        {"ssid_source", dev.ssid_source}, {"wps_source", dev.wps_source},
+        {"monitored_channel_hz", dev.monitored_channel_hz}, {"identity", beacon_json(*dev.identity)}}.dump();
+}
+void WifiMasterList::compact_device_file(const Device& dev) {
+    std::string path = device_path(dev.key), tmp = path + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::trunc);
+        out << meta_json(dev.key, dev.key_is_mac, dev.first_seen_ts).dump() << '\n';
+        if (dev.identity) out << identity_line(dev) << '\n';
+        for (const auto& r : dev.readings) out << json(r).dump() << '\n';
+        out.flush();
+        if (!out) { storage_error_ = "Cannot compact Wi-Fi record: " + tmp; return; }
+        out.close();
+        if (!out) { storage_error_ = "Cannot close Wi-Fi record: " + tmp; return; }
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) storage_error_ = "Cannot replace Wi-Fi record: " + ec.message();
+}
+std::string WifiMasterList::record_identity(const wifi::BeaconInfo& info, double monitored_hz, int64_t ts) {
+    auto mac = wifi::canonical_mac(info.bssid);
+    if (!info.fcs_valid || !mac || !std::isfinite(monitored_hz)) return "";
     std::lock_guard<std::mutex> lock(mutex_);
-
-    int idx = mac.has_value() ? find_mac_match(*mac)
-                               : find_fp_match(fp.irr_db, fp.dc_dbc, fp.iq_eps, fp.iq_phi_deg);
-
+    int idx = find_mac_match(*mac);
     if (idx < 0) {
         Device dev;
-        if (mac.has_value()) {
-            dev.key = *mac;
-            dev.key_is_mac = true;
-        } else {
-            char buf[24];
-            std::snprintf(buf, sizeof(buf), "WIFI-FP-%04d", next_fp_id_++);
-            dev.key = buf;
-            dev.key_is_mac = false;
+        dev.key = *mac; dev.key_is_mac = true; dev.first_seen_ts = ts;
+        append_line(dev.key, meta_json(dev.key, true, ts).dump());
+        devices_.push_back(std::move(dev));
+        idx = int(devices_.size()-1);
+    }
+    auto& dev = devices_[size_t(idx)];
+    if (dev.identity && ts < dev.identity_ts) return dev.key;
+    wifi::BeaconInfo next = info;
+    next.bssid = *mac;
+    if (!next.ssid.empty()) { dev.ssid_seen_ts = ts; dev.ssid_source = info.frame_source; }
+    else if (dev.identity) next.ssid = dev.identity->ssid;
+    // Keep last observed WPS hints when the latest frame omits the WPS IE.
+    // Its timestamp is separate, and wps_present still describes the latest frame.
+    if (next.wps_present) { dev.wps_seen_ts = ts; dev.wps_source = info.frame_source; }
+    else if (dev.identity) {
+        next.wps_manufacturer = dev.identity->wps_manufacturer;
+        next.wps_model_name = dev.identity->wps_model_name;
+        next.wps_model_number = dev.identity->wps_model_number;
+        next.wps_device_name = dev.identity->wps_device_name;
+    }
+    dev.identity = std::move(next); dev.identity_ts = ts;
+    ++dev.identity_count; dev.monitored_channel_hz = monitored_hz;
+    if (dev.readings.empty() || ts >= dev.last_seen_ts) {
+        dev.last_seen_ts = ts; dev.last_channel_hz = monitored_hz; dev.last_phy = "DSSS";
+    }
+    append_line(dev.key, identity_line(dev));
+    if (++dev.identity_lines > 100) { compact_device_file(dev); dev.identity_lines = 1; }
+    return dev.key;
+}
+std::string WifiMasterList::record_reading(std::optional<std::string> mac, const std::string& phy,
+        double channel_hz, double bandwidth_hz, const wifi_fingerprint::WifiFingerprint& fp, int64_t ts) {
+    if (fp.gated_out) return "";
+    if (mac) { mac = wifi::canonical_mac(*mac); if (!mac) return ""; }
+    WifiMasterReading r;
+    r.ts = ts; r.channel_hz = channel_hz; r.bandwidth_hz = bandwidth_hz; r.phy = phy;
+    r.cfo_ppm = fp.cfo_ppm; r.irr_db = fp.irr_db; r.iq_eps = fp.iq_eps;
+    r.iq_phi_deg = fp.iq_phi_deg; r.dc_dbc = fp.dc_dbc; r.dc_ang_deg = fp.dc_ang_deg;
+    r.snr_db = fp.snr_db; r.evm_pct = fp.evm_pct; r.sync_corr = fp.sync_corr;
+    std::lock_guard<std::mutex> lock(mutex_);
+    int idx = mac ? find_mac_match(*mac) : find_fp_match(fp.irr_db, fp.dc_dbc, fp.iq_eps, fp.iq_phi_deg);
+    if (idx < 0) {
+        Device dev;
+        if (mac) { dev.key = *mac; dev.key_is_mac = true; }
+        else {
+            char buf[32]; std::snprintf(buf, sizeof(buf), "WIFI-FP-%04d", next_fp_id_++); dev.key = buf;
         }
         dev.first_seen_ts = ts;
-        dev.last_seen_ts = ts;
-        dev.last_channel_hz = channel_hz;
-        dev.last_phy = phy;
-        dev.readings.push_back(r);
-        {
-            std::ofstream out(device_path(dev.key), std::ios::app);
-            if (out.is_open()) out << format_meta_line(dev.key, dev.key_is_mac, dev.first_seen_ts);
-        }
-        append_reading_to_disk(dev.key, r);
-        devices_.push_back(std::move(dev));
-        return;
+        append_line(dev.key, meta_json(dev.key, dev.key_is_mac, ts).dump());
+        devices_.push_back(std::move(dev)); idx = int(devices_.size()-1);
     }
-
-    Device& dev = devices_[size_t(idx)];
-    dev.last_seen_ts = ts;
-    dev.last_channel_hz = channel_hz;
-    dev.last_phy = phy;
+    auto& dev = devices_[size_t(idx)];
+    if ((!dev.identity && dev.readings.empty()) || ts >= dev.last_seen_ts) {
+        dev.last_seen_ts = ts; dev.last_channel_hz = channel_hz; dev.last_phy = phy;
+    }
     dev.readings.push_back(r);
-    append_reading_to_disk(dev.key, r);
+    append_line(dev.key, json(r).dump());
     if (dev.readings.size() > size_t(COMPACT_TRIGGER_READINGS)) {
         while (dev.readings.size() > size_t(MAX_READINGS_PER_DEVICE)) dev.readings.pop_front();
-        compact_device_file(dev);
+        compact_device_file(dev); dev.identity_lines = dev.identity ? 1 : 0;
     }
+    return dev.key;
 }
-
 std::vector<WifiMasterRow> WifiMasterList::snapshot() const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<WifiMasterRow> rows;
-    rows.reserve(devices_.size());
     for (const auto& dev : devices_) {
         WifiMasterRow row;
-        row.device_key = dev.key;
-        row.key_is_mac = dev.key_is_mac;
-        row.first_seen_ts = dev.first_seen_ts;
-        row.last_seen_ts = dev.last_seen_ts;
-        row.last_channel_hz = dev.last_channel_hz;
-        row.last_phy = dev.last_phy;
+        row.device_key = dev.key; row.key_is_mac = dev.key_is_mac;
+        row.first_seen_ts = dev.first_seen_ts; row.last_seen_ts = dev.last_seen_ts;
+        row.last_channel_hz = dev.last_channel_hz; row.last_phy = dev.last_phy;
         row.reading_count = int(dev.readings.size());
         if (!dev.readings.empty()) row.latest = dev.readings.back();
+        row.identity = dev.identity; row.identity_ts = dev.identity_ts;
+        row.identity_count = dev.identity_count; row.monitored_channel_hz = dev.monitored_channel_hz;
+        row.ssid_seen_ts = dev.ssid_seen_ts; row.wps_seen_ts = dev.wps_seen_ts;
+        row.ssid_source = dev.ssid_source; row.wps_source = dev.wps_source;
+        if (dev.key_is_mac) {
+            auto vendor = wifi::lookup_vendor(dev.key);
+            row.vendor = std::move(vendor.name); row.vendor_source = std::move(vendor.source);
+        }
         rows.push_back(std::move(row));
     }
-    std::sort(rows.begin(), rows.end(), [](const WifiMasterRow& a, const WifiMasterRow& b) {
-        return a.last_seen_ts > b.last_seen_ts;
+    std::sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) {
+        if (a.last_seen_ts != b.last_seen_ts) return a.last_seen_ts > b.last_seen_ts;
+        return a.device_key < b.device_key;
     });
     return rows;
 }
-
-}  // namespace rfmon::wifi_master
+} // namespace rfmon::wifi_master

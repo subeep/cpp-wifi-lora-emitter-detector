@@ -1,46 +1,18 @@
-// Persistent, cross-run "master" Wi-Fi emitter list - the Wi-Fi analog
-// of lora_master.hpp/.cpp, but keyed differently: unlike LoRa, most
-// 802.11 traffic carries a real, decodable, zero-ambiguity 48-bit MAC/
-// BSSID, so a decoded MAC is the PRIMARY identity key here whenever one
-// is available, with the RF fingerprint doing the LoRa-style fuzzy
-// clustering only as a fallback for traffic that never decodes one -
-// see the WiFi fingerprinting research plan's identity_strategy for
-// the full reasoning (don't port LoRa's fingerprint-is-the-identity
-// model verbatim).
+// Persistent Wi-Fi network identities and provisional RF fingerprint clusters.
+// FCS-valid beacon/probe-response observations are recorded independently of RF
+// quality gates. A BSSID identifies a network interface, not necessarily a unique
+// physical radio; several BSSIDs may share one transmitter. OUI names identify
+// registry assignees; WPS strings are self-advertised hints.
 //
-// MAC availability today: only DSSS beacons decode a BSSID at all
-// (wifi_frame.cpp's parse_beacon(), already wired into scanner.cpp for
-// the per-session registry) - general MPDU/frame-control address
-// decode for non-beacon DSSS frames, and any OFDM decode whatsoever,
-// do not exist in this project (wifi_frame.hpp's own header: scoping
-// OFDM decode "would roughly triple" the project). So in practice
-// today, only beacon-carrying DSSS bursts get a MAC-keyed device;
-// everything else - all OFDM, and DSSS data frames - falls through to
-// fingerprint-cluster keying, exactly like LoRa. The two key TYPES
-// share one device table so a future MAC-decode extension (e.g. OFDM
-// MAC decode landing elsewhere) needs no schema change here.
+// Schema 2 retains legacy meta + reading lines and adds typed identity snapshots.
+// Old files load unchanged and acquire metadata at the next successful decode.
+// Known SSIDs and WPS hints survive later frames that omit them, with separate
+// observation timestamps. RF history remains bounded; identity counts and metadata
+// survive compaction. Unknown RF clusters are never automatically merged into MACs.
 //
-// Matching for a fingerprint-cluster device reuses lora_master.hpp's
-// exact algorithm (tolerance gate on the quadrature/mixer group, then
-// nearest-by-L1-distance tie-break, cfo_ppm excluded) and its exact
-// tolerance NUMBERS as a starting point - NOT yet validated against
-// real Wi-Fi hardware. This matters more here than it did copying
-// registry.cpp's numbers into lora_master.hpp originally: the research
-// plan flags that WiFi's own literature (PARADIS) ranks CFO as the
-// single most effective radiometric feature, the OPPOSITE of LoRa's
-// own real-hardware finding that CFO swings too much burst-to-burst to
-// use for matching - excluding it here is a documented, deliberately
-// conservative placeholder pending that WiFi-specific test, not a
-// settled conclusion carried over from LoRa's evidence.
-//
-// Retention also starts at LoRa's exact numbers (1000 readings/device,
-// lazy compaction) as the simplest testable choice, NOT the research
-// plan's more elaborate time-bucketed scheme - WiFi's much higher
-// packet rate could in principle fill this far faster than LoRa's did,
-// but no real capture volume exists yet to size a bucketing scheme
-// against. Revisit (see this file's comment where MAX_READINGS_PER_DEVICE
-// is defined) once real field data shows whether it's actually a
-// problem.
+// Fingerprint matching is unchanged: LoRa-derived placeholder tolerances and CFO
+// exclusion still require independent Wi-Fi validation. No physical-device-count
+// guarantee is implied by cluster IDs. Only DSSS currently supplies decoded MACs.
 #pragma once
 
 #include <cstdint>
@@ -103,6 +75,16 @@ struct WifiMasterRow {
     std::string last_phy;
     int reading_count = 0;
     WifiMasterReading latest;
+    std::optional<wifi::BeaconInfo> identity;
+    int64_t identity_ts = 0;
+    int64_t ssid_seen_ts = 0;
+    int64_t wps_seen_ts = 0;
+    std::string ssid_source, wps_source;
+    uint64_t identity_count = 0;
+    double monitored_channel_hz = 0;
+    std::string vendor;
+    std::string vendor_source;
+
 };
 
 class WifiMasterList {
@@ -114,15 +96,21 @@ public:
     // lines - same shape as lora_master.hpp's, only the key changes).
     explicit WifiMasterList(std::string dir);
 
-    // Records one already-gated-in (fp.gated_out == false) fingerprint
+    // Returns the persistent key; rejects gated-out readings. Records an accepted fingerprint
     // reading. `mac`, when present, is used as the EXACT device key
     // (no fuzzy matching - a decoded MAC is ground truth); when absent,
     // falls back to lora_master.hpp-style fuzzy fingerprint-cluster
     // matching. `ts` is the absolute Unix epoch second this reading
     // was taken.
-    void record_reading(std::optional<std::string> mac, const std::string& phy, double channel_hz,
+    std::string record_reading(std::optional<std::string> mac, const std::string& phy, double channel_hz,
                          double bandwidth_hz, const wifi_fingerprint::WifiFingerprint& fp,
                          int64_t ts);
+
+    // A verified identity observation is independent of fingerprint acceptance.
+    // Hidden SSIDs do not erase a previously learned name. No automatic merge
+    // of fingerprint clusters into BSSIDs: their equivalence is not established.
+    std::string record_identity(const wifi::BeaconInfo& info, double monitored_channel_hz, int64_t ts);
+    std::string storage_error() const;
 
     // Sorted by last_seen_ts, most recently seen first.
     std::vector<WifiMasterRow> snapshot() const;
@@ -135,6 +123,12 @@ private:
         int64_t last_seen_ts = 0;
         double last_channel_hz = 0.0;
         std::string last_phy;
+        std::optional<wifi::BeaconInfo> identity;
+        int64_t identity_ts = 0, ssid_seen_ts = 0, wps_seen_ts = 0;
+        std::string ssid_source, wps_source;
+        uint64_t identity_count = 0;
+        double monitored_channel_hz = 0;
+        size_t identity_lines = 0;
         std::deque<WifiMasterReading> readings;  // newest at the back
     };
 
@@ -149,8 +143,10 @@ private:
 
     std::string device_path(const std::string& key) const;
     void load_all_devices();
-    void append_reading_to_disk(const std::string& key, const WifiMasterReading& r) const;
-    void compact_device_file(const Device& dev) const;
+    void append_line(const std::string& key, const std::string& line);
+    void compact_device_file(const Device& dev);
+    std::string identity_line(const Device& dev) const;
+    std::string storage_error_;
 
     std::string dir_;
     mutable std::mutex mutex_;

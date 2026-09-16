@@ -27,6 +27,7 @@
 #include "registry.hpp"
 #include "scanner.hpp"
 #include "wifi_master.hpp"
+#include "wifi_gui.hpp"
 
 using namespace rfmon;
 
@@ -280,200 +281,6 @@ void draw_lora_master_table(const std::vector<lora_master::LoraMasterRow>& rows,
 // row per burst found by wifi::detect_bursts() and classified on its
 // own window. Detection only: no PLCP/payload decode, so there is
 // deliberately no rate, length or MAC address here.
-void draw_wifi_packet_table(const std::vector<WifiPacketRow>& packets, float height) {
-    if (packets.empty()) {
-        ImGui::TextDisabled("No Wi-Fi packets detected yet.");
-        return;
-    }
-
-    static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
-                                   ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
-                                   ImGuiTableFlags_ScrollX;
-    ImVec2 outer_size(0.0f, height);
-    if (!ImGui::BeginTable("wifi_packets", 15, flags, outer_size)) return;
-
-    ImGui::TableSetupScrollFreeze(0, 1);
-    ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("Freq (MHz)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-    ImGui::TableSetupColumn("Ch", ImGuiTableColumnFlags_WidthFixed, 40.0f);
-    ImGui::TableSetupColumn("Modulation", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-    ImGui::TableSetupColumn("Power (dB)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-    ImGui::TableSetupColumn("BW (MHz)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-    ImGui::TableSetupColumn("Duration (us)", ImGuiTableColumnFlags_WidthFixed, 110.0f);
-    ImGui::TableSetupColumn("Confidence", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-    // RF fingerprint (see wifi_fingerprint.hpp) - only populated once a
-    // burst clears the bandwidth gate and (for DSSS) is beacon-shaped;
-    // "--" means not attempted, the gate reason means attempted but
-    // rejected. IRR/IQ eps/IQ phi are additionally always blank on a
-    // DSSS row - see WifiPacketRow's own comment on why that's
-    // structural, not a gate outcome.
-    ImGui::TableSetupColumn("CFO (ppm)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-    ImGui::TableSetupColumn("IRR (dB)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("IQ eps", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("IQ phi (deg)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-    ImGui::TableSetupColumn("DC (dBc)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("EVM (%)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("Sync corr", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-    ImGui::TableHeadersRow();
-
-    const ImVec4 dsss_color(0.36f, 0.68f, 0.93f, 1.0f);
-    const ImVec4 ofdm_color(0.25f, 0.73f, 0.31f, 1.0f);
-    const ImVec4 dim(0.55f, 0.55f, 0.58f, 1.0f);
-    const ImVec4 bad(0.85f, 0.45f, 0.40f, 1.0f);
-
-    auto opt_cell = [&](const std::optional<double>& v, const char* fmt) {
-        ImGui::TableNextColumn();
-        if (v.has_value()) ImGui::Text(fmt, *v);
-        else ImGui::TextColored(dim, "--");
-    };
-
-    // Most recent first - the log itself is appended chronologically.
-    for (size_t i = packets.size(); i-- > 0;) {
-        const auto& p = packets[i];
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(p.time.c_str());
-        ImGui::TableNextColumn();
-        ImGui::Text("%.4f", p.freq_mhz);
-        ImGui::TableNextColumn();
-        ImGui::Text("%d", p.channel);
-        ImGui::TableNextColumn();
-        ImGui::TextColored(p.modulation == "DSSS" ? dsss_color : ofdm_color, "%s",
-                            p.modulation.c_str());
-        ImGui::TableNextColumn();
-        ImGui::Text("%.1f", p.power_db);
-        ImGui::TableNextColumn();
-        ImGui::Text("%.2f", p.bandwidth_khz / 1e3);
-        ImGui::TableNextColumn();
-        ImGui::Text("%.1f", p.duration_us);
-        ImGui::TableNextColumn();
-        ImGui::Text("%.3f", p.confidence);
-
-        opt_cell(p.fp_cfo_ppm, "%.2f");
-        // IRR/IQ eps/IQ phi: structurally unset on DSSS, not a gate
-        // outcome - shown as "n/a" rather than "--" to distinguish
-        // "can never be measured for this modulation" from "not
-        // attempted/gated out".
-        if (p.modulation == "DSSS") {
-            ImGui::TableNextColumn();
-            ImGui::TextColored(dim, "n/a");
-            ImGui::TableNextColumn();
-            ImGui::TextColored(dim, "n/a");
-            ImGui::TableNextColumn();
-            ImGui::TextColored(dim, "n/a");
-        } else {
-            opt_cell(p.fp_irr_db, "%.2f");
-            opt_cell(p.fp_iq_eps, "%.4f");
-            opt_cell(p.fp_iq_phi_deg, "%.2f");
-        }
-        opt_cell(p.fp_dc_dbc, "%.2f");
-        opt_cell(p.fp_evm_pct, "%.1f");
-        ImGui::TableNextColumn();
-        if (p.fp_gate_reason.has_value()) {
-            ImGui::TextColored(bad, "%s", p.fp_gate_reason->c_str());
-        } else if (p.fp_sync_corr.has_value()) {
-            ImGui::Text("%.3f", *p.fp_sync_corr);
-        } else {
-            ImGui::TextColored(dim, "--");
-        }
-    }
-    ImGui::EndTable();
-}
-
-// Permanent, cross-run Wi-Fi identity list (see wifi_master.hpp) - the
-// Wi-Fi analog of draw_lora_master_table() below. "Device" is either a
-// real decoded MAC/BSSID (currently only from a decoded DSSS beacon)
-// shown in the accent color, or a WIFI-FP-#### fingerprint cluster
-// otherwise - see that file's header for why MAC is the primary key
-// here rather than porting LoRa's fingerprint-is-the-identity model.
-void draw_wifi_master_table(const std::vector<wifi_master::WifiMasterRow>& rows, float height) {
-    if (rows.empty()) {
-        ImGui::TextDisabled("No master Wi-Fi emitters recorded yet.");
-        return;
-    }
-
-    static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
-                                   ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
-                                   ImGuiTableFlags_ScrollX;
-    ImVec2 outer_size(0.0f, height);
-    if (!ImGui::BeginTable("wifi_master", 12, flags, outer_size)) return;
-
-    ImGui::TableSetupScrollFreeze(0, 1);
-    ImGui::TableSetupColumn("Device", ImGuiTableColumnFlags_WidthFixed, 140.0f);
-    ImGui::TableSetupColumn("First seen", ImGuiTableColumnFlags_WidthFixed, 190.0f);
-    ImGui::TableSetupColumn("Last seen", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-    ImGui::TableSetupColumn("Readings", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-    ImGui::TableSetupColumn("PHY", ImGuiTableColumnFlags_WidthFixed, 70.0f);
-    ImGui::TableSetupColumn("Freq (MHz)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-    ImGui::TableSetupColumn("CFO (ppm)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-    ImGui::TableSetupColumn("IRR (dB)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("IQ eps", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("IQ phi (deg)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-    ImGui::TableSetupColumn("DC (dBc)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("EVM (%)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableHeadersRow();
-
-    const ImVec4 mac_color(0.94f, 0.55f, 0.24f, 1.0f);  // matches the LoRa-like map legend accent
-    const ImVec4 fp_color(0.75f, 0.75f, 0.78f, 1.0f);
-
-    // Already sorted by last_seen_ts (most recent first) by
-    // WifiMasterList::snapshot() itself - same reasoning as
-    // draw_lora_master_table()'s identical choice.
-    std::time_t now = std::time(nullptr);
-    for (const auto& row : rows) {
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::TextColored(row.key_is_mac ? mac_color : fp_color, "%s", row.device_key.c_str());
-
-        ImGui::TableNextColumn();
-        {
-            std::time_t fs = std::time_t(row.first_seen_ts);
-            std::tm tm_buf{};
-            localtime_r(&fs, &tm_buf);
-            char buf[32];
-            std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm_buf);
-            double age_days = double(now - row.first_seen_ts) / 86400.0;
-            ImGui::Text("%s (%.1fd ago)", buf, age_days);
-        }
-
-        ImGui::TableNextColumn();
-        {
-            double ago_s = double(now - row.last_seen_ts);
-            if (ago_s < 120.0) ImGui::Text("%.0fs ago", ago_s);
-            else if (ago_s < 7200.0) ImGui::Text("%.1fm ago", ago_s / 60.0);
-            else if (ago_s < 172800.0) ImGui::Text("%.1fh ago", ago_s / 3600.0);
-            else ImGui::Text("%.1fd ago", ago_s / 86400.0);
-        }
-
-        ImGui::TableNextColumn();
-        ImGui::Text("%d / %d", row.reading_count, wifi_master::MAX_READINGS_PER_DEVICE);
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(row.last_phy.c_str());
-        ImGui::TableNextColumn();
-        ImGui::Text("%.4f", row.last_channel_hz / 1e6);
-        ImGui::TableNextColumn();
-        ImGui::Text("%.2f", row.latest.cfo_ppm);
-        ImGui::TableNextColumn();
-        // 0.0 on a DSSS row means "not identifiable", not "measured
-        // zero" - see wifi_fingerprint.cpp's own comment on why a
-        // real-valued BPSK reference can't resolve gain/phase
-        // imbalance separately from DC offset.
-        if (row.last_phy == "DSSS") ImGui::TextDisabled("n/a");
-        else ImGui::Text("%.2f", row.latest.irr_db);
-        ImGui::TableNextColumn();
-        if (row.last_phy == "DSSS") ImGui::TextDisabled("n/a");
-        else ImGui::Text("%.4f", row.latest.iq_eps);
-        ImGui::TableNextColumn();
-        if (row.last_phy == "DSSS") ImGui::TextDisabled("n/a");
-        else ImGui::Text("%.2f", row.latest.iq_phi_deg);
-        ImGui::TableNextColumn();
-        ImGui::Text("%.2f", row.latest.dc_dbc);
-        ImGui::TableNextColumn();
-        ImGui::Text("%.1f", row.latest.evm_pct);
-    }
-    ImGui::EndTable();
-}
-
 // "Decoded" = full payload recovered, header checksum matched.
 // "Detected" = a real chirp preamble locked but the header/payload
 // didn't fully decode (e.g. third-party hardware whose exact FEC/
@@ -842,19 +649,17 @@ int main() {
             ImGui::TextUnformatted("Detected Wi-Fi packets");
             ImGui::TextDisabled(
                 "One row per individually detected burst, classified on its own window. "
-                "Detection only - no header/payload decode, so no rate or MAC address. "
+                "DSSS beacons/probe responses show decoded identities; other bursts show RF observations. "
                 "Sampled, not exhaustive: only the channel currently being swept is heard.");
             float wifi_packets_height = ImGui::GetContentRegionAvail().y * 0.5f;
             draw_wifi_packet_table(scanner.wifi_packets(), wifi_packets_height);
 
             ImGui::Spacing();
-            ImGui::TextUnformatted("Wi-Fi Master Emitters (persistent across restarts)");
-            ImGui::TextDisabled(
-                "Every accepted fingerprint reading ever recorded for a device - kept forever "
-                "until manually deleted. Orange = a real decoded MAC/BSSID (currently only from "
-                "a decoded DSSS beacon). Gray = a fingerprint cluster (no MAC decoded yet) - "
-                "matched on IRR/DC/IQ-imbalance only, not CFO, same placeholder-comparison "
-                "caveat as the LoRa list (see docs).");
+            ImGui::TextUnformatted("Wi-Fi Identities & RF Clusters (persistent)");
+            ImGui::TextDisabled("Click an identity for details. Orange = decoded BSSID; gray = provisional RF cluster. Ch = monitored; AP ch = advertised.");
+            ImGui::TextDisabled("Identity details survive restart. RF history retains the latest ~1000 accepted readings per entry.");
+            const auto wifi_storage_error = scanner.wifi_storage_error();
+            if (!wifi_storage_error.empty()) ImGui::TextColored(ImVec4(1,.5f,.3f,1), "%s", wifi_storage_error.c_str());
             draw_wifi_master_table(scanner.wifi_master_snapshot(), ImGui::GetContentRegionAvail().y);
         }
 

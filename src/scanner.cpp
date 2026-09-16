@@ -640,6 +640,9 @@ void Scanner::run() {
                         // limit, not a hard requirement of the math).
                         std::optional<wifi_fingerprint::WifiFingerprint> fp_opt;
                         std::optional<std::string> fp_mac;
+                        std::optional<wifi::BeaconInfo> packet_identity;
+                        std::string master_key;
+                        const int64_t packet_ts = now_epoch_seconds();
                         if (result.mod == wifi::ModClass::OFDM && result.has_preamble_range) {
                             fp_opt = wifi_fingerprint::extract_ofdm_fingerprint(
                                 cap.data(), cap.size(), b.start, b.length, actual_rate,
@@ -686,6 +689,9 @@ void Scanner::run() {
                                 // than fingerprint-cluster matching
                                 // (see wifi_master.hpp's file header).
                                 fp_mac = dec.beacon->bssid;
+                                packet_identity = dec.beacon;
+                                // Persist verified identity even if RF extraction fails its gates.
+                                master_key = wifi_master_.record_identity(*dec.beacon, real_channel_hz, packet_ts);
                             }
                             if (dec.preamble_found && !dec.sync_symbols.empty()) {
                                 fp_opt = wifi_fingerprint::extract_dsss_fingerprint(real_channel_hz,
@@ -694,12 +700,12 @@ void Scanner::run() {
                         }
 
                         if (fp_opt.has_value() && !fp_opt->gated_out) {
-                            wifi_master_.record_reading(fp_mac,
+                            master_key = wifi_master_.record_reading(fp_mac,
                                                          result.mod == wifi::ModClass::DSSS
                                                              ? "DSSS"
                                                              : "OFDM",
                                                          real_channel_hz, bw_hz, *fp_opt,
-                                                         now_epoch_seconds());
+                                                         packet_ts);
                         }
 
                         WifiPacketRow row;
@@ -712,6 +718,8 @@ void Scanner::run() {
                         row.bandwidth_khz = bw_hz / 1e3;
                         row.duration_us = duration_s * 1e6;
                         row.confidence = result.confidence;
+                        row.identity = std::move(packet_identity);
+                        row.master_key = std::move(master_key);
                         if (fp_opt.has_value()) {
                             row.fp_cfo_ppm = fp_opt->cfo_ppm;
                             row.fp_dc_dbc = fp_opt->dc_dbc;

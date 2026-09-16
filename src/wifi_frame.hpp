@@ -96,7 +96,23 @@ struct BeaconInfo {
     uint16_t beacon_interval_tu = 0;
     uint16_t capability = 0;
     bool fcs_valid = false;
+    bool ssid_present = false;
+    bool ies_complete = true;
+    std::string frame_source;  // "Beacon" or "Probe response" (FCS validated by caller)
+    std::string channel_source; // DS Parameter Set or HT Operation
+    std::string security;      // advertised suites, not an active security assessment
+    std::string ciphers;
+    std::string pmf;
+    std::string standards;     // explicitly advertised HT/VHT/HE/EHT capabilities
+    bool wps_present = false;
+    std::string wps_manufacturer;
+    std::string wps_model_name;
+    std::string wps_model_number;
+    std::string wps_device_name;
 };
+
+// Escape control/non-ASCII bytes for safe, lossless display of arbitrary SSID/WPS octets.
+std::string display_text(const std::string& bytes);
 
 // Parses a beacon/probe-response MPDU (including its trailing 4-octet
 // FCS) into identity fields.

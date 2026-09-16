@@ -1,5 +1,28 @@
 # Handover — newrocktest-cpp
 
+## Update — persistent Wi-Fi identities (2026-09-16)
+
+The first two follow-up milestones are implemented: FCS-valid Wi-Fi identities
+persist independently of fingerprint acceptance, and packet/master GUI tables
+show identity metadata with a selectable details view. Includes offline IEEE
+vendor lookup, advertised WPA/RSN security and PMF, HT/VHT/HE capability IEs,
+WPS device/manufacturer/model hints, and separate monitored/advertised channels.
+Legacy files load without a migration; details are filled in on the next decode.
+See [WIFI_IDENTITIES.md](docs/WIFI_IDENTITIES.md) for schema, semantics, build
+requirements, provenance, and new identity/GUI tests. Wi-Fi GUI functions now live
+in `src/wifi_gui.cpp`; vendor lookup in `src/wifi_vendor.cpp`.
+
+The earlier CRC fix was already committed in `5d2fb82`; the historical
+"Uncommitted changes" section below is superseded. The earlier claim that 5 GHz
+never attempts fingerprinting was inaccurate: it uses the shared OFDM branch,
+but remains unvalidated. The earlier device counts are historical observations,
+not current counts or verified physical-device counts. No LoRa-specific code was
+changed for this update. Remaining work begins with capture/replay validation and
+fingerprint calibration, as separately agreed with the user.
+
+---
+
+
 **Purpose of this file:** a complete, standalone briefing for picking up this
 codebase cold — architecture, what's built, what's proven on real hardware
 vs. only in synthetic tests, every non-obvious bug found this session (with
@@ -612,3 +635,212 @@ next.
     check before it could replace the brute force. Not wired into
     production. Read that file's own header comment for the full story
     before touching it.
+
+---
+
+## 9. Session update — persistent Wi-Fi identities and GUI identification (2026-09-16)
+
+**Latest scope requested by the user:** complete persistent Wi-Fi identity
+records and identification details, including the GUI; stop after those two
+milestones and decide the next task later. **Do not touch the LoRa side.**
+Both milestones are implemented. The work described here is currently
+**uncommitted** on top of `5d2fb82`; that commit already contains the earlier
+PLCP CRC fix. This section supersedes conflicting statements in the historical
+sections above. The short update near the top is only a summary.
+
+### 9.1 The identity-persistence gap that was fixed
+
+Previously, `scanner.cpp` called `WifiMasterList::record_reading()` only when
+an extracted fingerprint passed its quality gates. Even an FCS-valid decoded
+BSSID could therefore disappear on restart if its fingerprint failed. SSID,
+beacon capabilities and identification details were not saved in the master
+schema at all.
+
+The scanner now records an FCS-valid beacon/probe response immediately through
+`record_identity()`, independently of fingerprint acceptance. Accepted RF
+readings are still recorded separately and join the same BSSID-keyed entry.
+A device with **zero accepted fingerprints** is a valid persistent identity.
+`record_reading()` returns its persistent key; packet rows carry that key plus
+optional decoded `BeaconInfo`, linking observations to MAC identities or
+provisional fingerprint clusters.
+
+Identity records retain:
+
+- BSSID, learned SSID, first/last seen and a decoded-observation count.
+- Latest identity observation time and frame source (beacon/probe response).
+- Advertised channel and its source, separately from monitored channel center.
+  DS Parameter Set takes precedence; HT Operation supplies a fallback. An
+  absent advertised channel remains unknown rather than inheriting the tuned
+  channel and appearing to be decoded information.
+- Beacon interval, capability bits, advertised security/ciphers/PMF, PHY
+  capability IEs, and optional WPS identification hints.
+- Separate last-observed timestamps and frame sources for the learned SSID
+  and retained WPS hints.
+
+A later hidden/omitted SSID does not erase a learned name. A later nonempty name
+updates it. Frames that omit WPS preserve prior WPS hints and their original
+source/time. A frame containing WPS replaces the WPS fields with that frame's
+advertisement; missing attributes are not invented. Older identity observations
+do not overwrite newer metadata. Fingerprint clusters are **not automatically
+merged into decoded BSSIDs**: equivalence is not established by this work.
+
+### 9.2 Identification details implemented
+
+`wifi_frame.cpp/.hpp` now exposes and parses:
+
+- Capability bits and beacon interval, including the existing Privacy bit.
+- WPA and RSN authentication/key-management and cipher suites, including PSK,
+  enterprise 802.1X variants, SAE, and OWE; PMF capability/requirement from RSN.
+  Unknown suite selectors remain explicitly unknown. The Privacy bit alone is
+  labeled **"Privacy set (legacy/unknown)"**, not assumed to mean WEP or WPA.
+- HT/VHT/HE capability IEs, presented as advertised capabilities rather than
+  proof of certification or a complete hardware-generation determination.
+- WPS manufacturer, model name, model number and device name. WPS vendor IE
+  payloads are concatenated before parsing attributes, including attributes
+  split across IEs. Lengths are bounded; malformed/truncated IEs are flagged.
+- Frame source, SSID-presence state and information-element completeness.
+
+`wifi_vendor.cpp/.hpp` adds offline IEEE vendor-assignment lookup:
+
+- **53,917 entries**, downloaded directly from IEEE on 2026-09-16.
+- Longest-prefix matching across MA-S (/36), MA-M (/28), and MA-L (/24).
+- Canonical MAC normalization; locally administered, group, invalid and
+  unknown addresses are handled explicitly instead of inventing a vendor.
+- The database is compiled into the application, so lookup needs neither a
+  network connection nor a particular working directory at runtime.
+- Generated data, snapshot date and provenance are under `third_party/ieee/`.
+  `tools/build_wifi_vendors.py` regenerates the table from the three IEEE CSVs.
+  See `third_party/ieee/README.md` for download URLs and redistribution notes.
+
+Interpretation matters: an IEEE assignment names the registered organization,
+not necessarily the retail brand/model. WPS names are self-advertised hints.
+A BSSID identifies a network/interface, not a guaranteed unique physical radio;
+several BSSIDs can share hardware. RF clusters remain provisional identities.
+
+### 9.3 Persistence format and compatibility
+
+Wi-Fi storage now uses nlohmann JSON rather than substring-based JSON parsing.
+New meta records declare schema 2. The NDJSON format keeps legacy meta and RF
+reading lines and adds typed `"identity"` snapshot lines.
+
+- Existing files load without an offline migration. Their fingerprint history
+  and first-seen times remain intact. Legacy MAC entries obtain beacon details
+  on the next successful decode; previously unsaved metadata cannot be recovered
+  from old RF values.
+- SSID/WPS strings preserve exact octets in hexadecimal fields alongside escaped
+  human-readable values. Quotes, backslashes, NUL and non-UTF-8 bytes cannot break
+  the JSON or silently change the stored identity string.
+- Identity snapshots compact after more than 100 appended observations. The
+  cumulative identity count and latest metadata survive compaction.
+- RF retention keeps the existing 1000-reading cap with lazy-compaction slack
+  up to 1100. RF compaction also preserves identity metadata and timestamps.
+- Compaction uses a temporary file and rename. Write/close/rename failures are
+  surfaced through `storage_error()` and displayed in the GUI. In-memory data
+  remains available, but a storage warning means persistence is not assured.
+- Malformed records are skipped with a visible warning. A partial last line is
+  separated from subsequent appends so the next valid observation can reload.
+
+This stores the latest identity summary and cumulative observation count, not
+an unlimited history of every name, WPS advertisement or decoded frame.
+Fingerprint feature extraction and matching tolerances were not recalibrated.
+
+### 9.4 GUI and code map changes
+
+The Wi-Fi table functions moved from `main.cpp` into
+`src/wifi_gui.cpp/.hpp` so the actual production UI can be tested independently
+of Scanner and hardware. LoRa GUI functions remain unchanged.
+
+- **Packet table:** adds persistent identity key, decoded SSID, advertised AP
+  channel and security. The existing channel/frequency describe monitoring.
+- **Wi-Fi Identities & RF Clusters table:** shows network name, vendor assignment,
+  security, advertised channel, WPS model, PHY capabilities, first/last seen,
+  identity-observation count, retained RF-reading count and identity source.
+- **Click an identity:** opens details with vendor lookup provenance, decoded
+  metadata, source/timestamps, capability bits, cipher suites, PMF, WPS hints,
+  and the latest accepted RF reading with its own timestamp/PHY.
+- Missing metadata is shown as unknown/not advertised. An identity with no
+  accepted fingerprint is identified explicitly; zero-valued RF measurements
+  are not fabricated. DSSS IQ-imbalance fields remain n/a.
+- Storage warnings appear above the master table. The old GUI claim that every
+  RF reading is retained forever has been replaced with the actual retention
+  behavior.
+
+Modified files: `src/wifi_frame.{cpp,hpp}`, `src/wifi_master.{cpp,hpp}`,
+Wi-Fi portions of `src/scanner.{cpp,hpp}` and `src/main.cpp`, `CMakeLists.txt`,
+and this handover. New files: `src/wifi_gui.{cpp,hpp}`,
+`src/wifi_vendor.{cpp,hpp}`, `tests/test_wifi_identity.cpp`,
+`tests/test_wifi_gui.cpp`, `tools/build_wifi_vendors.py`,
+`third_party/ieee/*`, and `docs/WIFI_IDENTITIES.md`.
+
+### 9.5 Build requirements and completed validation
+
+New required dependency: **nlohmann JSON headers, version 3.9 or later**
+(`nlohmann-json3-dev` on Ubuntu). Headers were already installed on this machine.
+EGL development headers/library are optional and enable the offscreen GUI test;
+they are not a new requirement for running the application itself.
+
+```bash
+cmake -S . -B build
+cmake --build build -j4
+
+# Existing 12 regression binaries:
+for t in test_dsp test_lora_phy test_lora_phy_std test_wifi_phy \
+         test_wifi_frame test_wifi_dsss_rx test_wifi_stress test_fingerprint \
+         test_wifi_fingerprint test_registry test_lora_master test_wifi_master; do
+  ./build/$t || break
+done
+
+# New identity/parser/persistence integration checks:
+./build/test_wifi_identity
+
+# Optional actual-GUI rendering/click test; no radio or desktop window:
+LIBGL_ALWAYS_SOFTWARE=1 ./build/test_wifi_gui /tmp/wifi-ui
+```
+
+Results from this implementation session:
+
+- Application and test builds succeeded; `git diff --check` passed.
+- **All 14 test binaries passed**: the original 12 (203 checks), the new
+  identity suite (**43 checks**), and the new GUI render/interaction test.
+- Identity tests cover security/WPS/capability parsing, malformed lengths,
+  vendor prefix precedence, rejected fingerprints, identity-only restart,
+  exact string-byte persistence, hidden-name retention, compaction, legacy
+  files, partial trailing records and storage failures.
+- The actual Wi-Fi tables were rendered offscreen, the identity details view
+  was opened by a simulated click, and both screenshots were visually inspected.
+  These screenshots contain labeled test fixtures, **not live RF observations**.
+- AddressSanitizer, UndefinedBehaviorSanitizer and leak checks passed for the
+  identity suite. LeakSanitizer could not finish inside the sandbox's ptrace
+  environment; the same sanitized test binary passed when rerun outside it.
+- LoRa-specific source/header files, the LoRa GUI functions, and shared
+  `config.hpp` were compared against HEAD and verified unchanged.
+- **No fresh live-radio validation was performed for these changes.**
+
+### 9.6 What the next session should know
+
+Restart the GUI to load the new binary. Existing MAC records can show vendor
+assignments immediately; SSID/security/WPS metadata fills in as the existing
+receiver successfully decodes new beacons/probe responses. Do not promise WPS
+model/device names for devices that do not advertise those fields.
+
+The original §8 identification item is now completed for **existing supported
+beacon/probe-response decoding**. Its probe-request/client-decoding extension
+remains deferred. This session did not add another PHY decoder, expand the
+DSSS beacon-duration gate, tune fingerprint thresholds, change cluster matching,
+or validate 5 GHz. The shared 5 GHz OFDM branch already attempts fingerprinting,
+contrary to the earlier handover's classification-only claim, but remains
+unvalidated.
+
+The initial inspection observed 15 MAC-keyed records and 307 fingerprint
+clusters in saved data; these are a historical snapshot, not a current or
+verified physical-device count. Do not interpret cluster growth as proof of
+additional physical transmitters.
+
+**Stop point:** the user requested these two milestones only and said the next
+task would be decided afterward. Candidate follow-ups are live validation of
+these identity details, capture/replay tooling, and measured fingerprint
+calibration. None has been started or authorized as the next implementation.
+Keep LoRa frozen unless the user explicitly changes that scope.
+
+Further implementation notes and protocol references:
+[docs/WIFI_IDENTITIES.md](docs/WIFI_IDENTITIES.md).
