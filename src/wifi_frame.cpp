@@ -93,15 +93,47 @@ std::vector<uint8_t> bits_to_bytes_lsb_first(const std::vector<uint8_t>& bits) {
     return bytes;
 }
 
+namespace {
+// The 802.11b PLCP header's SIGNAL/SERVICE/LENGTH octets are
+// transmitted LSB-first (matching bits_to_bytes_lsb_first()'s own
+// packing, which is what `bytes` here already went through), but the
+// CRC-16 field specifically is transmitted MSB-first PER OCTET - a
+// genuine, documented asymmetry in the standard (the CRC shift
+// register naturally shifts its own MSB out first), not a receiver
+// quirk. bits_to_bytes_lsb_first() has no way to know a given byte
+// needs the opposite convention, so bytes[4]/bytes[5] arrive with
+// each byte's own bit order backwards relative to every other field -
+// reversing them here undoes exactly that, and only that: byte ORDER
+// (bytes[4] as the high byte) was already correct, confirmed by
+// real-hardware capture (see tests/test_wifi_frame.cpp's
+// plcp_header_crc_byte_order_confirmed_against_real_capture - this
+// was invisible in the original synthetic round-trip test because
+// that test built its own "transmitted" CRC bytes using this same
+// convention, rather than the spec's, so it could only ever validate
+// self-consistency, not correctness - live capture against 72
+// consecutive real DSSS headers (differing SIGNAL/LENGTH values,
+// so no risk of a single coincidental match) confirmed this bit
+// reversal, and only this, makes plcp_crc16()'s own already-spec-
+// validated computation match the transmitted CRC exactly, every
+// time bar one plausibly-corrupted frame).
+uint8_t reverse_bits8(uint8_t b) {
+    uint8_t r = 0;
+    for (int i = 0; i < 8; ++i) {
+        if (b & (1u << i)) r |= uint8_t(1u << (7 - i));
+    }
+    return r;
+}
+}  // namespace
+
 std::optional<PlcpHeader> parse_plcp_header(const uint8_t* bytes, size_t len) {
     if (len < 6) return std::nullopt;
     PlcpHeader h;
     h.signal = bytes[0];
     h.service = bytes[1];
     h.length_us = uint16_t(uint16_t(bytes[2]) | (uint16_t(bytes[3]) << 8));
-    // The CRC field itself is transmitted MSB-first, unlike the
-    // little-endian LENGTH above it.
-    h.crc = uint16_t((uint16_t(bytes[4]) << 8) | uint16_t(bytes[5]));
+    // Byte order MSB-first (bytes[4] is the high byte) as before, but
+    // each byte's own bits reversed first - see the comment above.
+    h.crc = uint16_t((uint16_t(reverse_bits8(bytes[4])) << 8) | uint16_t(reverse_bits8(bytes[5])));
     h.crc_valid = (plcp_crc16(bytes, 4) == h.crc);
     return h;
 }

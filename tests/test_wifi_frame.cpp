@@ -74,11 +74,30 @@ int main() {
     // 3. A PLCP header round-trip: the parser must accept a header whose
     // CRC we computed independently, and must REJECT one with a flipped
     // bit rather than passing it through.
+    //
+    // This used to build hdr[4]/hdr[5] as `crc>>8, crc&0xFF` directly -
+    // exactly the same MSB-first-per-OCTET convention parse_plcp_header()
+    // itself used to assume, so the round-trip passed regardless of
+    // whether that assumption was correct. It happened to be wrong (see
+    // parse_plcp_header()'s own comment in wifi_frame.cpp): the CRC's
+    // two octets are transmitted MSB-first internally, meaning each
+    // byte's OWN bit order is reversed relative to a plain big-endian
+    // split - bit_reverse8() here mirrors that explicitly, so this test
+    // now models actual transmission instead of the decoder's own prior
+    // (mistaken) assumption. Confirmed necessary and sufficient by live
+    // capture in test 3b below, not by this synthetic test alone.
     {
+        auto bit_reverse8 = [](uint16_t v) {
+            uint8_t r = 0;
+            for (int i = 0; i < 8; ++i) {
+                if (v & (1u << i)) r |= uint8_t(1u << (7 - i));
+            }
+            return r;
+        };
         uint8_t hdr[6] = {0x0A, 0x00, 0xC0, 0x00, 0x00, 0x00};
         uint16_t crc = plcp_crc16(hdr, 4);
-        hdr[4] = uint8_t(crc >> 8);  // CRC is transmitted MSB-first
-        hdr[5] = uint8_t(crc & 0xFF);
+        hdr[4] = bit_reverse8(uint8_t(crc >> 8));
+        hdr[5] = bit_reverse8(uint8_t(crc & 0xFF));
         auto h = parse_plcp_header(hdr, 6);
         check(h.has_value() && h->crc_valid, "plcp_header_accepts_valid_crc",
               h ? ("crc_valid=" + std::to_string(h->crc_valid)) : "no header");
@@ -92,6 +111,32 @@ int main() {
         auto bad = parse_plcp_header(hdr, 6);
         check(bad.has_value() && !bad->crc_valid, "plcp_header_rejects_corrupted",
               "a single flipped bit must invalidate the CRC");
+    }
+
+    // 3b. plcp_header_crc_byte_order_confirmed_against_real_capture -
+    // the golden-vector discipline this file's own header describes,
+    // applied to the exact bug test 3 could not have caught: a real
+    // 802.11b beacon header captured over the air (X310 + real
+    // traffic, 2.4GHz), BEFORE this fix, with SIGNAL/SERVICE/LENGTH
+    // already decoding perfectly and consistently (confirmed the same
+    // three fields on 72 consecutive real captures, several different
+    // real frames by their differing LENGTH values) but crc_valid
+    // false. bytes[4]/bytes[5] here are the RAW extraction (what
+    // bits_to_bytes_lsb_first() actually produced from the real
+    // capture - the same convention correctly used for bytes 0-3),
+    // not a value constructed to fit any particular theory.
+    {
+        const uint8_t hdr[6] = {0x0A, 0x04, 0x30, 0x06, 0x85, 0x90};
+        auto h = parse_plcp_header(hdr, 6);
+        check(h.has_value() && h->crc_valid,
+              "plcp_header_crc_byte_order_confirmed_against_real_capture",
+              h ? ("crc_valid=" + std::to_string(h->crc_valid) + " crc=" + hex16(h->crc))
+                : "no header");
+        if (h) {
+            check(h->length_us == 1584, "real_capture_length_us",
+                  "got " + std::to_string(h->length_us));
+            check(h->rate_mbps() == 1.0, "real_capture_rate", "");
+        }
     }
 
     // 4. The descrambler is self-synchronising: scrambling then

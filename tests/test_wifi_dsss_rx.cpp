@@ -44,6 +44,21 @@ void push_byte_lsb_first(std::vector<uint8_t>& bits, uint8_t v) {
     for (int b = 0; b < 8; ++b) bits.push_back(uint8_t((v >> b) & 1u));
 }
 
+// The PLCP header's CRC-16 field specifically is transmitted MSB-first
+// per octet, unlike every other field here (SIGNAL/SERVICE/LENGTH,
+// and the payload) - a real, documented 802.11b asymmetry, confirmed
+// against live over-the-air capture (see wifi_frame.cpp's
+// parse_plcp_header() and tests/test_wifi_frame.cpp's
+// plcp_header_crc_byte_order_confirmed_against_real_capture). This
+// generator used to push the CRC bytes with push_byte_lsb_first() too
+// - independently written from the decoder, but it made the identical
+// wrong assumption, so this synthetic test round-tripped regardless
+// of whether that assumption was correct. It wasn't; fixed here to
+// model actual transmission.
+void push_byte_msb_first(std::vector<uint8_t>& bits, uint8_t v) {
+    for (int b = 7; b >= 0; --b) bits.push_back(uint8_t((v >> b) & 1u));
+}
+
 // A complete beacon MPDU including its FCS, built from the 802.11
 // management-frame layout.
 std::vector<uint8_t> build_beacon_mpdu(const std::string& bssid_bytes, const std::string& ssid,
@@ -87,8 +102,8 @@ std::vector<std::complex<float>> build_dsss_ppdu(const std::vector<uint8_t>& mpd
     uint8_t hdr[4] = {signal, service, uint8_t(length_us & 0xFF), uint8_t(length_us >> 8)};
     uint16_t crc = plcp_crc16(hdr, 4);
     for (uint8_t v : hdr) push_byte_lsb_first(plain, v);
-    push_byte_lsb_first(plain, uint8_t(crc >> 8));
-    push_byte_lsb_first(plain, uint8_t(crc & 0xFF));
+    push_byte_msb_first(plain, uint8_t(crc >> 8));
+    push_byte_msb_first(plain, uint8_t(crc & 0xFF));
 
     for (uint8_t v : mpdu) push_byte_lsb_first(plain, v);
 
