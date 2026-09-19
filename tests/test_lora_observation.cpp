@@ -30,24 +30,27 @@ int main() {
         lora::std_phy::StdParams p; p.sf = 7;
         std::vector<uint8_t> payload(80, 0x42);
         auto wave = lora::std_phy::modulate(payload, p);
-        auto good = analyze_lora_hypothesis(wave, 7);
+        auto good = analyze_lora_hypothesis(wave, 7, true);
         check(good && good->crc == LoraPacketRow::Crc::Valid && good->payload_complete, "Valid fixture failed");
-        check(good->decoder.find("SX reference") == 0, "Decoder provenance missing");
+        check(good->decoder.find("Legacy SX reference") == 0, "Decoder provenance missing");
         auto clipped = wave; clipped.resize(clipped.size() - 128 * 10);
-        auto partial = analyze_lora_hypothesis(clipped, 7);
+        auto partial = analyze_lora_hypothesis(clipped, 7, true);
         check(partial && partial->header_valid && !partial->payload_complete && !partial->payload_repr,
               "Truncated payload incorrectly presented as complete");
         auto corrupted = wave;
         // Preserve preamble/header; destroy the tail carrying payload/CRC.
         std::fill(corrupted.end() - 128 * 10, corrupted.end(), std::complex<float>(0, 0));
-        auto failed = analyze_lora_hypothesis(corrupted, 7);
+        auto failed = analyze_lora_hypothesis(corrupted, 7, true);
         check(failed && failed->crc == LoraPacketRow::Crc::Failed, "Corrupt payload marked valid");
         p.crc_on = false;
-        auto no_crc = analyze_lora_hypothesis(lora::std_phy::modulate(payload, p), 7);
+        auto no_crc = analyze_lora_hypothesis(lora::std_phy::modulate(payload, p), 7, true);
         check(no_crc && no_crc->crc == LoraPacketRow::Crc::Absent, "CRC-off waveform marked failed");
         lora::LoRaParams internal_params;
-        auto internal = analyze_lora_hypothesis(lora::modulate(payload, internal_params), 7);
-        check(internal && internal->decoder.find("Internal codec") == 0, "Internal codec mislabeled standard");
+        auto production = analyze_lora_hypothesis(lora::modulate(payload, internal_params), 7);
+        check(!production || production->decoder.find("Legacy") == std::string::npos,
+              "Production silently fell back to internal codec");
+        auto internal = analyze_lora_hypothesis(lora::modulate(payload, internal_params), 7, true);
+        check(internal && internal->decoder.find("Legacy internal codec") == 0, "Internal codec mislabeled standard");
         check(analyze_lora_capture(std::vector<std::complex<float>>(2048), 500000, 866900000).empty(),
               "Silence produced a packet");
 
@@ -69,7 +72,7 @@ int main() {
         auto dir = save_lora_capture(tmp, c);
         auto loaded = load_lora_capture(dir);
         check(loaded.iq == wave && loaded.overflow && loaded.source == c.source, "Capture round trip lost evidence");
-        auto rows = analyze_lora_capture(loaded.iq, loaded.sample_rate_hz, loaded.requested_center_hz);
+        auto rows = analyze_lora_capture(loaded.iq, loaded.sample_rate_hz, loaded.requested_center_hz, true);
         bool found = false;
         for (auto& r : rows) if (r.sf == 7 && r.crc == LoraPacketRow::Crc::Valid && r.payload_hex == good->payload_hex) found = true;
         check(found, "Replay differs from direct analysis");

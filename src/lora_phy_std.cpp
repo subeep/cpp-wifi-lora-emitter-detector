@@ -185,6 +185,23 @@ int circular_bin_distance(int a, int b, int n) {
 // verification once more captures/other SF/BW modes exist.
 constexpr int PREAMBLE_DRIFT_STEP_BINS = 1;
 
+// A single symbol landing PREAMBLE_MAYBE_STEP_BINS away from target
+// (one more than the normal tolerance) isn't immediately accepted or
+// rejected - the NEXT symbol decides, per the comment above
+// measure_preamble_length(). Added 2026-09-20 after a live TarangMini
+// capture showed real per-symbol dechirp jitter of up to 2 bins in a
+// single step even mid-drift (not just the slow multi-symbol trend
+// already handled above) - e.g. bins ...,-2,-2,-2,-2,-2,-2,-1,-3,-3,...
+// where the lone -1 is a one-step reversal that PREAMBLE_DRIFT_STEP_BINS
+// alone rejects, terminating measurement at 24 symbols when the real
+// preamble (confirmed via LORA_STD_TRACE/TRACE2) continues to 40. A
+// flat widening to 2 was rejected without even trying it: SF5's own
+// sync word sits at bin 2 (nibble 1 << (sf-4)=1) right after a
+// zero-drift synthetic preamble (target=0, no noise), which is exactly
+// as far as this real capture's jitter - indistinguishable by distance
+// alone. See below for how the next symbol resolves that ambiguity.
+constexpr int PREAMBLE_MAYBE_STEP_BINS = 2;
+
 int measure_preamble_length(const std::complex<float>* iq, size_t n_iq, int sf,
                              const std::vector<std::complex<float>>& base_down, int start_idx,
                              int cfo_bins) {
@@ -197,14 +214,56 @@ int measure_preamble_length(const std::complex<float>* iq, size_t n_iq, int sf,
     while (size_t(pos) + N <= n_iq) {
         DechirpResult r = dechirp_analyze(iq + pos, N, base_down.data(), cfg, in, out);
         double ratio = r.peak_mag / (r.sum_mag + 1e-12);
-        if (circular_bin_distance(r.peak_idx, target, N) <= PREAMBLE_DRIFT_STEP_BINS &&
-            ratio > 0.5) {
+        int dist = circular_bin_distance(r.peak_idx, target, N);
+        if (dist <= PREAMBLE_DRIFT_STEP_BINS && ratio > 0.5) {
             target = r.peak_idx;  // adapt to the slow drift, not a fixed reference
             ++count;
             pos += N;
-        } else {
-            break;
+            continue;
         }
+        // Ambiguous symbol (dist == 2): peek one symbol ahead rather than
+        // deciding on this symbol alone. Real per-symbol jitter either
+        // reverts near the still-valid old target on the very next
+        // symbol (this one was noise - skip it, uncounted, target
+        // unchanged) or persists there (a genuine, if slightly larger,
+        // drift step - accept both). Real transition to sync/SFD content
+        // does neither: the symbol after a sync word's first symbol is a
+        // DIFFERENT value again (a second, independent nibble), not a
+        // reversion or a repeat - see SYNC_WORD_DEFAULT's two-symbol
+        // encoding in modulate(). That's what tells the two apart.
+        if (dist <= PREAMBLE_MAYBE_STEP_BINS && ratio > 0.5 && size_t(pos) + 2 * N <= n_iq) {
+            DechirpResult r2 = dechirp_analyze(iq + pos + N, N, base_down.data(), cfg, in, out);
+            double ratio2 = r2.peak_mag / (r2.sum_mag + 1e-12);
+            bool reverts_to_old_target =
+                ratio2 > 0.5 &&
+                circular_bin_distance(r2.peak_idx, target, N) <= PREAMBLE_DRIFT_STEP_BINS;
+            bool confirms_new_position =
+                ratio2 > 0.5 &&
+                circular_bin_distance(r2.peak_idx, r.peak_idx, N) <= PREAMBLE_DRIFT_STEP_BINS;
+            if (reverts_to_old_target) {
+                // This symbol IS still real preamble content (the caller
+                // advances past exactly `count` symbols to reach the sync
+                // word) - only `target` is left unchanged, since a single
+                // noisy reading shouldn't be trusted as the new drift
+                // reference. Bug found live 2026-09-20: originally this
+                // branch advanced `pos` without incrementing `count`,
+                // silently under-counting the return value by one symbol
+                // per skip and making the caller read the sync word one
+                // symbol too early - reproduced via a real capture whose
+                // sync_bins_raw came back as (still-preamble-bin, real-
+                // sync-bin) instead of (real-sync-bin, real-sync-bin).
+                ++count;
+                pos += N;
+                continue;
+            }
+            if (confirms_new_position) {
+                target = r.peak_idx;
+                ++count;
+                pos += N;
+                continue;
+            }
+        }
+        break;
     }
     kiss_fft_free(cfg);
     return count;
@@ -630,6 +689,22 @@ std::optional<StdDecodedPacket> demodulate_with_ppm(const std::vector<std::compl
         cleanup();
         return std::nullopt;
     }
+    // Tried and REVERTED 2026-09-20: using the SFD's own dechirped bin
+    // position (against base_up) as a fine CFO refinement for
+    // header+payload decode, on the theory that a perfectly-corrected
+    // downchirp should land at bin 0 relative to `cfo_bins`. Live
+    // testing immediately falsified this - the "residual" it produced
+    // (~1800 bins, out of N=4096) was far too large to be real drift,
+    // and using it made a previously-validating header fail entirely.
+    // Root cause: dechirping a DOWNCHIRP against an UPCHIRP reference
+    // (opposite slopes) doesn't linearize to a single clean frequency
+    // tone the way same-slope dechirp does, so its peak bin isn't a
+    // CFO measurement at all - confirmed against this session's own
+    // earlier trace data (sync-and-header-investigation.md), where SFD-
+    // vs-upchirp peaks landed near bin ~2218/2219 (not near 0) on
+    // fixtures that otherwise decoded correctly. The ratio check below
+    // (a valid downchirp-content confirmation) is unaffected; only the
+    // bin-position-as-CFO idea was wrong and is not used.
     {
         DechirpResult r = dechirp_analyze(iq.data() + pos, N, base_up.data(), cfg, in, out);
         double ratio = r.peak_mag / (r.sum_mag + 1e-12);
@@ -737,10 +812,16 @@ std::optional<StdDecodedPacket> demodulate_with_ppm(const std::vector<std::compl
             return partial;
         }
         std::vector<int> more_raw(more_symbols);
+        bool payload_dbg = std::getenv("LORA_STD_PAYLOAD_TRACE") != nullptr;
+        if (payload_dbg) std::fprintf(stderr, "[std payload trace] %d symbols:\n", more_symbols);
         for (int k = 0; k < more_symbols; ++k) {
             DechirpResult r = dechirp_analyze(iq.data() + pos, N, base_down.data(), cfg, in, out);
+            double pratio = r.peak_mag / (r.sum_mag + 1e-12);
             int b = pymod(r.peak_idx - cfo_bins, N);
             b = round_and_shift(b);
+            if (payload_dbg)
+                std::fprintf(stderr, "  [%2d] raw_bin=%4d shifted=%3d ratio=%.2f\n", k, r.peak_idx,
+                             b, pratio);
             more_raw[k] = binary_to_gray(b);  // see modulate()'s comment on gray direction
             pos += N;
         }
@@ -775,6 +856,12 @@ std::optional<StdDecodedPacket> demodulate_with_ppm(const std::vector<std::compl
                             uint16_t(uint16_t(data_bytes[size_t(payload_len) + 1]) << 8);
         uint16_t want_crc = sx1272_data_checksum(result.payload.data(), payload_len);
         result.crc_valid = (got_crc == want_crc);
+        if (const char* dbg = std::getenv("LORA_STD_DEBUG")) {
+            (void)dbg;
+            int bit_diff = int(std::bitset<16>(got_crc ^ want_crc).count());
+            std::fprintf(stderr, "[std debug] got_crc=%04x want_crc=%04x bit_diff=%d/16\n", got_crc,
+                         want_crc, bit_diff);
+        }
     }
     return result;
 }

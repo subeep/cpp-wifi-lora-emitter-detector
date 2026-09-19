@@ -321,7 +321,7 @@ inline const std::vector<double> LORA_LISTEN_CHANNELS_HZ = {865.0625e6, 865.4025
 // DeviceProfile::lora_listen_capture_rate_hz (500kHz, the largest of
 // these) by decimating down per hypothesis, not by re-capturing 3x.
 inline const std::vector<double> LORA_LISTEN_BW_LIST_HZ = {125e3, 250e3, 500e3};
-constexpr double LORA_LISTEN_DURATION_S = 2.0;
+constexpr double LORA_LISTEN_DURATION_S = 6.0; // fits observed long-preamble SF12 packets
 inline const std::vector<int> LORA_LISTEN_SF_LIST = {5, 6, 7, 8, 9, 10, 11, 12};
 constexpr int LORA_PACKET_LOG_MAX = 200;
 

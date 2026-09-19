@@ -457,30 +457,22 @@ int main() {
                 ImGui::TextDisabled("(listening only here instead of cycling all 4 channels)");
             }
 
-            // Diagnostic-only escape hatch: the SX-reference decoder
-            // currently rejects every real (non-loopback) capture at a
-            // sync-word value check whose assumption (SYNC_WORD_DEFAULT
-            // = 0x12) was only ever validated against this app's own
-            // TX, never independently against third-party hardware -
-            // see lora_phy_std.hpp's demodulate() comment. This lets a
-            // user bypass that one gate to see what the header decode
-            // (and its own, independent checksum) says regardless, off
-            // by default so it never silently weakens the normal
-            // integrity story. Rows produced this way are labeled in
-            // the packet table (see draw_lora_packet_table()) so a
-            // "Valid" header is never mistaken for a fully sync-word-
-            // verified one.
-            static bool lora_skip_sync_check = false;
-            if (ImGui::Checkbox("Skip sync-word check (diagnostic)", &lora_skip_sync_check)) {
-                scanner.set_lora_skip_sync_check(lora_skip_sync_check);
+            static float lora_capture_seconds = float(LORA_LISTEN_DURATION_S);
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::InputFloat("LoRa capture seconds (1-30)", &lora_capture_seconds, 1.0f)) {
+                scanner.set_lora_capture_seconds(lora_capture_seconds);
+                lora_capture_seconds = float(scanner.lora_capture_seconds());
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Choose a window longer than the expected packet, including its preamble. "
+                "Reception pauses during processing/retuning; boundary packets can still be truncated.");
+            static bool lora_laboratory_mode = false;
+            if (ImGui::Checkbox("Legacy laboratory codecs (nonstandard)", &lora_laboratory_mode)) {
+                scanner.set_lora_laboratory_mode(lora_laboratory_mode);
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip(
-                    "Off by default. Bypasses the sync-word value gate so the header decode "
-                    "(and its own checksum) is visible even when the sync word doesn't match - "
-                    "useful for diagnosing real hardware, but a header shown this way is NOT "
-                    "cross-checked against the sync word. Rows produced with this on are marked "
-                    "in the table.");
+                ImGui::SetTooltip("Experimental legacy codecs only. Disable for standard over-the-air decoding. "
+                                  "Production derives timing, header and sync observations from IQ.");
             }
         }
 

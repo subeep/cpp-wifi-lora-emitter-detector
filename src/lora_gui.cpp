@@ -16,7 +16,7 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
                                    ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
                                    ImGuiTableFlags_ScrollX;
     ImVec2 outer_size(0.0f, height);
-    if (!ImGui::BeginTable("lora_packets", 22, flags, outer_size)) return;
+    if (!ImGui::BeginTable("lora_packets", 23, flags, outer_size)) return;
 
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 80.0f);
@@ -27,11 +27,8 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
     ImGui::TableSetupColumn("SF", ImGuiTableColumnFlags_WidthFixed, 40.0f);
     ImGui::TableSetupColumn("BW guess (kHz)", ImGuiTableColumnFlags_WidthFixed, 110.0f);
     ImGui::TableSetupColumn("CR", ImGuiTableColumnFlags_WidthFixed, 40.0f);
-    // Which symbol-alphabet hypothesis (ppm=sf vs ppm=sf-2) the SX
-    // reference decoder used to get a valid header - only that decoder
-    // models LDRO (see LoraPacketRow::ldro). Not a signaled fact about
-    // the transmitter, just which attempt worked.
     ImGui::TableSetupColumn("LDRO", ImGuiTableColumnFlags_WidthFixed, 55.0f);
+    ImGui::TableSetupColumn("Sync observed", ImGuiTableColumnFlags_WidthFixed, 100.0f);
     ImGui::TableSetupColumn("Header len", ImGuiTableColumnFlags_WidthFixed, 85.0f);
     ImGui::TableSetupColumn("Payload CRC", ImGuiTableColumnFlags_WidthFixed, 100.0f);
     ImGui::TableSetupColumn("CFO (bins)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
@@ -96,12 +93,13 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
         if (d.cr.has_value()) ImGui::Text("4/%d", 4 + *d.cr); else ImGui::TextDisabled("--");
         ImGui::TableNextColumn();
         if (d.ldro.has_value()) {
-            ImGui::TextUnformatted(*d.ldro ? "On" : "Off");
+            ImGui::Text("%s%s", *d.ldro ? "On" : "Off", d.ldro_ambiguous ? "?" : "");
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Which symbol-alphabet hypothesis validated this header "
-                                  "(ppm=sf-2 vs ppm=sf). Inferred per-attempt provenance, "
-                                  "not a signaled transmitter setting.");
+                ImGui::SetTooltip("Payload LDRO is inferred. '?' means the selected hypothesis is not resolved by a valid payload CRC.");
         } else ImGui::TextDisabled("--");
+        ImGui::TableNextColumn();
+        if (d.sync_word) ImGui::Text("0x%02X", *d.sync_word); else ImGui::TextDisabled("--");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Observed sync symbols; not a protocol or device identity. Other values are accepted.");
         ImGui::TableNextColumn();
         if (d.payload_len.has_value()) ImGui::Text("%d", *d.payload_len); else ImGui::TextDisabled("--");
         ImGui::TableNextColumn();
@@ -165,17 +163,15 @@ void draw_lora_replay_panel() {
     }
     ImGui::TextWrapped("Replay is offline. Results stay separate from live packets and persistent emitter records. Enter a saved capture directory.");
     ImGui::InputText("Capture directory", directory, sizeof(directory));
-    static bool skip_sync_check = false;
-    ImGui::Checkbox("Skip sync-word check (diagnostic)##replay", &skip_sync_check);
+    static bool laboratory_mode = false;
+    ImGui::Checkbox("Legacy laboratory codecs (nonstandard)##replay", &laboratory_mode);
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip(
-            "Off by default. Same diagnostic bypass as the live listen panel - see its tooltip. "
-            "Rows produced with this on are marked in the table.");
+        ImGui::SetTooltip("Experimental legacy codecs only. Disable for standard over-the-air decoding.");
     }
     ImGui::BeginDisabled(pending.valid() || directory[0] == '\0');
     if (ImGui::Button("Replay capture")) {
         std::string path(directory);
-        bool skip = skip_sync_check;
+        bool skip = laboratory_mode;
         result = {}; error.clear();
         pending = std::async(std::launch::async, [path, skip] {
             auto c = load_lora_capture(path);

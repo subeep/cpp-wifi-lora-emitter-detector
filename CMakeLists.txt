@@ -452,6 +452,14 @@ target_include_directories(test_wifi_ofdm PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI
 target_compile_definitions(test_wifi_ofdm PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
 target_link_libraries(test_wifi_ofdm PRIVATE PkgConfig::KISSFFT Threads::Threads)
 
+# Shared production LoRa receiver: GUI, live scanner and offline replay.
+foreach(target band_smoke_test test_lora_observation lora_replay)
+  target_sources(${target} PRIVATE src/lora_receiver.cpp)
+endforeach()
+if(TARGET test_lora_gui)
+  target_sources(test_lora_gui PRIVATE src/lora_receiver.cpp)
+endif()
+
 # Reuse the production scanner's link graph; this tool selects Wi-Fi only.
 get_target_property(WIFI_SCAN_SOURCES band_smoke_test SOURCES)
 list(REMOVE_ITEM WIFI_SCAN_SOURCES tools/band_smoke_test.cpp)
@@ -462,3 +470,11 @@ foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
     set_target_properties(wifi_scan_smoke PROPERTIES ${property} "${value}")
   endif()
 endforeach()
+
+add_executable(test_lora_receiver tests/test_lora_receiver.cpp src/lora_receiver.cpp src/lora_capture.cpp)
+target_include_directories(test_lora_receiver PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+target_compile_definitions(test_lora_receiver PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
+target_link_libraries(test_lora_receiver PRIVATE PkgConfig::KISSFFT)
+enable_testing()
+add_test(NAME lora_receiver COMMAND test_lora_receiver)
+add_test(NAME lora_observation COMMAND test_lora_observation)

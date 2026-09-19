@@ -184,14 +184,24 @@ std::optional<double> Scanner::lora_lock_freq() const {
     return lora_lock_freq_;
 }
 
-void Scanner::set_lora_skip_sync_check(bool skip) {
+void Scanner::set_lora_laboratory_mode(bool skip) {
     std::lock_guard<std::mutex> lock(config_mutex_);
-    lora_skip_sync_check_ = skip;
+    lora_laboratory_mode_ = skip;
 }
 
-bool Scanner::lora_skip_sync_check() const {
+bool Scanner::lora_laboratory_mode() const {
     std::lock_guard<std::mutex> lock(config_mutex_);
-    return lora_skip_sync_check_;
+    return lora_laboratory_mode_;
+}
+
+void Scanner::set_lora_capture_seconds(double seconds) {
+    if (!std::isfinite(seconds)) return;
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    lora_capture_seconds_ = std::clamp(seconds, 1.0, 30.0);
+}
+double Scanner::lora_capture_seconds() const {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    return lora_capture_seconds_;
 }
 
 std::vector<DeviceRow> Scanner::snapshot(const std::string& band) const {
@@ -305,22 +315,17 @@ bool Scanner::connect_sdr(const DeviceProfile& profile, std::optional<double> ga
 // largest bandwidth in LORA_LISTEN_BW_LIST_HZ - see config.hpp's
 // DeviceProfile comment) and tries every (bandwidth, SF) combination
 // against that single capture, decimating down per bandwidth hypothesis
-// rather than re-capturing 3x. For each combination, tries (in order):
-// the standards-compliant (SX1272/76-family) codec first - see
-// lora_phy_std.hpp - since that's what real third-party hardware
-// (TarangMini and presumably most commercial LoRa modules) actually
-// transmits; then this project's own self-consistent codec
-// (lora_phy.hpp), relevant for this app's own B210 TX/RX loopback and
-// HackRF interop, not third-party devices; then, if neither header
-// decodes, falls back to a bare burst detection. Every combination is
-// tried independently - not just the first hit.
+// rather than re-capturing 3x. Production uses the receive-only explicit PHY
+// and keeps every recovered packet. Legacy codecs require a laboratory opt-in.
+// SF/BW results are hypotheses, not deduplicated transmitter identities.
 void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
                                     double threshold_db, std::vector<Detection>& detections) {
     const double host_start = std::chrono::duration<double>(
         std::chrono::system_clock::now().time_since_epoch()).count();
     const auto capture_gain = gain();
+    const double capture_seconds = std::min(lora_capture_seconds(), 32000000.0 / profile.lora_listen_capture_rate_hz);
     auto [iq_raw, actual_rate, overflow] = sdr_->capture(
-        freq_hz, profile.lora_listen_capture_rate_hz, LORA_LISTEN_DURATION_S);
+        freq_hz, profile.lora_listen_capture_rate_hz, capture_seconds);
     note_capture_health(!iq_raw.empty());
     std::string save_directory;
     {
@@ -335,7 +340,7 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
             capture.sample_rate_hz = actual_rate;
             capture.requested_sample_rate_hz = profile.lora_listen_capture_rate_hz;
             capture.requested_center_hz = freq_hz;
-            capture.requested_duration_s = LORA_LISTEN_DURATION_S;
+            capture.requested_duration_s = capture_seconds;
             capture.host_start_unix_s = host_start;
             capture.requested_gain_db = capture_gain;
             capture.device_args = profile.device_args;
@@ -379,7 +384,7 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
     }
 
     std::string ts = current_time_hhmmss();
-    bool skip_sync_check = lora_skip_sync_check();
+    bool skip_sync_check = lora_laboratory_mode();
 
     auto push_row = [&](LoraPacketRow row) {
         std::lock_guard<std::mutex> lock(lora_log_mutex_);
@@ -397,27 +402,28 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
         double bw_khz = bw_hz / 1e3;
 
         for (int sf : LORA_LISTEN_SF_LIST) {
-            auto observation = analyze_lora_hypothesis(iq, sf, skip_sync_check);
-            if (!observation) continue;
+            auto observations = analyze_lora_packets(iq, sf, bw_hz, skip_sync_check);
+            if (observations.empty()) continue;
+            const bool decoded_present = observations.front().header_valid;
+            for (auto& decoded : observations) {
+                if (!decoded.header_valid) continue;
+                decoded.time = ts; decoded.freq_mhz = freq_hz / 1e6;
+                decoded.bandwidth_khz = bw_khz;
+                if (overflow) decoded.detail += " Capture overflow: sample continuity lost.";
+                push_row(std::move(decoded));
+            }
+            // Legacy RF fingerprinting has its own preamble alignment/gates.
+            // Do not attach those unrelated estimates to a decoded packet.
+            auto observation = std::optional<LoraPacketRow>(std::move(observations.front()));
             observation->time = ts;
             observation->freq_mhz = freq_hz / 1e6;
             observation->bandwidth_khz = bw_khz;
             if (overflow) observation->detail += " Capture overflow: sample continuity lost.";
-            if (observation->header_valid) {
-                push_row(std::move(*observation));
-                continue;
-            }
-
             auto burst = lora::detect_burst(iq, sf);
             if (burst.has_value()) {
-                // Fingerprint extraction (see fingerprint.hpp) - only
-                // wired up on this path, not the two decode attempts
-                // above: BurstDetection is the only one of the three
-                // that carries preamble_len, and in practice it's the
-                // only path that ever fires for TarangMini anyway
-                // (its header/CRC never validates - see
-                // TARANGMINI_LORA_FINDINGS.md). Runs off the preamble
-                // alone, so it doesn't need a decode to have succeeded.
+                // Preserve the independently gated RF fingerprint registry path
+                // even when PHY decoding succeeds. Its older burst alignment is
+                // not attached to the new packet's header/payload evidence.
                 auto fp = fingerprint::extract_lora_fingerprint(iq, burst->sf, bw_hz, freq_hz,
                                                                   burst->start_sample,
                                                                   burst->preamble_len,
@@ -445,7 +451,7 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
                     row.fp_evm_pct = fp.evm_pct;
                     row.fp_sync_corr = fp.sync_corr;
                 }
-                push_row(std::move(row));
+                if (!decoded_present) push_row(std::move(row));
 
                 // Feed the registry too, so a fingerprinted burst can
                 // be matched/merged by RF identity (see

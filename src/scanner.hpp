@@ -116,15 +116,11 @@ public:
     void set_lora_lock_freq(std::optional<double> freq_hz);
     std::optional<double> lora_lock_freq() const;
 
-    // Diagnostic-only: bypasses the SX-reference decoder's sync-word
-    // value check (see lora_phy_std.hpp's demodulate() comment for why
-    // that gate currently rejects real third-party captures). Off by
-    // default - a header_valid=true row seen with this on is verified
-    // only by its own checksum, not the sync word; see
-    // LoraPacketRow::sync_check_skipped, surfaced in the GUI so this
-    // is never mistaken for a fully-verified decode.
-    void set_lora_skip_sync_check(bool skip);
-    bool lora_skip_sync_check() const;
+    // Explicit opt-in to the old experimental codecs; production never falls back.
+    void set_lora_laboratory_mode(bool skip);
+    bool lora_laboratory_mode() const;
+    void set_lora_capture_seconds(double seconds);
+    double lora_capture_seconds() const;
 
     std::vector<DeviceRow> snapshot(const std::string& band) const;
     ScannerStatus status() const;
@@ -191,7 +187,8 @@ private:
     std::optional<double> gain_db_ = DEFAULT_GAIN_DB;
     bool gain_dirty_ = false;
     std::optional<double> lora_lock_freq_;
-    bool lora_skip_sync_check_ = false;
+    bool lora_laboratory_mode_ = false;
+    double lora_capture_seconds_ = LORA_LISTEN_DURATION_S;
     SdrDeviceType device_type_ = SdrDeviceType::B210;
 
     mutable std::mutex status_mutex_;

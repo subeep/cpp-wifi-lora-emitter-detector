@@ -25,20 +25,11 @@ struct LoraPacketRow {
     std::optional<int> cr;
     std::optional<int> payload_len;
     std::optional<bool> crc_valid;
-    // Set only by the SX-reference decoder path (the internal codec and
-    // the preamble-only fallback never model LDRO) - true/false is which
-    // of demodulate()'s two hypotheses (ppm=sf vs ppm=sf-2) actually
-    // validated the header, not a signaled fact about the transmitter.
-    // See lora_phy_std.hpp's StdDecodedPacket::ldro for the full caveat.
+    // Payload LDRO is inferred, not transmitted in the explicit PHY header.
     std::optional<bool> ldro;
-
-    // True if this row's decode ran with the sync-word check bypassed
-    // (the GUI's diagnostic toggle - see lora_gui.cpp/scanner.hpp). A
-    // header_valid=true row with this set is verified only by its own
-    // checksum, NOT cross-checked against the sync word - weaker
-    // evidence than a normal row. Unset when the decoder path doesn't
-    // model this (internal codec, preamble-only fallback).
-    std::optional<bool> sync_check_skipped;
+    bool ldro_ambiguous = false;
+    std::optional<int> sync_word; // observation only, never a network/device ID
+    std::optional<bool> sync_check_skipped; // legacy laboratory codec only
     int cfo_bins = 0;
     std::optional<std::string> payload_repr;
 
@@ -68,12 +59,13 @@ struct LoraPacketRow {
 
 const char* lora_crc_label(LoraPacketRow::Crc crc);
 void set_lora_integrity(LoraPacketRow& row, bool complete, bool crc_on, bool crc_valid);
-// skip_sync_check: forwarded to lora::std_phy::demodulate() - see its
-// own comment. Off by default; a GUI toggle exists to turn it on
-// specifically to see header decode results real hardware currently
-// can't reach otherwise (see StdDecodedPacket::sync_check_skipped).
+// Production defaults to the receive-only explicit PHY. Legacy codecs are
+// available only through the explicit laboratory flag; never an auto fallback.
+std::vector<LoraPacketRow> analyze_lora_packets(const std::vector<std::complex<float>>& iq,
+                                                int sf, double bandwidth, bool laboratory_mode = false);
+// Convenience wrapper for 125 kHz input, returning only the first observation.
 std::optional<LoraPacketRow> analyze_lora_hypothesis(const std::vector<std::complex<float>>& iq, int sf,
-                                                       bool skip_sync_check = false);
+                                                       bool laboratory_mode = false);
 std::vector<LoraPacketRow> analyze_lora_capture(const std::vector<std::complex<float>>& iq, double rate,
-                                                 double frequency, bool skip_sync_check = false);
+                                                 double frequency, bool laboratory_mode = false);
 } // namespace rfmon

@@ -1,5 +1,6 @@
 // Renders real LoRa widgets offscreen, without a Scanner or radio.
 #include "lora_gui.hpp"
+#include "lora_capture.hpp"
 #include "imgui.h"
 #include "backends/imgui_impl_opengl3.h"
 #include <EGL/egl.h>
@@ -26,10 +27,17 @@ int main(int argc, char** argv) {
     for (int i=0;i<5;++i) {
         LoraPacketRow r; r.time="12:00:00"; r.freq_mhz=866.9; r.sf=7; r.bandwidth_khz=125;
         if (i==0) { r.status="Detected only"; r.detail="Preamble only; header unresolved."; }
-        else { r.decoder="SX reference (unvalidated OTA)"; r.cr=1; r.payload_len=3;
+        else { r.decoder="LoRa explicit PHY"; r.sync_word=0x34; r.ldro=false; r.ldro_ambiguous=i!=4; r.cr=1; r.payload_len=3;
                set_lora_integrity(r,i!=1,i!=2,i==4);
                if (r.payload_complete) { r.payload_hex="01 02 03"; r.payload_repr="..."; } }
         rows.push_back(r);
+    }
+    if (argc>2) {
+        auto capture=load_lora_capture(argv[2]);
+        auto actual=analyze_lora_capture(capture.iq,capture.sample_rate_hz,capture.requested_center_hz);
+        bool valid=false;
+        for(auto& row:actual) { row.time="Hardware replay"; if(row.crc==LoraPacketRow::Crc::Valid) valid=true; rows.push_back(std::move(row)); }
+        if(!valid) return 1;
     }
     for (int frame=0;frame<3;++frame) {
         ImGui_ImplOpenGL3_NewFrame(); ImGui::NewFrame();

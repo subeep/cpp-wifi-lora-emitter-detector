@@ -1,5 +1,6 @@
 #include "lora_observation.hpp"
 #include "lora_phy.hpp"
+#include "lora_receiver.hpp"
 #include "config.hpp"
 #include <cmath>
 #include <cstdio>
@@ -38,12 +39,12 @@ void payload_text(LoraPacketRow& row, const std::vector<uint8_t>& bytes) {
     }
 }
 }
-std::optional<LoraPacketRow> analyze_lora_hypothesis(const std::vector<std::complex<float>>& iq, int sf,
+static std::optional<LoraPacketRow> analyze_lora_laboratory(const std::vector<std::complex<float>>& iq, int sf,
                                                        bool skip_sync_check) {
     auto standard = lora::std_phy::demodulate(iq, sf, skip_sync_check);
     if (standard && standard->header_valid) {
         LoraPacketRow row;
-        row.decoder = "SX reference (unvalidated OTA)";
+        row.decoder = "Legacy SX reference (laboratory)";
         row.sf = sf; row.cr = standard->cr; row.cfo_bins = standard->cfo_bins;
         row.payload_len = standard->declared_payload_len;
         row.ldro = standard->ldro;
@@ -55,7 +56,7 @@ std::optional<LoraPacketRow> analyze_lora_hypothesis(const std::vector<std::comp
     auto internal = lora::demodulate(iq, sf);
     if (internal && internal->header_valid) {
         LoraPacketRow row;
-        row.decoder = "Internal codec (nonstandard)";
+        row.decoder = "Legacy internal codec (nonstandard)";
         row.sf = sf; row.cr = internal->cr; row.cfo_bins = internal->cfo_bins;
         row.payload_len = int(internal->payload.size());
         set_lora_integrity(row, true, true, internal->crc_valid);
@@ -78,8 +79,50 @@ std::optional<LoraPacketRow> analyze_lora_hypothesis(const std::vector<std::comp
                             : "Preamble detected; synchronization/header decoding did not complete. Cause unresolved.";
     return row;
 }
+std::vector<LoraPacketRow> analyze_lora_packets(const std::vector<std::complex<float>>& iq,
+                                                int sf, double bandwidth, bool laboratory_mode) {
+    if (laboratory_mode) {
+        auto row = analyze_lora_laboratory(iq, sf, true);
+        return row ? std::vector<LoraPacketRow>{*row} : std::vector<LoraPacketRow>{};
+    }
+    std::vector<LoraPacketRow> rows;
+    for (const auto& p : lora::receiver::demodulate(iq, sf, bandwidth)) {
+        LoraPacketRow row;
+        row.decoder = "LoRa explicit PHY";
+        row.sf = sf; row.cr = p.cr; row.payload_len = p.declared_payload_len;
+        row.cfo_bins = int(std::lround(p.cfo_bins)); row.ldro = p.ldro;
+        row.ldro_ambiguous = p.ldro_ambiguous; row.sync_word = p.sync_word;
+        set_lora_integrity(row, p.payload_complete, p.crc_on, p.crc_valid);
+        row.detail += " Sample offset " + std::to_string(p.start_sample) +
+            "; preamble drift " + std::to_string(p.drift_bins_per_symbol) + " bins/symbol.";
+        if (p.sync_word) {
+            char text[32]; std::snprintf(text, sizeof(text), " Observed sync 0x%02X.", *p.sync_word);
+            row.detail += text;
+        } else row.detail += " Sync bins " + std::to_string(p.sync_bins[0]) + ", " +
+                              std::to_string(p.sync_bins[1]) + " (not quantized).";
+        if (p.ldro_ambiguous) row.detail += " LDRO hypothesis unresolved by CRC.";
+        if (p.payload_complete) payload_text(row, p.payload);
+        rows.push_back(std::move(row));
+    }
+    if (rows.empty()) {
+        auto burst = lora::detect_burst(iq, sf);
+        if (burst) {
+            LoraPacketRow row; row.sf = sf; row.cfo_bins = burst->cfo_bins;
+            row.status = "Detected only";
+            row.detail = "Preamble evidence; no valid supported explicit header. May be truncated, implicit, unsupported or interference.";
+            rows.push_back(std::move(row));
+        }
+    }
+    return rows;
+}
+std::optional<LoraPacketRow> analyze_lora_hypothesis(const std::vector<std::complex<float>>& iq,
+                                                       int sf, bool laboratory_mode) {
+    auto rows = analyze_lora_packets(iq, sf, 125000, laboratory_mode);
+    if (rows.empty()) return std::nullopt;
+    return std::move(rows.front());
+}
 std::vector<LoraPacketRow> analyze_lora_capture(const std::vector<std::complex<float>>& raw, double rate,
-                                                 double frequency, bool skip_sync_check) {
+                                                 double frequency, bool laboratory_mode) {
     std::vector<LoraPacketRow> rows;
     for (double bw : LORA_LISTEN_BW_LIST_HZ) {
         // The codecs require sample_rate == hypothesized bandwidth. Do not silently
@@ -93,10 +136,10 @@ std::vector<LoraPacketRow> analyze_lora_capture(const std::vector<std::complex<f
             iq[i] /= float(factor);
         }
         for (int sf : LORA_LISTEN_SF_LIST) {
-            auto row = analyze_lora_hypothesis(iq, sf, skip_sync_check);
-            if (!row) continue;
-            row->freq_mhz = frequency / 1e6; row->bandwidth_khz = bw / 1e3;
-            rows.push_back(std::move(*row));
+            for (auto& row : analyze_lora_packets(iq, sf, bw, laboratory_mode)) {
+                row.freq_mhz = frequency / 1e6; row.bandwidth_khz = bw / 1e3;
+                rows.push_back(std::move(row));
+            }
         }
     }
     return rows;
