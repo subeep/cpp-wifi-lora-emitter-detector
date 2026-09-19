@@ -153,7 +153,10 @@ void draw_wifi_master_table(const std::vector<wifi_master::WifiMasterRow>& rows,
         ImGui::TableHeadersRow();
         for (const auto& row : rows) {
             ImGui::TableNextRow(); ImGui::TableNextColumn();
-            ImGui::PushStyleColor(ImGuiCol_Text, row.key_is_mac ? ImVec4(0.94f,0.55f,0.24f,1) : ImVec4(.75f,.75f,.78f,1));
+            // Green for a decoded network identity (MAC-keyed - see
+            // key_is_mac), white for a provisional RF-fingerprint
+            // cluster with no decoded SSID/name yet.
+            ImGui::PushStyleColor(ImGuiCol_Text, row.key_is_mac ? ImVec4(0.25f,0.73f,0.31f,1) : ImVec4(0.92f,0.92f,0.94f,1));
             if (ImGui::Selectable(row.device_key.c_str(), selected == row.device_key)) {
                 selected = row.device_key; open_details = true;
             }

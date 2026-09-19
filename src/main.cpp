@@ -38,10 +38,13 @@ void GlfwErrorCallback(int error, const char* description) {
     std::fprintf(stderr, "GLFW error %d: %s\n", error, description);
 }
 
-// LoRa-like -> orange, WiFi-like -> green, narrowband guess -> yellow, else grey.
+// LoRa-like -> orange, WiFi-like -> white (energy-detection only, no
+// decoded identity available here - see draw_wifi_master_table() in
+// wifi_gui.cpp for the green "has SSID/name" color, a separate table
+// that actually carries identity), narrowband guess -> yellow, else grey.
 ImVec4 category_color(const std::string& protocol) {
     if (protocol.rfind("LoRa-like", 0) == 0) return ImVec4(0.94f, 0.55f, 0.24f, 1.0f);
-    if (protocol.rfind("WiFi-like", 0) == 0) return ImVec4(0.25f, 0.73f, 0.31f, 1.0f);
+    if (protocol.rfind("WiFi-like", 0) == 0) return ImVec4(0.92f, 0.92f, 0.94f, 1.0f);
     if (protocol.find("narrowband") != std::string::npos) return ImVec4(0.82f, 0.60f, 0.13f, 1.0f);
     return ImVec4(0.55f, 0.55f, 0.58f, 1.0f);
 }
