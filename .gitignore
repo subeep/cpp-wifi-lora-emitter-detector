@@ -39,6 +39,8 @@ band_smoke_test
 *.ndjson
 data/
 test_lora_master_tmp/
+*.cf32_le
+tests/fixtures/lora_m2/
 
 # Test executables at root
 /test_*

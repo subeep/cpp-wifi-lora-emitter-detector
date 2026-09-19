@@ -1,0 +1,6 @@
+[INFO] [UHD] linux; GNU C++ version 11.2.0; Boost_107400; UHD_4.1.0.5-3
+Error: LookupError: KeyError: No devices found for ----->
+Device Address:
+    type: x300
+    addr: 192.168.10.2
+

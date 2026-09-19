@@ -127,6 +127,64 @@ std::pair<int, int> find_preamble(const std::complex<float>* iq, size_t n_iq, in
     return {-1, 0};
 }
 
+// Circular distance between two bins on a mod-N wheel (the short way
+// round either direction) - needed because bin indices wrap at N and a
+// naive |a-b| would misjudge a drift crossing the 0/N boundary.
+int circular_bin_distance(int a, int b, int n) {
+    int d = pymod(a - b, n);
+    return std::min(d, n - d);
+}
+
+// Changed from an exact-bin match to step-limited ADAPTIVE tracking on
+// 2026-09-19 after real-hardware evidence (see the M2 session trace/
+// evidence files): this transmitter's actual preamble is far longer
+// than what an exact match against a single fixed-integer CFO estimate
+// can track, because a small residual (sub-bin) CFO accumulates phase
+// across the preamble and slowly drifts the measured bin by roughly 1
+// bin per ~8-9 symbols - real captures showed drift from bin 0 out to
+// -4 over ~30 symbols, still clearly "preamble" (ratio still high),
+// before jumping by hundreds/thousands of bins into what the trace
+// shows is consistent, repeatable non-preamble content across
+// independent captures of the same payload. An exact match terminates
+// after only 8-11 symbols (as soon as the drift first crosses an
+// integer bin).
+//
+// A single WIDENED fixed-tolerance version of this fix was tried first
+// and reverted: it broke test_lora_phy_std's SF5/SF6/SF7 synthetic
+// cases (Section 4's regression gate), because the sync word's own
+// bin shift is `nibble << (sf-4)` - only 2-4 bins from zero at low SF,
+// well inside a tolerance sized for this SF12 capture's ~4-bin drift.
+// A fixed bin-count tolerance is therefore unsafe in general: whether
+// it wrongly swallows the real sync symbols depends on SF and the sync
+// word's own value, not just on how much a given transmitter's CFO
+// drifts.
+//
+// This version instead tracks the target adaptively, symbol to symbol,
+// and only requires each STEP to be small (PREAMBLE_DRIFT_STEP_BINS) -
+// this follows an arbitrarily large cumulative drift correctly (as
+// observed), while a genuine transition to sync-word content is a
+// single large jump in one step regardless of SF, so it gets rejected
+// the same way an exact match always correctly rejected it.
+//
+// Set to 1, not 2: at SF5 (the lowest SF this codebase tests), the sync
+// word's own first symbol lands at bin `sync_hi << (sf-4)` = `1 << 1` =
+// 2 for the default sync word - a step tolerance of 2 swallowed that
+// real sync symbol as "still drifting" (confirmed: broke
+// test_lora_phy_std's sf5_basic/sf5_cr4 synthetic regression cases,
+// which have zero real CFO drift and so only needed step 0 to keep
+// passing). 1 leaves those synthetic cases their full margin while
+// still tracking this real capture's observed ~1-bin-per-8-9-symbol
+// drift rate. A sync word whose own nibble is 0 (bin shift 0) would
+// still be indistinguishable from drift at ANY tolerance - a known
+// residual gap, not present in the current test suite or in this
+// transmitter's observed default sync word.
+//
+// Still an assumption about how fast real CFO drift can move bin-to-
+// bin, not a value derived from the standard - exactly the kind of
+// thing EXECUTE_NEXT.md Section 9.2 flags needing independent
+// verification once more captures/other SF/BW modes exist.
+constexpr int PREAMBLE_DRIFT_STEP_BINS = 1;
+
 int measure_preamble_length(const std::complex<float>* iq, size_t n_iq, int sf,
                              const std::vector<std::complex<float>>& base_down, int start_idx,
                              int cfo_bins) {
@@ -139,7 +197,9 @@ int measure_preamble_length(const std::complex<float>* iq, size_t n_iq, int sf,
     while (size_t(pos) + N <= n_iq) {
         DechirpResult r = dechirp_analyze(iq + pos, N, base_down.data(), cfg, in, out);
         double ratio = r.peak_mag / (r.sum_mag + 1e-12);
-        if (r.peak_idx == target && ratio > 0.5) {
+        if (circular_bin_distance(r.peak_idx, target, N) <= PREAMBLE_DRIFT_STEP_BINS &&
+            ratio > 0.5) {
+            target = r.peak_idx;  // adapt to the slow drift, not a fixed reference
             ++count;
             pos += N;
         } else {
@@ -337,7 +397,14 @@ std::vector<std::complex<float>> modulate(const std::vector<uint8_t>& payload,
                                            const StdParams& params) {
     int sf = params.sf;
     int N = 1 << sf;
-    size_t ppm = size_t(sf);
+    // LDRO reduces the usable symbol alphabet from sf to sf-2 bits -
+    // see StdParams::ldro's own comment for why and when. Everything
+    // below that already threads `ppm` generically (interleaving,
+    // block-size math) adapts automatically; the one piece that does
+    // NOT fall out for free is the final symbol-value shift applied
+    // just before chirping, added below per LoRaEncoder.cpp's own
+    // "gray decode, when SF > PPM, pad out LSBs" comment.
+    size_t ppm = size_t(params.ldro ? sf - 2 : sf);
     auto base_up = base_upchirp(sf);
     std::vector<std::complex<float>> base_down(base_up.size());
     for (size_t i = 0; i < base_up.size(); ++i) base_down[i] = std::conj(base_up[i]);
@@ -424,13 +491,40 @@ std::vector<std::complex<float>> modulate(const std::vector<uint8_t>& payload,
     // them), which is exactly what happened here initially - only real
     // TarangMini captures caught it, since our own encoder+decoder
     // round-tripped fine with the wrong pairing too.
-    for (int sym : symbols) append(symbol_chirp(sf, gray_to_binary(sym), base_up));
+    //
+    // LDRO shift: when ppm < sf (reduced alphabet), the gray-coded
+    // value only occupies the LOW ppm bits of meaning - it has to be
+    // left-shifted into the HIGH bits of the full sf-bit symbol before
+    // chirping, exactly matching LoRaEncoder.cpp's own
+    // `sym <<= (_sf - PPM)` (applied there right after grayToBinary16,
+    // same order as here). A no-op (shift 0) when ldro is off, so this
+    // changes nothing for every already-validated non-LDRO case.
+    int ldro_shift = sf - int(ppm);
+    for (int sym : symbols) append(symbol_chirp(sf, gray_to_binary(sym) << ldro_shift, base_up));
     return result;
 }
 
-std::optional<StdDecodedPacket> demodulate(const std::vector<std::complex<float>>& iq, int sf) {
+// Not declared in lora_phy_std.hpp - internal to this file, called by
+// the public demodulate() below once per LDRO hypothesis. `ppm` is the
+// caller's choice (sf for LDRO off, sf-2 for LDRO on); everything here
+// that already threaded `ppm` generically (interleaving, block-size
+// math) adapts automatically. The two symbol-reading loops get one new
+// piece each: the rounding+shift LoRaDecoder.cpp calls "gray encode,
+// when SF > PPM, depad the LSBs with rounding" - the exact inverse of
+// modulate()'s own shift, applied before gray-decoding rather than
+// after. A no-op when ppm==sf (shift 0), so this changes nothing for
+// every already-validated non-LDRO real-hardware case.
+std::optional<StdDecodedPacket> demodulate_with_ppm(const std::vector<std::complex<float>>& iq,
+                                                      int sf, size_t ppm, bool skip_sync_check) {
     int N = 1 << sf;
-    size_t ppm = size_t(sf);
+    int ldro_shift = sf - int(ppm);
+    bool ldro = ldro_shift > 0;
+    auto round_and_shift = [&](int b) {
+        if (ldro_shift <= 0) return b;
+        b += (1 << ldro_shift) / 2;
+        b >>= ldro_shift;
+        return b;
+    };
     auto base_up = base_upchirp(sf);
     std::vector<std::complex<float>> base_down(base_up.size());
     for (size_t i = 0; i < base_up.size(); ++i) base_down[i] = std::conj(base_up[i]);
@@ -445,6 +539,56 @@ std::optional<StdDecodedPacket> demodulate(const std::vector<std::complex<float>
     std::vector<kiss_fft_cpx> in(N), out(N);
     auto cleanup = [&]() { kiss_fft_free(cfg); };
 
+    // Bounded, env-gated raw-bin trace covering well past any plausible
+    // preamble length (up to 40 symbols from start_idx) - to see
+    // directly where the true preamble ends, since measure_preamble_length()
+    // is suspected of terminating early/inconsistently (see the M2
+    // session notes: measured length varies 8-11 symbols run to run on
+    // nominally identical real packets, yet the two symbols read
+    // immediately after it consistently dechirp to ~bin 0 - i.e. still
+    // plain-chirp/preamble-shaped - every time).
+    if (const char* dbg = std::getenv("LORA_STD_TRACE")) {
+        (void)dbg;
+        std::fprintf(stderr, "[std trace] start_idx=%d cfo_bins=%d preamble_len(measured)=%d bins:",
+                     start_idx, cfo_bins, preamble_len);
+        long trace_pos = long(start_idx) * N;
+        for (int k = 0; k < 80 && size_t(trace_pos) + N <= iq.size(); ++k, trace_pos += N) {
+            DechirpResult r = dechirp_analyze(iq.data() + trace_pos, N, base_down.data(), cfg, in, out);
+            int b = pymod(r.peak_idx - cfo_bins, N);
+            std::fprintf(stderr, " %d", b);
+        }
+        std::fprintf(stderr, "\n");
+    }
+    // Dual-reference trace over the transition region specifically
+    // (preamble_len-3 .. preamble_len+14): dechirps each symbol against
+    // BOTH the upchirp (base_up, correct reference for a downchirp/SFD
+    // symbol) and downchirp (base_down, correct for an upchirp/preamble/
+    // sync symbol) reference, printing bin+ratio for both, so the two
+    // can be told apart directly instead of assumed. Added 2026-09-19
+    // after the preamble-length fix left `sync_bins_raw` landing on
+    // small (4,12)/(5,13)-type values inconsistent with the expected
+    // `nibble << (sf-4)` sync-word encoding - this checks whether that
+    // region is genuinely upchirp-shaped (a sync symbol at an unexpected
+    // value) or actually downchirp-shaped (meaning the true sync
+    // symbols are somewhere else and this is already SFD).
+    if (const char* dbg = std::getenv("LORA_STD_TRACE2")) {
+        (void)dbg;
+        std::fprintf(stderr, "[std trace2] start_idx=%d preamble_len=%d region (idx: down_bin/ratio up_bin/ratio):\n",
+                     start_idx, preamble_len);
+        int lo = std::max(0, preamble_len - 3);
+        for (int k = lo; k < preamble_len + 15; ++k) {
+            long p = long(start_idx) * N + long(k) * N;
+            if (size_t(p) + N > iq.size()) break;
+            DechirpResult rd = dechirp_analyze(iq.data() + p, N, base_down.data(), cfg, in, out);
+            DechirpResult ru = dechirp_analyze(iq.data() + p, N, base_up.data(), cfg, in, out);
+            int bd = pymod(rd.peak_idx - cfo_bins, N);
+            int bu = pymod(ru.peak_idx - cfo_bins, N);
+            double rd_ratio = rd.peak_mag / (rd.sum_mag + 1e-12);
+            double ru_ratio = ru.peak_mag / (ru.sum_mag + 1e-12);
+            std::fprintf(stderr, "  [%2d] down: %4d/%.2f   up: %4d/%.2f\n", k, bd, rd_ratio, bu,
+                         ru_ratio);
+        }
+    }
     if (size_t(pos) + 2 * N > iq.size()) {
         cleanup();
         return std::nullopt;
@@ -456,7 +600,27 @@ std::optional<StdDecodedPacket> demodulate(const std::vector<std::complex<float>
         pos += N;
     }
     int recovered_sync = ((sync_bins[0] >> (sf - 4)) << 4) | (sync_bins[1] >> (sf - 4));
-    if (recovered_sync != SYNC_WORD_DEFAULT) {
+    if (const char* dbg = std::getenv("LORA_STD_DEBUG")) {
+        (void)dbg;
+        std::fprintf(stderr,
+                     "[std debug] preamble start_idx=%d cfo_bins=%d preamble_len=%d | "
+                     "sync_bins_raw=%d,%d recovered_sync=0x%02x expected=0x%02x\n",
+                     start_idx, cfo_bins, preamble_len, sync_bins[0], sync_bins[1], recovered_sync,
+                     SYNC_WORD_DEFAULT);
+    }
+    // Diagnostic-only bypass (either the skip_sync_check argument - now
+    // exposed as a GUI toggle, see lora_gui.cpp - or the
+    // LORA_STD_SKIP_SYNC_CHECK env var used by offline tooling; NOT a
+    // behavior change when both are off/unset): lets the rest of the
+    // chain (SFD/header/payload) run even when the sync word doesn't
+    // match, to test whether positional alignment past this point is
+    // otherwise correct. Added 2026-09-19 to separate "sync symbols are
+    // in the right place but decode to an unexpected value" from
+    // "something after this is still misaligned too" - see the M2
+    // session notes for why those are now believed to be different
+    // questions, still unresolved as of this bypass's addition.
+    bool sync_gate_bypassed = skip_sync_check || std::getenv("LORA_STD_SKIP_SYNC_CHECK") != nullptr;
+    if (!sync_gate_bypassed && recovered_sync != SYNC_WORD_DEFAULT) {
         cleanup();
         return std::nullopt;
     }
@@ -469,6 +633,10 @@ std::optional<StdDecodedPacket> demodulate(const std::vector<std::complex<float>
     {
         DechirpResult r = dechirp_analyze(iq.data() + pos, N, base_up.data(), cfg, in, out);
         double ratio = r.peak_mag / (r.sum_mag + 1e-12);
+        if (const char* dbg = std::getenv("LORA_STD_DEBUG")) {
+            (void)dbg;
+            std::fprintf(stderr, "[std debug] SFD ratio=%.3f (need >=0.5)\n", ratio);
+        }
         if (ratio < 0.5) {
             cleanup();
             return std::nullopt;
@@ -489,6 +657,7 @@ std::optional<StdDecodedPacket> demodulate(const std::vector<std::complex<float>
     for (int k = 0; k < N_HEADER_SYMBOLS; ++k) {
         DechirpResult r = dechirp_analyze(iq.data() + pos, N, base_down.data(), cfg, in, out);
         int b = pymod(r.peak_idx - cfo_bins, N);
+        b = round_and_shift(b);
         if (dbg) std::fprintf(stderr, " %3d(gray=%3d,ratio=%.2f)", b, binary_to_gray(b),
                              r.peak_mag / (r.sum_mag + 1e-12));
         block1_symbols[k] = binary_to_gray(b);  // see modulate()'s comment on gray direction
@@ -527,8 +696,21 @@ std::optional<StdDecodedPacket> demodulate(const std::vector<std::complex<float>
         result.start_sample = long(start_idx) * N;
         result.cfo_bins = cfo_bins;
         result.header_valid = false;
+        result.ldro = ldro;
+        result.sync_check_skipped = sync_gate_bypassed;
         return result;  // caller can still see header_valid=false + raw fields if useful
     }
+
+    StdDecodedPacket partial;
+    partial.sf = sf;
+    partial.cr = cr;
+    partial.crc_on = crc_on;
+    partial.header_valid = true;
+    partial.declared_payload_len = payload_len;
+    partial.start_sample = long(start_idx) * N;
+    partial.cfo_bins = cfo_bins;
+    partial.ldro = ldro;
+    partial.sync_check_skipped = sync_gate_bypassed;
 
     int n_bytes_with_crc = payload_len + (crc_on ? 2 : 0);
     int n_nibbles = n_bytes_with_crc * 2;
@@ -552,12 +734,13 @@ std::optional<StdDecodedPacket> demodulate(const std::vector<std::complex<float>
     if (more_symbols > 0) {
         if (size_t(pos) + size_t(more_symbols) * N > iq.size()) {
             cleanup();
-            return std::nullopt;
+            return partial;
         }
         std::vector<int> more_raw(more_symbols);
         for (int k = 0; k < more_symbols; ++k) {
             DechirpResult r = dechirp_analyze(iq.data() + pos, N, base_down.data(), cfg, in, out);
             int b = pymod(r.peak_idx - cfo_bins, N);
+            b = round_and_shift(b);
             more_raw[k] = binary_to_gray(b);  // see modulate()'s comment on gray direction
             pos += N;
         }
@@ -568,7 +751,7 @@ std::optional<StdDecodedPacket> demodulate(const std::vector<std::complex<float>
     }
     cleanup();
 
-    if (int(data_codewords.size()) < n_nibbles) return std::nullopt;
+    if (int(data_codewords.size()) < n_nibbles) return partial;
     std::vector<uint8_t> data_bytes(n_bytes_with_crc, 0);
     for (int i = 0; i < n_nibbles; ++i) {
         if (i & 1) data_bytes[size_t(i >> 1)] |= uint8_t(data_codewords[size_t(i)] << 4);
@@ -582,12 +765,36 @@ std::optional<StdDecodedPacket> demodulate(const std::vector<std::complex<float>
     result.start_sample = long(start_idx) * N;
     result.cfo_bins = cfo_bins;
     result.header_valid = true;
+    result.payload_complete = true;
+    result.ldro = ldro;
+    result.sync_check_skipped = sync_gate_bypassed;
+    result.declared_payload_len = payload_len;
     result.payload.assign(data_bytes.begin(), data_bytes.begin() + payload_len);
     if (crc_on) {
         uint16_t got_crc = uint16_t(data_bytes[size_t(payload_len)]) |
                             uint16_t(uint16_t(data_bytes[size_t(payload_len) + 1]) << 8);
         uint16_t want_crc = sx1272_data_checksum(result.payload.data(), payload_len);
         result.crc_valid = (got_crc == want_crc);
+    }
+    return result;
+}
+
+// Public entry point: tries LDRO off first (ppm=sf), which is the
+// unchanged legacy behavior already validated against synthetic
+// round-trips and real captures. Only falls back to LDRO on (ppm=sf-2)
+// if that header doesn't validate - so a non-LDRO transmitter's packets
+// decode exactly as before (same codepath, same result) and the extra
+// attempt only ever fires on packets the old code already rejected.
+// Guarded to sf>=7 because header_valid can only require ppm>=
+// N_HEADER_CODEWORDS(5) codewords per row; sf-2 must stay above that
+// floor for the diagonal interleaver's block1 sizing to make sense.
+std::optional<StdDecodedPacket> demodulate(const std::vector<std::complex<float>>& iq, int sf,
+                                            bool skip_sync_check) {
+    auto result = demodulate_with_ppm(iq, sf, size_t(sf), skip_sync_check);
+    if (result.has_value() && result->header_valid) return result;
+    if (sf >= 7) {
+        auto ldro_result = demodulate_with_ppm(iq, sf, size_t(sf - 2), skip_sync_check);
+        if (ldro_result.has_value()) return ldro_result;
     }
     return result;
 }

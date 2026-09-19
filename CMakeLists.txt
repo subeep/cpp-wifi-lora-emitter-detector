@@ -316,3 +316,149 @@ if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
   target_include_directories(test_wifi_gui PRIVATE ${CMAKE_SOURCE_DIR}/src ${IMGUI_DIR} ${WIFI_EGL_INCLUDE_DIR})
   target_link_libraries(test_wifi_gui PRIVATE OpenGL::GL ${WIFI_EGL_LIBRARY} dl)
 endif()
+
+# ---------------------------------------------------------------------------
+# wifi_test_bench - standalone Wi-Fi 2.4GHz RF-parameter test bench, kept
+# entirely separate from rf_monitor_gui above (does not touch main.cpp,
+# scanner.*, wifi_master.*, wifi_gui.*, or anything else that app owns).
+# Lives under src/bench/ specifically so it's invisible to the
+# APP_SOURCES glob a few hundred lines up - rf_monitor_gui's own file set
+# is unaffected by anything added here. Links the SAME production RF
+# files (wifi_phy.cpp/wifi_fingerprint.cpp/wifi_frame.cpp/
+# wifi_dsss_rx.cpp/spectrum.cpp/sdr_capture.cpp) rather than copies, so
+# its math is identical to the main app's - only the capture loop and
+# UI around it are new.
+#
+# ImPlot (vendored under third_party/implot, current upstream - the
+# copy in the sibling usrp-x310 project is too old for this repo's
+# ImGui 1.92.9, see the git history for that investigation) is the one
+# new dependency this target introduces; nothing else in the repo uses
+# or needs it.
+# ---------------------------------------------------------------------------
+set(IMPLOT_DIR ${CMAKE_SOURCE_DIR}/third_party/implot)
+set(IMPLOT_SOURCES
+  ${IMPLOT_DIR}/implot.cpp
+  ${IMPLOT_DIR}/implot_items.cpp
+)
+
+add_executable(wifi_test_bench
+  src/bench/bench_main.cpp
+  src/bench/bench_capture.cpp
+  src/bench/bench_tx.cpp
+  src/bench/bench_gui.cpp
+  src/sdr_capture.cpp
+  src/wifi_phy.cpp
+  src/wifi_fingerprint.cpp
+  src/wifi_frame.cpp
+  src/wifi_dsss_rx.cpp
+  src/spectrum.cpp
+  ${IMGUI_SOURCES}
+  ${IMPLOT_SOURCES}
+)
+target_include_directories(wifi_test_bench PRIVATE
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/src/bench
+  ${IMGUI_DIR}
+  ${IMGUI_DIR}/backends
+  ${IMPLOT_DIR}
+  ${GLFW_INCLUDE_DIRS}
+  ${UHD_INCLUDE_DIRS}
+)
+target_link_libraries(wifi_test_bench PRIVATE
+  PkgConfig::GLFW
+  PkgConfig::KISSFFT
+  OpenGL::GL
+  Threads::Threads
+  dl
+  ${UHD_LIBRARIES}
+)
+
+# ---------------------------------------------------------------------------
+# Software loopback test for the test bench's TX waveform generators -
+# see tests/test_bench_tx.cpp's own header for why this is the one part
+# of the bench that gets a dedicated correctness test. No radio, no
+# GUI; links UHD only because bench_tx.cpp's BenchTx class references
+# it (never actually called here).
+# ---------------------------------------------------------------------------
+add_executable(test_bench_tx
+  tests/test_bench_tx.cpp
+  src/bench/bench_tx.cpp
+  src/wifi_phy.cpp
+  src/wifi_frame.cpp
+  src/wifi_dsss_rx.cpp
+  src/wifi_fingerprint.cpp
+)
+target_include_directories(test_bench_tx PRIVATE
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/src/bench
+  ${UHD_INCLUDE_DIRS}
+)
+target_link_libraries(test_bench_tx PRIVATE
+  PkgConfig::KISSFFT
+  Threads::Threads
+  dl
+  ${UHD_LIBRARIES}
+)
+
+# LoRa observation semantics and versioned offline IQ capture/replay.
+target_sources(band_smoke_test PRIVATE src/lora_observation.cpp src/lora_capture.cpp)
+add_executable(test_lora_observation tests/test_lora_observation.cpp
+    src/lora_observation.cpp src/lora_capture.cpp src/lora_phy.cpp src/lora_phy_std.cpp)
+target_include_directories(test_lora_observation PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+target_link_libraries(test_lora_observation PRIVATE PkgConfig::KISSFFT)
+if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
+  add_executable(test_lora_gui tests/test_lora_gui.cpp src/lora_gui.cpp src/lora_observation.cpp
+      src/lora_capture.cpp src/lora_phy.cpp src/lora_phy_std.cpp
+      ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp
+      ${IMGUI_DIR}/imgui_widgets.cpp ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
+  target_include_directories(test_lora_gui PRIVATE ${CMAKE_SOURCE_DIR}/src ${IMGUI_DIR}
+      ${WIFI_EGL_INCLUDE_DIR} ${WIFI_JSON_INCLUDE_DIR})
+  target_link_libraries(test_lora_gui PRIVATE PkgConfig::KISSFFT OpenGL::GL ${WIFI_EGL_LIBRARY} Threads::Threads dl)
+endif()
+add_executable(lora_replay tools/lora_replay.cpp src/lora_capture.cpp
+    src/lora_observation.cpp src/lora_phy.cpp src/lora_phy_std.cpp)
+target_include_directories(lora_replay PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+target_link_libraries(lora_replay PRIVATE PkgConfig::KISSFFT)
+
+# ---------------------------------------------------------------------------
+# Milestone 2 fixture collection: a dedicated finite receive-only LoRa
+# capture tool (EXECUTE_NEXT.md Section 5.3 point 5) - one UsrpCapture
+# connect/capture/save/disconnect, using the SAME lora_capture.hpp
+# manifest+cf32 format lora_replay/test_lora_observation already load.
+# ---------------------------------------------------------------------------
+add_executable(lora_capture_cli tools/lora_capture_cli.cpp src/lora_capture.cpp src/sdr_capture.cpp)
+target_include_directories(lora_capture_cli PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR} ${UHD_INCLUDE_DIRS})
+target_link_libraries(lora_capture_cli PRIVATE Threads::Threads dl ${UHD_LIBRARIES})
+
+# Crops a saved capture to a sample range for fixture curation - pure
+# software, no hardware, reuses load/save_lora_capture() directly.
+add_executable(lora_capture_crop tools/lora_capture_crop.cpp src/lora_capture.cpp)
+target_include_directories(lora_capture_crop PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+
+# Receive-only Wi-Fi IQ fixture collection; independent of LoRa capture tools.
+add_executable(wifi_capture_cli tools/wifi_capture_cli.cpp src/sdr_capture.cpp)
+target_include_directories(wifi_capture_cli PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR} ${UHD_INCLUDE_DIRS})
+target_link_libraries(wifi_capture_cli PRIVATE Threads::Threads dl ${UHD_LIBRARIES})
+
+add_executable(wifi_ofdm_replay tools/wifi_ofdm_replay.cpp src/wifi_ofdm_rx.cpp src/wifi_phy.cpp src/wifi_frame.cpp)
+target_include_directories(wifi_ofdm_replay PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+target_link_libraries(wifi_ofdm_replay PRIVATE PkgConfig::KISSFFT)
+
+target_sources(band_smoke_test PRIVATE src/wifi_ofdm_rx.cpp)
+
+add_executable(test_wifi_ofdm tests/test_wifi_ofdm.cpp src/wifi_ofdm_rx.cpp
+    src/wifi_phy.cpp src/wifi_frame.cpp src/wifi_master.cpp src/wifi_vendor.cpp)
+target_include_directories(test_wifi_ofdm PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+target_compile_definitions(test_wifi_ofdm PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
+target_link_libraries(test_wifi_ofdm PRIVATE PkgConfig::KISSFFT Threads::Threads)
+
+# Reuse the production scanner's link graph; this tool selects Wi-Fi only.
+get_target_property(WIFI_SCAN_SOURCES band_smoke_test SOURCES)
+list(REMOVE_ITEM WIFI_SCAN_SOURCES tools/band_smoke_test.cpp)
+add_executable(wifi_scan_smoke tools/wifi_scan_smoke.cpp ${WIFI_SCAN_SOURCES})
+foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
+  get_target_property(value band_smoke_test ${property})
+  if(value)
+    set_target_properties(wifi_scan_smoke PROPERTIES ${property} "${value}")
+  endif()
+endforeach()

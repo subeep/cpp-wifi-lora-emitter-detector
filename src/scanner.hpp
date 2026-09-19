@@ -17,6 +17,7 @@
 
 #include "config.hpp"
 #include "lora_master.hpp"
+#include "lora_observation.hpp"
 #include "registry.hpp"
 #include "sdr_capture.hpp"
 #include "wifi_master.hpp"
@@ -38,49 +39,9 @@ struct ScannerStatus {
     bool rx_stalled = false;
 };
 
-// One observed LoRa PHY event (see lora_phy.hpp): either a full decode
-// or a bare burst detection. Optional fields are unset for a
-// detected-only row (no payload was recovered).
-struct LoraPacketRow {
-    std::string time;      // HH:MM:SS
-    std::string status;    // "decoded" or "detected"
-    double freq_mhz;
-    int sf;
-    double bandwidth_khz;  // which of LORA_LISTEN_BW_LIST_HZ this was found at -
-                            // a real hypothesis that matched, not a measurement
-    std::optional<int> cr;
-    std::optional<int> payload_len;
-    std::optional<bool> crc_valid;
-    int cfo_bins;
-    std::optional<std::string> payload_repr;
-
-    // RF fingerprint (see fingerprint.hpp) - the "stable core" Tier-1
-    // parameters plus the SNR they were gated on. Unset when extraction
-    // was gated out (e.g. below the SNR floor) or not attempted for
-    // this row (only the "detected" path currently extracts one - see
-    // run_lora_listen_step()).
-    std::optional<double> fp_cfo_ppm;
-    std::optional<double> fp_irr_db;
-    std::optional<double> fp_iq_eps;
-    std::optional<double> fp_iq_phi_deg;
-    std::optional<double> fp_dc_dbc;
-    std::optional<double> fp_dc_ang_deg;
-    std::optional<double> fp_snr_db;
-    std::optional<std::string> fp_gate_reason;  // set only when gated out
-
-    // Fit-quality covariates - shown regardless of gate outcome, once
-    // actually computed (unset only if gating happened before the fit
-    // ever ran, e.g. the SNR floor). A high SNR alone doesn't mean the
-    // (SF, BW) hypothesis was correct - these reveal whether the fit
-    // actually explains the signal, which is exactly what the
-    // LORA_EVM_CEILING_PCT/LORA_SYNC_CORR_FLOOR gate uses them for.
-    std::optional<double> fp_evm_pct;
-    std::optional<double> fp_sync_corr;
-};
-
 // One detected Wi-Fi transmission - a single burst found by
 // wifi::detect_bursts() and then classified on its own window, rather
-// than a whole-capture verdict. FCS-valid DSSS beacon/probe responses
+// than a whole-capture verdict. FCS-valid DSSS/OFDM beacon/probe responses
 // additionally carry decoded identity and the persistent record key.
 struct WifiPacketRow {
     std::string time;  // HH:MM:SS
@@ -92,6 +53,10 @@ struct WifiPacketRow {
     double duration_us = 0.0;
     double confidence = 0.0;  // [0,1], comparable across modulations
     std::optional<wifi::BeaconInfo> identity;  // FCS-valid decoded beacon/probe response
+    std::string decode_status;
+    int ofdm_rate_mbps = 0;
+    size_t psdu_length = 0;
+    bool fcs_valid = false;
     std::string master_key;  // persistent BSSID or accepted fingerprint-cluster key
 
     // RF fingerprint (see wifi_fingerprint.hpp) - unset when extraction
@@ -144,8 +109,22 @@ public:
     // real device's configured frequency doesn't fall on that list (see
     // newrocktest/TARANGMINI_LORA_FINDINGS.md for how this comes up in
     // practice). nullopt (default) = cycle all channels as usual.
+    // One-shot save of the next LoRa capture, consumed by the scan worker.
+    void request_lora_capture_save(const std::string& directory);
+    std::string lora_capture_message() const;
+    bool lora_capture_pending() const;
     void set_lora_lock_freq(std::optional<double> freq_hz);
     std::optional<double> lora_lock_freq() const;
+
+    // Diagnostic-only: bypasses the SX-reference decoder's sync-word
+    // value check (see lora_phy_std.hpp's demodulate() comment for why
+    // that gate currently rejects real third-party captures). Off by
+    // default - a header_valid=true row seen with this on is verified
+    // only by its own checksum, not the sync word; see
+    // LoraPacketRow::sync_check_skipped, surfaced in the GUI so this
+    // is never mistaken for a fully-verified decode.
+    void set_lora_skip_sync_check(bool skip);
+    bool lora_skip_sync_check() const;
 
     std::vector<DeviceRow> snapshot(const std::string& band) const;
     ScannerStatus status() const;
@@ -175,8 +154,8 @@ public:
     // Persistent, cross-run Wi-Fi "master emitter" list (see
     // wifi_master.hpp) - the Wi-Fi analog of lora_master_snapshot()
     // above, fed by FCS-valid identities and accepted RF readings independently. Keyed
-    // by decoded MAC/BSSID when one is available (currently only
-    // DSSS beacons decode one), fingerprint-cluster otherwise.
+    // by decoded MAC/BSSID when one is available (DSSS and legacy OFDM
+    // beacons/probe responses), fingerprint-cluster otherwise.
     std::vector<wifi_master::WifiMasterRow> wifi_master_snapshot() const;
     std::string wifi_storage_error() const { return wifi_master_.storage_error(); }
 
@@ -212,6 +191,7 @@ private:
     std::optional<double> gain_db_ = DEFAULT_GAIN_DB;
     bool gain_dirty_ = false;
     std::optional<double> lora_lock_freq_;
+    bool lora_skip_sync_check_ = false;
     SdrDeviceType device_type_ = SdrDeviceType::B210;
 
     mutable std::mutex status_mutex_;
@@ -224,6 +204,10 @@ private:
     mutable std::mutex lora_log_mutex_;
     std::vector<LoraPacketRow> lora_packet_log_;
     size_t lora_channel_idx_ = 0;
+    mutable std::mutex capture_mutex_;
+    std::string capture_save_directory_;
+    std::string capture_message_;
+    bool capture_pending_ = false;
 
     mutable std::mutex wifi_log_mutex_;
     std::vector<WifiPacketRow> wifi_packet_log_;

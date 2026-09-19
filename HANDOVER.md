@@ -844,3 +844,93 @@ Keep LoRa frozen unless the user explicitly changes that scope.
 
 Further implementation notes and protocol references:
 [docs/WIFI_IDENTITIES.md](docs/WIFI_IDENTITIES.md).
+
+## 10. LoRa interpretability and offline capture/replay (2026-09-18)
+
+The user explicitly reopened LoRa work after the TarangMini assessment and approved
+starting with accurate statuses and capture/replay. This supersedes the earlier
+LoRa freeze for this scope; Wi-Fi and the separate bench implementation were not changed.
+
+- `src/lora_observation.*` now supplies shared per-hypothesis interpretation for
+  live scans and replay. A valid header is no longer automatically called a decoded
+  packet. CRC absent, failed, valid and not checked are distinct. Decoder provenance
+  separates the SX-reference implementation (still unvalidated over the air) from
+  the project's nonstandard internal codec.
+- `src/lora_phy_std.*` retains a valid header and declared payload length when the
+  capture is too short for a complete payload. This changes result reporting, not
+  the PHY coding/synchronization algorithms.
+- `src/lora_gui.*` contains the LoRa packet table, exact payload hex/ASCII tooltip,
+  integrity explanations and asynchronous offline replay controls. Live capture
+  controls in `main.cpp` request a one-shot save from Scanner's worker.
+- `src/lora_capture.*` saves versioned JSON metadata plus portable little-endian
+  float32 IQ with an accidental-corruption checksum. Unique directories prevent
+  overwrites; bounded loading rejects malformed recordings. Requested settings and
+  host timestamps are explicitly distinguished from measured/hardware values.
+- Replay does not update live identities, fingerprint logs or master records.
+  `tools/lora_replay.cpp` also provides a receiver-independent command-line path.
+- Added `test_lora_observation` and offscreen `test_lora_gui`. Observation/capture
+  tests and existing LoRa PHY tests passed; production GUI and smoke-tool targets
+  built successfully. GUI fixtures were rendered offscreen and visually inspected.
+  No real-radio capture or interoperability claim is made by these synthetic tests.
+
+Usage, format details, limitations and next steps:
+[docs/LORA_CAPTURE_REPLAY.md](docs/LORA_CAPTURE_REPLAY.md).
+The connected TarangMini's LoRaWAN firmware does not match the supplied TarangNet
+API manual. Receiver discovery and matching board documentation remain the hardware
+blockers recorded in [TARANGMINI_ASSESSMENT.md](TARANGMINI_ASSESSMENT.md).
+
+### 10.1 TarangMini sweep rejection handling (2026-09-18)
+
+The user reported `2b038801` on every sweep send. Updated
+`tools/tarangnet_api.py` and `tools/tarangmini_sf_bw_sweep.py` to require the exact
+documented TarangNet firmware before writes, select root/router send commands from
+readback, validate ACKs and response framing/command IDs, verify settings, and
+restore only after an attempted change on supported firmware. Added `--inspect`.
+Unsupported LW-S201 identification exits before sweep/flash/restore operations;
+it does not invent a LoRaWAN transmit API. Seven mocked tests pass in
+`tests/test_tarangmini_tools.py`. No hardware TX was attempted. See
+[docs/TARANGMINI_SWEEP.md](docs/TARANGMINI_SWEEP.md) for commands and limitations.
+Actual transmission with the currently identified LW-S201 firmware still needs
+its matching API documentation; this host-tool fix does not resolve that blocker.
+
+## 11. Legacy OFDM beacon decoding and live Wi-Fi integration (2026-09-19)
+
+The user authorized implementation with the connected USRP, retaining the request
+to leave LoRa untouched for this work. Added a native legacy 20 MHz OFDM receiver
+(`src/wifi_ofdm_rx.*`): STF/LTF synchronization, CFO correction, channel estimation,
+L-SIG validation, pilots, soft demapping, deinterleaving/depuncturing, Viterbi,
+descrambling and MAC FCS. Software coverage includes all legacy rates from 6 to
+54 Mbps. Modern HT/VHT/HE payload decoding is not included; their advertised
+capability IEs can still be read from legacy OFDM beacons.
+
+- Integrated decoding into the production scanner on both Wi-Fi bands, with burst
+  context and without the DSSS duration gate. Only FCS-valid beacon/probe responses
+  populate decoded identities. Corrected decoded AP channel mapping for 5 GHz.
+- Persistent identities save the observation's actual PHY, independently of the
+  latest accepted fingerprint. Older records default to DSSS. OFDM identities
+  survive rejected fingerprints, compaction and restart.
+- GUI packet rows show decode status, OFDM rate and PSDU length. Identity details
+  show the FCS-valid source PHY alongside existing SSID/security/vendor/WPS fields.
+- Added receive-only `wifi_capture_cli`, offline `wifi_ofdm_replay`, and finite
+  Wi-Fi-only production `wifi_scan_smoke`. Replay does not modify live records.
+- Real X310 captures decoded `Airtel_kira_7992` on channel 1 and `Avgarde_airtel`
+  on channel 36 (including production +1.5 MHz tuning-offset recordings). All
+  observed beacon rates in this validation were 6 Mbps. Do not equate software
+  coverage of all eight rates with over-the-air validation of all eight.
+- End-to-end production scanner runs then decoded/persisted 5 GHz
+  `Flo Mobility upstairs` identities and hidden BSSIDs, and 2.4 GHz
+  `Airtel_kira_7992`. Both finished with no overflow/error. Saved live identities
+  are available in the normal GUI after restart. The radio was released afterward.
+- Validation: 109 OFDM checks; 45 identity checks; existing Wi-Fi PHY, DSSS RX,
+  frame, fingerprint, master and stress tests; offscreen production GUI rendering
+  and popup interaction. GUI and smoke targets build. Three small received IQ
+  regression crops retain provenance and exact bytes; zlib CRC and tshark field
+  checks agree. An independent GNU Radio PHY comparison was attempted but its
+  installed module crashed, so no independent IQ-decoder agreement is claimed.
+- X310 setup intermittently timed out; the scanner's existing connection retry
+  recovered. Failed/empty captures are excluded from successful results. No radio
+  configuration, fingerprint gates, LoRa source, or LoRa tests were changed.
+
+Implementation limits, capture locations, reproducible commands and next steps:
+[docs/WIFI_OFDM.md](docs/WIFI_OFDM.md). The next useful task is controlled decode-yield
+and RF calibration, to be chosen by the user after this milestone.

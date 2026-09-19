@@ -12,7 +12,7 @@
 //
 // Fingerprint matching is unchanged: LoRa-derived placeholder tolerances and CFO
 // exclusion still require independent Wi-Fi validation. No physical-device-count
-// guarantee is implied by cluster IDs. Only DSSS currently supplies decoded MACs.
+// guarantee is implied by cluster IDs. DSSS and legacy OFDM supply decoded MACs.
 #pragma once
 
 #include <cstdint>
@@ -76,6 +76,7 @@ struct WifiMasterRow {
     int reading_count = 0;
     WifiMasterReading latest;
     std::optional<wifi::BeaconInfo> identity;
+    std::string identity_phy;
     int64_t identity_ts = 0;
     int64_t ssid_seen_ts = 0;
     int64_t wps_seen_ts = 0;
@@ -109,7 +110,8 @@ public:
     // A verified identity observation is independent of fingerprint acceptance.
     // Hidden SSIDs do not erase a previously learned name. No automatic merge
     // of fingerprint clusters into BSSIDs: their equivalence is not established.
-    std::string record_identity(const wifi::BeaconInfo& info, double monitored_channel_hz, int64_t ts);
+    std::string record_identity(const wifi::BeaconInfo& info, double monitored_channel_hz, int64_t ts,
+                                const std::string& phy = "DSSS");
     std::string storage_error() const;
 
     // Sorted by last_seen_ts, most recently seen first.
@@ -124,6 +126,7 @@ private:
         double last_channel_hz = 0.0;
         std::string last_phy;
         std::optional<wifi::BeaconInfo> identity;
+        std::string identity_phy = "DSSS";
         int64_t identity_ts = 0, ssid_seen_ts = 0, wps_seen_ts = 0;
         std::string ssid_source, wps_source;
         uint64_t identity_count = 0;

@@ -1,0 +1,6 @@
+Consolidate compiler generated dependencies of target test_lora_phy_std
+[100%] Built target test_lora_phy_std
+Consolidate compiler generated dependencies of target test_lora_phy
+[100%] Built target test_lora_phy
+Consolidate compiler generated dependencies of target test_lora_master
+[100%] Built target test_lora_master

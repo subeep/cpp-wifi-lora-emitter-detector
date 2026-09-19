@@ -1,0 +1,45 @@
+{
+  "port": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_B002HEFW-if00-port0",
+  "operations": "readback only; no configuration writes, reset, flash save, or transmission commands",
+  "records": [
+    {
+      "utc": "2026-09-18T11:04:31.645543+00:00",
+      "command_id_hex": "000b",
+      "tx_hex": "2b050200000b",
+      "rx_hex": "2b2c82000b00546172616e67436f6e6e6563745f4c575f533230315f4c6f526157414e5f43415f76315f305f34",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "546172616e67436f6e6e6563745f4c575f533230315f4c6f526157414e5f43415f76315f305f34"
+        }
+      ],
+      "matches_baseline": true
+    },
+    {
+      "utc": "2026-09-18T11:04:32.851492+00:00",
+      "command_id_hex": "0004",
+      "tx_hex": "2b0502000004",
+      "rx_hex": "2b0d820004003cc1f6050005df88",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "3cc1f6050005df88"
+        }
+      ],
+      "matches_baseline": true
+    },
+    {
+      "utc": "2026-09-18T11:04:34.058508+00:00",
+      "command_id_hex": "0008",
+      "tx_hex": "2b0502000008",
+      "rx_hex": "2b068200080000",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "00"
+        }
+      ],
+      "matches_baseline": true
+    }
+  ]
+}

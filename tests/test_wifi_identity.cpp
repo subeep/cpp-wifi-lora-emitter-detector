@@ -155,6 +155,26 @@ int main() {
         wifi_master::WifiMasterList list(legacy.string()); auto row=list.snapshot().at(0);
         check(row.identity && row.first_seen_ts==7 && row.reading_count==1,"legacy record enriched without losing history");
     }
+    auto ofdm_dir=dir/"ofdm";
+    {
+        wifi_master::WifiMasterList list(ofdm_dir.string());
+        for(int i=0;i<110;++i) list.record_identity(b,5180e6,100+i,"OFDM");
+        wifi_fingerprint::WifiFingerprint fp;
+        list.record_reading(b.bssid,"DSSS",2412e6,22e6,fp,300);
+    }
+    {
+        wifi_master::WifiMasterList list(ofdm_dir.string());auto row=list.snapshot().at(0);
+        check(row.identity_phy=="OFDM" && row.last_phy=="DSSS" && row.identity_count==110,
+              "OFDM identity provenance survives compaction and newer DSSS reading");
+    }
+    // Schema-2 identity records predating OFDM omitted phy and mean DSSS.
+    auto path=ofdm_dir/(b.bssid+".ndjson");std::vector<nlohmann::json> old_lines;
+    {std::ifstream in(path);std::string line;while(std::getline(in,line)){auto j=nlohmann::json::parse(line);if(j.value("type","")=="identity")j.erase("phy");old_lines.push_back(j);}}
+    {std::ofstream out(path);for(const auto& j:old_lines)out<<j.dump()<<'\n';}
+    {
+        wifi_master::WifiMasterList list(ofdm_dir.string());
+        check(list.snapshot().at(0).identity_phy=="DSSS","old identity records default to DSSS");
+    }
     auto unwritable=dir/"not-a-directory"; { std::ofstream out(unwritable); out << 'x'; }
     wifi_master::WifiMasterList unavailable(unwritable.string());
     unavailable.record_identity(b,2412e6,100);

@@ -35,7 +35,7 @@ int main(int argc, char** argv) {
     row.first_seen_ts=std::time(nullptr)-86400; row.last_seen_ts=std::time(nullptr);
     row.identity_ts=row.last_seen_ts; row.ssid_seen_ts=row.identity_ts; row.wps_seen_ts=row.identity_ts;
     row.ssid_source="Probe response"; row.wps_source="Probe response";
-    row.identity_count=12; row.monitored_channel_hz=2412e6; row.last_channel_hz=2412e6;
+    row.identity_phy="OFDM"; row.last_phy="OFDM"; row.identity_count=12; row.monitored_channel_hz=2412e6; row.last_channel_hz=2412e6;
     wifi::BeaconInfo b; b.bssid=row.device_key; b.ssid="Lab network (test fixture)"; b.ssid_present=true;
     b.fcs_valid=true; b.frame_source="Probe response"; b.channel=9; b.channel_source="DS Parameter Set";
     b.capability=0x11; b.beacon_interval_tu=100; b.security="RSN: PSK, SAE (WPA3-Personal)";
@@ -55,7 +55,10 @@ int main(int argc, char** argv) {
     packets[0].identity=b; packets[0].master_key=b.bssid; packets[0].modulation="DSSS";
     packets[0].fp_gate_reason="EVM above ceiling";
     packets[1].time="12:00:01"; packets[1].channel=6; packets[1].freq_mhz=2437;
-    packets[1].modulation="OFDM"; packets[1].master_key="WIFI-FP-0001";
+    packets[1].modulation="OFDM"; packets[1].master_key=b.bssid;
+    packets[1].identity=b; packets[1].decode_status="Decoded OFDM beacon/probe response";
+    packets[1].ofdm_rate_mbps=6; packets[1].psdu_length=454; packets[1].fcs_valid=true;
+    packets[0].decode_status="Decoded DSSS beacon/probe response"; packets[0].fcs_valid=true;
     auto save=[&](const char* suffix) {
         if (argc<2) return;
         std::vector<unsigned char> pixels(1600*1000*3); glPixelStorei(GL_PACK_ALIGNMENT,1);

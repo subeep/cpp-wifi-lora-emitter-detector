@@ -1,0 +1,15 @@
+PASS [basic_sf7_cr1]: sf=7 cr=1 payload_len=10 start_sample=0 cfo_bins=0
+PASS [basic_sf7_cr4]: sf=7 cr=4 payload_len=10 start_sample=0 cfo_bins=0
+PASS [sf9]: sf=9 cr=2 payload_len=20 start_sample=0 cfo_bins=0
+PASS [sf12_long_payload]: sf=12 cr=3 payload_len=40 start_sample=0 cfo_bins=0
+PASS [empty_payload]: sf=7 cr=1 payload_len=0 start_sample=0 cfo_bins=0
+PASS [single_byte]: sf=7 cr=1 payload_len=1 start_sample=0 cfo_bins=0
+PASS [with_padding]: sf=8 cr=2 payload_len=11 start_sample=512 cfo_bins=0
+PASS [with_light_noise]: sf=7 cr=4 payload_len=13 start_sample=0 cfo_bins=0
+PASS [all_zero_bytes]: sf=7 cr=1 payload_len=16 start_sample=0 cfo_bins=0
+PASS [all_ff_bytes]: sf=8 cr=4 payload_len=16 start_sample=0 cfo_bins=0
+PASS [sf6_basic]: sf=6 cr=1 payload_len=8 start_sample=0 cfo_bins=0
+PASS [sf5_basic]: sf=5 cr=1 payload_len=8 start_sample=0 cfo_bins=0
+PASS [sf5_cr4]: sf=5 cr=4 payload_len=12 start_sample=0 cfo_bins=0
+
+All LoRa PHY round-trip checks passed.

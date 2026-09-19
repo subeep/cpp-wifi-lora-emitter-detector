@@ -1,0 +1,255 @@
+{
+  "port": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_B002HEFW-if00-port0",
+  "baud": 9600,
+  "framing": "8N1",
+  "warning": "Command labels originate from the TarangNet manual. Installed firmware identifies as LoRaWAN; do not interpret unknown values using TarangNet mappings. Only read-shaped requests were sent; no configuration writes, reset, flash or data-send commands.",
+  "records": [
+    {
+      "utc": "2026-09-18T10:08:22.787406+00:00",
+      "tx_hex": "2b0502000006",
+      "rx_hex": "2b0582000601",
+      "responses": [
+        {
+          "status": 1,
+          "value_hex": ""
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "firmware",
+      "command_id_hex": "0006"
+    },
+    {
+      "utc": "2026-09-18T10:08:23.994789+00:00",
+      "tx_hex": "2b0502000005",
+      "rx_hex": "2b0d82000500ffffffffffffffff",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "ffffffffffffffff"
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "hardware",
+      "command_id_hex": "0005"
+    },
+    {
+      "utc": "2026-09-18T10:08:25.200928+00:00",
+      "tx_hex": "2b0502000004",
+      "rx_hex": "2b0d820004003cc1f6050005df88",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "3cc1f6050005df88"
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "device_eui",
+      "command_id_hex": "0004"
+    },
+    {
+      "utc": "2026-09-18T10:08:26.408339+00:00",
+      "tx_hex": "2b0502000003",
+      "rx_hex": "2b068200030003",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "03"
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "baud",
+      "command_id_hex": "0003"
+    },
+    {
+      "utc": "2026-09-18T10:08:27.614478+00:00",
+      "tx_hex": "2b0502000016",
+      "rx_hex": "2b098200160000000000",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "00000000"
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "mode",
+      "command_id_hex": "0016"
+    },
+    {
+      "utc": "2026-09-18T10:08:28.820599+00:00",
+      "tx_hex": "2b0502000015",
+      "rx_hex": "2b07820015000014",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "0014"
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "connection_type",
+      "command_id_hex": "0015"
+    },
+    {
+      "utc": "2026-09-18T10:08:30.026621+00:00",
+      "tx_hex": "2b0502000008",
+      "rx_hex": "2b068200080000",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "00"
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "data_rate",
+      "command_id_hex": "0008"
+    },
+    {
+      "utc": "2026-09-18T10:08:31.233681+00:00",
+      "tx_hex": "2b050200000f",
+      "rx_hex": "2b0682000f00ff",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "ff"
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "frequency",
+      "command_id_hex": "000f"
+    },
+    {
+      "utc": "2026-09-18T10:08:32.439693+00:00",
+      "tx_hex": "2b050200000c",
+      "rx_hex": "2b0682000c0001",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "01"
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "power",
+      "command_id_hex": "000c"
+    },
+    {
+      "utc": "2026-09-18T10:08:33.647799+00:00",
+      "tx_hex": "2b0502000007",
+      "rx_hex": "2b0582000701",
+      "responses": [
+        {
+          "status": 1,
+          "value_hex": ""
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "confirm",
+      "command_id_hex": "0007"
+    },
+    {
+      "utc": "2026-09-18T10:08:34.855721+00:00",
+      "tx_hex": "2b050200000b",
+      "rx_hex": "2b2c82000b00546172616e67436f6e6e6563745f4c575f533230315f4c6f526157414e5f43415f76315f305f34",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "546172616e67436f6e6e6563745f4c575f533230315f4c6f526157414e5f43415f76315f305f34"
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "sleep_mode",
+      "command_id_hex": "000b"
+    },
+    {
+      "utc": "2026-09-18T10:08:36.062477+00:00",
+      "tx_hex": "2b0502000009",
+      "rx_hex": "2b0982000900ffffffff",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "ffffffff"
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "sleep_seconds",
+      "command_id_hex": "0009"
+    },
+    {
+      "utc": "2026-09-18T10:08:37.269909+00:00",
+      "tx_hex": "2b050200000a",
+      "rx_hex": "2b0d82000a00535432324c523031",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "535432324c523031"
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "wake_seconds",
+      "command_id_hex": "000a"
+    },
+    {
+      "utc": "2026-09-18T10:08:38.477649+00:00",
+      "tx_hex": "2b0502000010",
+      "rx_hex": "2b0582001001",
+      "responses": [
+        {
+          "status": 1,
+          "value_hex": ""
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "destination",
+      "command_id_hex": "0010"
+    },
+    {
+      "utc": "2026-09-18T10:08:39.683958+00:00",
+      "tx_hex": "2b0502000011",
+      "rx_hex": "2b068200110001",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "01"
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "extended_payload",
+      "command_id_hex": "0011"
+    },
+    {
+      "utc": "2026-09-18T10:08:40.890119+00:00",
+      "tx_hex": "2b0502000012",
+      "rx_hex": "2b068200120003",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "03"
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "receive_address",
+      "command_id_hex": "0012"
+    },
+    {
+      "utc": "2026-09-18T10:08:42.096973+00:00",
+      "tx_hex": "2b0502000013",
+      "rx_hex": "2b068200130000",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "00"
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "pan_id",
+      "command_id_hex": "0013"
+    },
+    {
+      "utc": "2026-09-18T10:08:43.304165+00:00",
+      "tx_hex": "2b0502000014",
+      "rx_hex": "2b07820014000014",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "0014"
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "multicast",
+      "command_id_hex": "0014"
+    },
+    {
+      "utc": "2026-09-18T10:08:44.510078+00:00",
+      "tx_hex": "2b050200000d",
+      "rx_hex": "2b0682000d0000",
+      "responses": [
+        {
+          "status": 0,
+          "value_hex": "00"
+        }
+      ],
+      "tarangnet_manual_label_not_validated_for_installed_firmware": "last_rssi_snr",
+      "command_id_hex": "000d"
+    }
+  ]
+}

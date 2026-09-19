@@ -14,7 +14,7 @@ void draw_wifi_packet_table(const std::vector<WifiPacketRow>& packets, float hei
                                    ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
                                    ImGuiTableFlags_ScrollX;
     ImVec2 outer_size(0.0f, height);
-    if (!ImGui::BeginTable("wifi_packets_identity_v2", 19, flags, outer_size)) return;
+    if (!ImGui::BeginTable("wifi_packets_identity_v3", 22, flags, outer_size)) return;
 
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 80.0f);
@@ -24,6 +24,9 @@ void draw_wifi_packet_table(const std::vector<WifiPacketRow>& packets, float hei
     ImGui::TableSetupColumn("Network / SSID", ImGuiTableColumnFlags_WidthFixed, 170.0f);
     ImGui::TableSetupColumn("AP ch", ImGuiTableColumnFlags_WidthFixed, 55.0f);
     ImGui::TableSetupColumn("Advertised security", ImGuiTableColumnFlags_WidthFixed, 230.0f);
+    ImGui::TableSetupColumn("Decode status", ImGuiTableColumnFlags_WidthFixed, 270.0f);
+    ImGui::TableSetupColumn("OFDM Mbps", ImGuiTableColumnFlags_WidthFixed, 95.0f);
+    ImGui::TableSetupColumn("PSDU bytes", ImGuiTableColumnFlags_WidthFixed, 95.0f);
     ImGui::TableSetupColumn("Modulation", ImGuiTableColumnFlags_WidthFixed, 100.0f);
     ImGui::TableSetupColumn("Power (dB)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
     ImGui::TableSetupColumn("BW (MHz)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
@@ -74,6 +77,12 @@ void draw_wifi_packet_table(const std::vector<WifiPacketRow>& packets, float hei
         else ImGui::TextDisabled("--");
         ImGui::TableNextColumn();
         ImGui::TextUnformatted(p.identity ? p.identity->security.c_str() : "Unknown");
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(p.decode_status.empty() ? "Not attempted" : p.decode_status.c_str());
+        ImGui::TableNextColumn();
+        if (p.ofdm_rate_mbps) ImGui::Text("%d", p.ofdm_rate_mbps); else ImGui::TextDisabled("--");
+        ImGui::TableNextColumn();
+        if (p.psdu_length) ImGui::Text("%zu", p.psdu_length); else ImGui::TextDisabled("--");
         ImGui::TableNextColumn();
         ImGui::TextColored(p.modulation == "DSSS" ? dsss_color : ofdm_color, "%s",
                             p.modulation.c_str());
@@ -185,7 +194,7 @@ void draw_wifi_master_table(const std::vector<wifi_master::WifiMasterRow>& rows,
                 const auto& b = *row.identity;
                 ImGui::Text("SSID: %s", b.ssid.empty() ? (b.ssid_present ? "Hidden" : "Not advertised") : wifi::display_text(b.ssid).c_str());
                 if (!b.ssid.empty()) ImGui::TextDisabled("Name last observed: %s (%s)", date(row.ssid_seen_ts).c_str(), row.ssid_source.c_str());
-                ImGui::Text("Source: FCS-valid %s, %s", b.frame_source.c_str(), date(row.identity_ts).c_str());
+                ImGui::Text("Source: FCS-valid %s (%s), %s", b.frame_source.c_str(), row.identity_phy.c_str(), date(row.identity_ts).c_str());
                 ImGui::Text("Monitored channel center: %.3f MHz", row.monitored_channel_hz / 1e6);
                 if (b.channel) ImGui::Text("Advertised channel: %d (%s)", b.channel, b.channel_source.c_str());
                 else ImGui::TextDisabled("Advertised channel: unknown");

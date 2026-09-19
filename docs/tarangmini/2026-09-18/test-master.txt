@@ -1,0 +1,20 @@
+PASS [first_reading_creates_one_device]: got 1 devices
+PASS [device_id_format]: got 'LORA-0001'
+PASS [first_seen_eq_last_seen_on_creation]: first=1000 last=1000
+PASS [reading_count_one]: 
+PASS [similar_reading_matches_same_device]: got 1 devices
+PASS [reading_count_two]: got 2
+PASS [first_seen_unchanged]: got 1000
+PASS [last_seen_advanced]: got 1500
+PASS [cfo_swing_does_not_split_device]: got 1 devices
+PASS [dissimilar_reading_creates_new_device]: got 2 devices
+PASS [cap_test_still_one_device]: got 1 devices
+PASS [reading_count_bounded]: got 1048, want in [1000, 1100]
+PASS [first_seen_survives_pruning]: got 0
+PASS [reload_recovers_all_devices]: got 2 devices
+PASS [reload_ordering_most_recent_first]: last_seen=3000 sf=9
+PASS [reload_preserves_first_and_last_seen_and_count]: first=1000 last=2000 count=2
+PASS [match_against_reloaded_history]: got 1 devices
+PASS [reload_then_match_reading_count]: got 2
+
+All LoRa master list checks passed.

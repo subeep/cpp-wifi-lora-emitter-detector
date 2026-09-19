@@ -10,8 +10,10 @@
 #include "fingerprint.hpp"
 #include "lora_phy.hpp"
 #include "lora_phy_std.hpp"
+#include "lora_capture.hpp"
 #include "spectrum.hpp"
 #include "wifi_dsss_rx.hpp"
+#include "wifi_ofdm_rx.hpp"
 #include "wifi_fingerprint.hpp"
 #include "wifi_phy.hpp"
 
@@ -70,22 +72,6 @@ int nearest_wifi_channel(const std::string& band, double freq_hz) {
     return best_ch;
 }
 
-// Python-repr-like rendering: printable ASCII as-is, else \xHH escapes.
-std::string payload_to_repr(const std::vector<uint8_t>& payload) {
-    std::string repr = "b'";
-    for (uint8_t b : payload) {
-        if (b >= 0x20 && b < 0x7f && b != '\'' && b != '\\') {
-            repr += static_cast<char>(b);
-        } else {
-            char buf[8];
-            std::snprintf(buf, sizeof(buf), "\\x%02x", b);
-            repr += buf;
-        }
-    }
-    repr += "'";
-    return repr;
-}
-
 // Decimate-by-factor with a basic boxcar (moving-average) anti-alias
 // filter, rather than naive sample-dropping - used only when a
 // device's achievable LoRa-listen capture rate isn't exactly the rate
@@ -123,6 +109,28 @@ void Scanner::start() {
 void Scanner::stop() {
     stop_flag_ = true;
     if (thread_.joinable()) thread_.join();
+    std::lock_guard<std::mutex> lock(capture_mutex_);
+    if (capture_pending_) {
+        capture_save_directory_.clear();
+        capture_pending_ = false;
+        capture_message_ = "Pending capture save cancelled because scanning stopped.";
+    }
+}
+
+void Scanner::request_lora_capture_save(const std::string& directory) {
+    std::lock_guard<std::mutex> lock(capture_mutex_);
+    if (capture_pending_ || directory.empty()) return;
+    capture_save_directory_ = directory;
+    capture_pending_ = true;
+    capture_message_ = "Waiting for next LoRa capture (Sub-GHz mode and connected receiver required).";
+}
+std::string Scanner::lora_capture_message() const {
+    std::lock_guard<std::mutex> lock(capture_mutex_);
+    return capture_message_;
+}
+bool Scanner::lora_capture_pending() const {
+    std::lock_guard<std::mutex> lock(capture_mutex_);
+    return capture_pending_;
 }
 
 void Scanner::set_active_band(const std::string& band) {
@@ -174,6 +182,16 @@ void Scanner::set_lora_lock_freq(std::optional<double> freq_hz) {
 std::optional<double> Scanner::lora_lock_freq() const {
     std::lock_guard<std::mutex> lock(config_mutex_);
     return lora_lock_freq_;
+}
+
+void Scanner::set_lora_skip_sync_check(bool skip) {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    lora_skip_sync_check_ = skip;
+}
+
+bool Scanner::lora_skip_sync_check() const {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    return lora_skip_sync_check_;
 }
 
 std::vector<DeviceRow> Scanner::snapshot(const std::string& band) const {
@@ -298,9 +316,42 @@ bool Scanner::connect_sdr(const DeviceProfile& profile, std::optional<double> ga
 // tried independently - not just the first hit.
 void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
                                     double threshold_db, std::vector<Detection>& detections) {
+    const double host_start = std::chrono::duration<double>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    const auto capture_gain = gain();
     auto [iq_raw, actual_rate, overflow] = sdr_->capture(
         freq_hz, profile.lora_listen_capture_rate_hz, LORA_LISTEN_DURATION_S);
     note_capture_health(!iq_raw.empty());
+    std::string save_directory;
+    {
+        std::lock_guard<std::mutex> lock(capture_mutex_);
+        save_directory.swap(capture_save_directory_);
+    }
+    if (!save_directory.empty()) {
+        std::string message;
+        try {
+            LoraCapture capture;
+            capture.iq = iq_raw;
+            capture.sample_rate_hz = actual_rate;
+            capture.requested_sample_rate_hz = profile.lora_listen_capture_rate_hz;
+            capture.requested_center_hz = freq_hz;
+            capture.requested_duration_s = LORA_LISTEN_DURATION_S;
+            capture.host_start_unix_s = host_start;
+            capture.requested_gain_db = capture_gain;
+            capture.device_args = profile.device_args;
+            capture.antenna = profile.antenna;
+            capture.overflow = overflow;
+            message = "Saved: " + save_lora_capture(save_directory, capture);
+            if (overflow) message += " (overflow: discontinuous IQ)";
+        } catch (const std::exception& e) { message = std::string("Capture save failed: ") + e.what(); }
+        std::lock_guard<std::mutex> lock(capture_mutex_);
+        capture_message_ = std::move(message);
+        capture_pending_ = false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(status_mutex_);
+        status_.last_overflow = overflow;
+    }
     if (iq_raw.empty()) return;
 
     // Feed the Active emitters table from this same capture rather
@@ -328,6 +379,7 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
     }
 
     std::string ts = current_time_hhmmss();
+    bool skip_sync_check = lora_skip_sync_check();
 
     auto push_row = [&](LoraPacketRow row) {
         std::lock_guard<std::mutex> lock(lora_log_mutex_);
@@ -338,42 +390,21 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
     };
 
     for (double bw_hz : LORA_LISTEN_BW_LIST_HZ) {
-        int decim = std::max(1, int(std::lround(actual_rate / bw_hz)));
+        double ratio = actual_rate / bw_hz;
+        if (!std::isfinite(ratio) || ratio < 1 || ratio > 1024 || std::abs(ratio - std::round(ratio)) > 1e-6) continue;
+        int decim = int(std::lround(ratio));
         std::vector<std::complex<float>> iq = decimate_boxcar(iq_raw, decim);
         double bw_khz = bw_hz / 1e3;
 
         for (int sf : LORA_LISTEN_SF_LIST) {
-            auto std_decoded = lora::std_phy::demodulate(iq, sf);
-            if (std_decoded.has_value() && std_decoded->header_valid) {
-                LoraPacketRow row;
-                row.time = ts;
-                row.status = "decoded";
-                row.freq_mhz = freq_hz / 1e6;
-                row.sf = std_decoded->sf;
-                row.bandwidth_khz = bw_khz;
-                row.cr = std_decoded->cr;
-                row.payload_len = static_cast<int>(std_decoded->payload.size());
-                row.crc_valid = std_decoded->crc_valid;
-                row.cfo_bins = std_decoded->cfo_bins;
-                row.payload_repr = payload_to_repr(std_decoded->payload);
-                push_row(std::move(row));
-                continue;
-            }
-
-            auto decoded = lora::demodulate(iq, sf);
-            if (decoded.has_value() && decoded->header_valid) {
-                LoraPacketRow row;
-                row.time = ts;
-                row.status = "decoded";
-                row.freq_mhz = freq_hz / 1e6;
-                row.sf = decoded->sf;
-                row.bandwidth_khz = bw_khz;
-                row.cr = decoded->cr;
-                row.payload_len = static_cast<int>(decoded->payload.size());
-                row.crc_valid = decoded->crc_valid;
-                row.cfo_bins = decoded->cfo_bins;
-                row.payload_repr = payload_to_repr(decoded->payload);
-                push_row(std::move(row));
+            auto observation = analyze_lora_hypothesis(iq, sf, skip_sync_check);
+            if (!observation) continue;
+            observation->time = ts;
+            observation->freq_mhz = freq_hz / 1e6;
+            observation->bandwidth_khz = bw_khz;
+            if (overflow) observation->detail += " Capture overflow: sample continuity lost.";
+            if (observation->header_valid) {
+                push_row(std::move(*observation));
                 continue;
             }
 
@@ -394,13 +425,7 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
                 fingerprint::append_fingerprint_record(LORA_FINGERPRINT_LOG_PATH, ts,
                                                         freq_hz / 1e6, burst->sf, bw_khz, fp);
 
-                LoraPacketRow row;
-                row.time = ts;
-                row.status = "detected";
-                row.freq_mhz = freq_hz / 1e6;
-                row.sf = burst->sf;
-                row.bandwidth_khz = bw_khz;
-                row.cfo_bins = burst->cfo_bins;
+                LoraPacketRow row = std::move(*observation);
                 if (fp.gated_out) {
                     row.fp_gate_reason = fp.gate_reason;
                 } else {
@@ -642,11 +667,29 @@ void Scanner::run() {
                         std::optional<std::string> fp_mac;
                         std::optional<wifi::BeaconInfo> packet_identity;
                         std::string master_key;
+                        wifi::OfdmDecodeResult ofdm_decode;
                         const int64_t packet_ts = now_epoch_seconds();
                         if (result.mod == wifi::ModClass::OFDM && result.has_preamble_range) {
                             fp_opt = wifi_fingerprint::extract_ofdm_fingerprint(
                                 cap.data(), cap.size(), b.start, b.length, actual_rate,
                                 step.center_hz, real_channel_hz, real_channel_hz, result);
+                        }
+
+                        if (result.mod == wifi::ModClass::OFDM) {
+                            // Energy segmentation can trim the preamble. Decode with
+                            // 4 us of context; OFDM beacons do not use the DSSS duration gate.
+                            const size_t pad = size_t(actual_rate * 4e-6);
+                            const size_t start = b.start > pad ? b.start - pad : 0;
+                            const size_t end = std::min(cap.size(), b.start + b.length + pad);
+                            ofdm_decode = wifi::decode_ofdm_burst(cap.data() + start, end - start,
+                                actual_rate, step.center_hz, real_channel_hz);
+                            if (ofdm_decode.beacon) {
+                                packet_identity = ofdm_decode.beacon;
+                                fp_mac = packet_identity->bssid;
+                                decoded_beacons[*fp_mac] = *packet_identity;
+                                master_key = wifi_master_.record_identity(*packet_identity,
+                                    real_channel_hz, packet_ts, "OFDM");
+                            }
                         }
 
                         // Only feed BEACON-PLAUSIBLE bursts to the
@@ -719,6 +762,15 @@ void Scanner::run() {
                         row.duration_us = duration_s * 1e6;
                         row.confidence = result.confidence;
                         row.identity = std::move(packet_identity);
+                        if (result.mod == wifi::ModClass::OFDM) {
+                            row.decode_status = ofdm_decode.status;
+                            row.ofdm_rate_mbps = ofdm_decode.rate_mbps;
+                            row.psdu_length = ofdm_decode.psdu_length;
+                            row.fcs_valid = ofdm_decode.fcs_valid;
+                        } else {
+                            row.decode_status = row.identity ? "Decoded DSSS beacon/probe response" : "Identity not decoded";
+                            row.fcs_valid = row.identity.has_value();
+                        }
                         row.master_key = std::move(master_key);
                         if (fp_opt.has_value()) {
                             row.fp_cfo_ppm = fp_opt->cfo_ppm;
@@ -789,7 +841,7 @@ void Scanner::run() {
                 // emitters.
                 for (const auto& [bssid, info] : decoded_beacons) {
                     double own_hz = real_channel_hz;
-                    const auto& chans = wifi_2g4_channels();
+                    const auto& chans = step.band == BAND_WIFI_5G ? wifi_5g_channels() : wifi_2g4_channels();
                     auto cit = chans.find(info.channel);
                     if (cit != chans.end()) own_hz = cit->second;
 

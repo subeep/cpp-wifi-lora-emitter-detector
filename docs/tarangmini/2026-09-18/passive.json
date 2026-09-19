@@ -1,0 +1,6 @@
+{
+  "test": "passive UART listen only; no bytes transmitted",
+  "baud": 9600,
+  "hex": "0000",
+  "bytes": 2
+}

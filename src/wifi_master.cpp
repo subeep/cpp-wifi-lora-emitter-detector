@@ -130,11 +130,13 @@ void WifiMasterList::load_all_devices() {
                     auto ssid_source = j.value("ssid_source", "");
                     auto wps_source = j.value("wps_source", "");
                     auto monitored = j.at("monitored_channel_hz").get<double>();
+                    auto phy = j.value("phy", "DSSS");
+                    if (phy != "DSSS" && phy != "OFDM") throw std::runtime_error("Invalid identity PHY");
                     if (!dev.identity || ts >= dev.identity_ts) {
                         dev.identity = std::move(b); dev.identity_ts = ts;
                         dev.identity_count = count; dev.ssid_seen_ts = ssid_ts; dev.wps_seen_ts = wps_ts;
                         dev.ssid_source = std::move(ssid_source); dev.wps_source = std::move(wps_source);
-                        dev.monitored_channel_hz = monitored;
+                        dev.monitored_channel_hz = monitored; dev.identity_phy = phy;
                     }
                     ++dev.identity_lines;
                     continue;
@@ -159,7 +161,7 @@ void WifiMasterList::load_all_devices() {
         if (dev.identity && (dev.readings.empty() || dev.identity_ts >= dev.last_seen_ts)) {
             dev.last_seen_ts = dev.identity_ts;
             dev.last_channel_hz = dev.monitored_channel_hz;
-            dev.last_phy = "DSSS";
+            dev.last_phy = dev.identity_phy;
         }
         if (!dev.key_is_mac) {
             try { next_fp_id_ = std::max(next_fp_id_, std::stoi(dev.key.substr(8)) + 1); }
@@ -231,7 +233,7 @@ void WifiMasterList::append_line(const std::string& key, const std::string& line
     if (!out) storage_error_ = "Cannot save Wi-Fi record: " + device_path(key);
 }
 std::string WifiMasterList::identity_line(const Device& dev) const {
-    return json{{"type", "identity"}, {"ts", dev.identity_ts}, {"identity_count", dev.identity_count},
+    return json{{"type", "identity"}, {"phy", dev.identity_phy}, {"ts", dev.identity_ts}, {"identity_count", dev.identity_count},
         { "ssid_seen_ts", dev.ssid_seen_ts}, {"wps_seen_ts", dev.wps_seen_ts},
         {"ssid_source", dev.ssid_source}, {"wps_source", dev.wps_source},
         {"monitored_channel_hz", dev.monitored_channel_hz}, {"identity", beacon_json(*dev.identity)}}.dump();
@@ -252,7 +254,8 @@ void WifiMasterList::compact_device_file(const Device& dev) {
     std::filesystem::rename(tmp, path, ec);
     if (ec) storage_error_ = "Cannot replace Wi-Fi record: " + ec.message();
 }
-std::string WifiMasterList::record_identity(const wifi::BeaconInfo& info, double monitored_hz, int64_t ts) {
+std::string WifiMasterList::record_identity(const wifi::BeaconInfo& info, double monitored_hz, int64_t ts, const std::string& phy) {
+    if (phy != "DSSS" && phy != "OFDM") return "";
     auto mac = wifi::canonical_mac(info.bssid);
     if (!info.fcs_valid || !mac || !std::isfinite(monitored_hz)) return "";
     std::lock_guard<std::mutex> lock(mutex_);
@@ -279,10 +282,10 @@ std::string WifiMasterList::record_identity(const wifi::BeaconInfo& info, double
         next.wps_model_number = dev.identity->wps_model_number;
         next.wps_device_name = dev.identity->wps_device_name;
     }
-    dev.identity = std::move(next); dev.identity_ts = ts;
+    dev.identity = std::move(next); dev.identity_ts = ts; dev.identity_phy = phy;
     ++dev.identity_count; dev.monitored_channel_hz = monitored_hz;
     if (dev.readings.empty() || ts >= dev.last_seen_ts) {
-        dev.last_seen_ts = ts; dev.last_channel_hz = monitored_hz; dev.last_phy = "DSSS";
+        dev.last_seen_ts = ts; dev.last_channel_hz = monitored_hz; dev.last_phy = dev.identity_phy;
     }
     append_line(dev.key, identity_line(dev));
     if (++dev.identity_lines > 100) { compact_device_file(dev); dev.identity_lines = 1; }
@@ -331,7 +334,7 @@ std::vector<WifiMasterRow> WifiMasterList::snapshot() const {
         row.last_channel_hz = dev.last_channel_hz; row.last_phy = dev.last_phy;
         row.reading_count = int(dev.readings.size());
         if (!dev.readings.empty()) row.latest = dev.readings.back();
-        row.identity = dev.identity; row.identity_ts = dev.identity_ts;
+        row.identity = dev.identity; row.identity_phy = dev.identity_phy; row.identity_ts = dev.identity_ts;
         row.identity_count = dev.identity_count; row.monitored_channel_hz = dev.monitored_channel_hz;
         row.ssid_seen_ts = dev.ssid_seen_ts; row.wps_seen_ts = dev.wps_seen_ts;
         row.ssid_source = dev.ssid_source; row.wps_source = dev.wps_source;

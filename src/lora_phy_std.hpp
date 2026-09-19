@@ -49,6 +49,21 @@ struct StdParams {
     int cr = 1;              // payload coding rate: 1=4/5 .. 4=4/8 (header is always 4/8)
     bool crc_on = true;
     double bandwidth_hz = 125e3;
+    // Low Data Rate Optimization: reduces the usable symbol alphabet
+    // from 2^sf to 2^(sf-2) (the standard's fixed 2-bit reduction, not
+    // a tunable amount here), trading a small capacity loss for timing
+    // margin against clock drift over one symbol's now-much-longer
+    // duration. The LoRa Alliance regional parameters mandate this ON
+    // whenever symbol duration exceeds 16ms - true for SF11/SF12 at
+    // 125kHz and SF12 at 250kHz, the exact regime a real transmitter
+    // at this project's default SF12/BW125 falls into. See
+    // lora_phy_std.cpp's modulate()/demodulate() for exactly how this
+    // changes the symbol-to-bit mapping (transcribed from LoRaEncoder.cpp/
+    // LoRaDecoder.cpp in https://github.com/myriadrf/LoRa-SDR, which -
+    // unlike the rest of this file - never modeled LDRO at all; this
+    // one piece is added from that reference project's OWN source
+    // rather than copied from code already in this codebase).
+    bool ldro = false;
 };
 
 struct StdDecodedPacket {
@@ -57,16 +72,45 @@ struct StdDecodedPacket {
     bool crc_on = false;
     std::vector<uint8_t> payload;
     bool crc_valid = false;
+    bool payload_complete = false;
+    int declared_payload_len = 0;
     bool header_valid = false;
     long start_sample = 0;
     int cfo_bins = 0;
+    // Which LDRO hypothesis this specific result came from - demodulate()
+    // tries ldro=false first (unchanged legacy behavior) and only falls
+    // back to ldro=true if that one's header doesn't validate, so this
+    // is INFERRED per-attempt provenance, not a signaled/known fact
+    // about the transmitter (the TarangNet API doesn't expose an LDRO
+    // setting - see data/lora_m2/.../transmitter.txt). Meaningless
+    // (left false) when header_valid is false and no ldro=true attempt
+    // ran at all (sf < 7 - see demodulate()'s own comment).
+    bool ldro = false;
+    // True if this decode ran with the sync-word value check bypassed
+    // (either via the skip_sync_check argument to demodulate() or the
+    // LORA_STD_SKIP_SYNC_CHECK env var) - a header_valid=true result
+    // with this set has NOT been confirmed against the sync word at
+    // all, only its own checksum. See demodulate()'s own comment for
+    // why this exists and what it does and doesn't prove.
+    bool sync_check_skipped = false;
 };
 
 // iq must already be at sample_rate == bandwidth_hz (same convention
 // as lora_phy.hpp's demodulate()).
 std::vector<std::complex<float>> modulate(const std::vector<uint8_t>& payload,
                                            const StdParams& params);
-std::optional<StdDecodedPacket> demodulate(const std::vector<std::complex<float>>& iq, int sf);
+// skip_sync_check: bypasses the recovered_sync != SYNC_WORD_DEFAULT gate
+// (see file header for why that gate currently rejects real TarangNet
+// captures - SYNC_WORD_DEFAULT was only ever validated against this
+// project's own TX, not independently against third-party hardware).
+// Diagnostic only, off by default: a header_valid=true result obtained
+// this way is verified by its own checksum but NOT cross-checked
+// against the sync word, so it's weaker evidence than normal. See
+// StdDecodedPacket::sync_check_skipped for how a caller can tell.
+// Equivalent in effect to (and independent of) the LORA_STD_SKIP_SYNC_CHECK
+// env var already used for this in offline tooling - either bypasses it.
+std::optional<StdDecodedPacket> demodulate(const std::vector<std::complex<float>>& iq, int sf,
+                                            bool skip_sync_check = false);
 
 // Exploratory decode for the implicit-header-mode hypothesis: TarangNet
 // is a proprietary network stack (addressing/PAN/routing, per the

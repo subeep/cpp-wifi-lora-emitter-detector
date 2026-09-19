@@ -24,6 +24,7 @@
 #include "config.hpp"
 #include "fingerprint.hpp"
 #include "lora_master.hpp"
+#include "lora_gui.hpp"
 #include "registry.hpp"
 #include "scanner.hpp"
 #include "wifi_master.hpp"
@@ -277,128 +278,6 @@ void draw_lora_master_table(const std::vector<lora_master::LoraMasterRow>& rows,
     ImGui::EndTable();
 }
 
-// Individually detected Wi-Fi transmissions, most recent first - one
-// row per burst found by wifi::detect_bursts() and classified on its
-// own window. Detection only: no PLCP/payload decode, so there is
-// deliberately no rate, length or MAC address here.
-// "Decoded" = full payload recovered, header checksum matched.
-// "Detected" = a real chirp preamble locked but the header/payload
-// didn't fully decode (e.g. third-party hardware whose exact FEC/
-// interleaver encoding isn't reverse-engineered yet - see
-// lora_phy.hpp). Most-recent-first, matching the Python dashboard.
-void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float height) {
-    if (packets.empty()) {
-        ImGui::TextDisabled("No LoRa packets observed yet.");
-        return;
-    }
-
-    static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
-                                   ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
-                                   ImGuiTableFlags_ScrollX;
-    ImVec2 outer_size(0.0f, height);
-    if (!ImGui::BeginTable("lora_packets", 19, flags, outer_size)) return;
-
-    ImGui::TableSetupScrollFreeze(0, 1);
-    ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("Freq (MHz)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-    ImGui::TableSetupColumn("SF", ImGuiTableColumnFlags_WidthFixed, 40.0f);
-    ImGui::TableSetupColumn("BW (kHz)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("CR", ImGuiTableColumnFlags_WidthFixed, 40.0f);
-    ImGui::TableSetupColumn("Len", ImGuiTableColumnFlags_WidthFixed, 50.0f);
-    ImGui::TableSetupColumn("CRC", ImGuiTableColumnFlags_WidthFixed, 60.0f);
-    ImGui::TableSetupColumn("CFO (bins)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-    // --- RF fingerprint (see fingerprint.hpp) - Tier-1 "stable core"
-    // parameters, only populated on a "Detected" row (see
-    // run_lora_listen_step()). SNR doubles as the gate-reason column
-    // when extraction was rejected, since that's the most common gate.
-    ImGui::TableSetupColumn("SNR (dB)", ImGuiTableColumnFlags_WidthFixed, 110.0f);
-    // Fit-quality covariates (source spec §5/§1.6) - what the
-    // LORA_EVM_CEILING_PCT/LORA_SYNC_CORR_FLOOR gate uses to reject a
-    // wrong-hypothesis match that still had plenty of raw SNR behind
-    // it. Shown even on a gated row when they were actually computed.
-    ImGui::TableSetupColumn("EVM (%)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-    ImGui::TableSetupColumn("Sync corr", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-    ImGui::TableSetupColumn("CFO (ppm)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-    ImGui::TableSetupColumn("IRR (dB)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("IQ eps", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("IQ phi (deg)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-    ImGui::TableSetupColumn("DC (dBc)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("DC ang (deg)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-    ImGui::TableSetupColumn("Payload", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableHeadersRow();
-
-    ImVec4 dim(0.55f, 0.55f, 0.58f, 1.0f);
-    ImVec4 good(0.25f, 0.73f, 0.31f, 1.0f);
-    ImVec4 bad(0.85f, 0.30f, 0.28f, 1.0f);
-
-    for (auto it = packets.rbegin(); it != packets.rend(); ++it) {
-        const auto& d = *it;
-        bool decoded = d.status == "decoded";
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(d.time.c_str());
-        ImGui::TableNextColumn();
-        ImGui::TextColored(decoded ? good : dim, "%s", decoded ? "Decoded" : "Detected");
-        ImGui::TableNextColumn();
-        ImGui::Text("%.4f", d.freq_mhz);
-        ImGui::TableNextColumn();
-        ImGui::Text("%d", d.sf);
-        ImGui::TableNextColumn();
-        ImGui::Text("%.0f", d.bandwidth_khz);
-        ImGui::TableNextColumn();
-        if (d.cr.has_value()) ImGui::Text("%d", *d.cr); else ImGui::TextDisabled("--");
-        ImGui::TableNextColumn();
-        if (d.payload_len.has_value()) ImGui::Text("%d", *d.payload_len); else ImGui::TextDisabled("--");
-        ImGui::TableNextColumn();
-        if (d.crc_valid.has_value()) {
-            ImGui::TextColored(*d.crc_valid ? good : bad, "%s", *d.crc_valid ? "valid" : "invalid");
-        } else {
-            ImGui::TextDisabled("--");
-        }
-        ImGui::TableNextColumn();
-        ImGui::Text("%d", d.cfo_bins);
-        ImGui::TableNextColumn();
-        if (d.fp_snr_db.has_value()) {
-            ImGui::Text("%.1f", *d.fp_snr_db);
-        } else if (d.fp_gate_reason.has_value()) {
-            ImGui::TextColored(bad, "%s", d.fp_gate_reason->c_str());
-        } else {
-            ImGui::TextDisabled("--");
-        }
-        ImGui::TableNextColumn();
-        if (d.fp_evm_pct.has_value()) {
-            bool bad_evm = *d.fp_evm_pct > fingerprint::LORA_EVM_CEILING_PCT;
-            ImGui::TextColored(bad_evm ? bad : good, "%.2f", *d.fp_evm_pct);
-        } else {
-            ImGui::TextDisabled("--");
-        }
-        ImGui::TableNextColumn();
-        if (d.fp_sync_corr.has_value()) {
-            bool bad_sync = *d.fp_sync_corr < fingerprint::LORA_SYNC_CORR_FLOOR;
-            ImGui::TextColored(bad_sync ? bad : good, "%.3f", *d.fp_sync_corr);
-        } else {
-            ImGui::TextDisabled("--");
-        }
-        ImGui::TableNextColumn();
-        if (d.fp_cfo_ppm.has_value()) ImGui::Text("%.3f", *d.fp_cfo_ppm); else ImGui::TextDisabled("--");
-        ImGui::TableNextColumn();
-        if (d.fp_irr_db.has_value()) ImGui::Text("%.2f", *d.fp_irr_db); else ImGui::TextDisabled("--");
-        ImGui::TableNextColumn();
-        if (d.fp_iq_eps.has_value()) ImGui::Text("%.5f", *d.fp_iq_eps); else ImGui::TextDisabled("--");
-        ImGui::TableNextColumn();
-        if (d.fp_iq_phi_deg.has_value()) ImGui::Text("%.3f", *d.fp_iq_phi_deg); else ImGui::TextDisabled("--");
-        ImGui::TableNextColumn();
-        if (d.fp_dc_dbc.has_value()) ImGui::Text("%.1f", *d.fp_dc_dbc); else ImGui::TextDisabled("--");
-        ImGui::TableNextColumn();
-        if (d.fp_dc_ang_deg.has_value()) ImGui::Text("%.1f", *d.fp_dc_ang_deg); else ImGui::TextDisabled("--");
-        ImGui::TableNextColumn();
-        if (d.payload_repr.has_value()) ImGui::TextUnformatted(d.payload_repr->c_str());
-        else ImGui::TextDisabled("--");
-    }
-    ImGui::EndTable();
-}
-
 }  // namespace
 
 int main() {
@@ -577,6 +456,46 @@ int main() {
                 ImGui::SameLine();
                 ImGui::TextDisabled("(listening only here instead of cycling all 4 channels)");
             }
+
+            // Diagnostic-only escape hatch: the SX-reference decoder
+            // currently rejects every real (non-loopback) capture at a
+            // sync-word value check whose assumption (SYNC_WORD_DEFAULT
+            // = 0x12) was only ever validated against this app's own
+            // TX, never independently against third-party hardware -
+            // see lora_phy_std.hpp's demodulate() comment. This lets a
+            // user bypass that one gate to see what the header decode
+            // (and its own, independent checksum) says regardless, off
+            // by default so it never silently weakens the normal
+            // integrity story. Rows produced this way are labeled in
+            // the packet table (see draw_lora_packet_table()) so a
+            // "Valid" header is never mistaken for a fully sync-word-
+            // verified one.
+            static bool lora_skip_sync_check = false;
+            if (ImGui::Checkbox("Skip sync-word check (diagnostic)", &lora_skip_sync_check)) {
+                scanner.set_lora_skip_sync_check(lora_skip_sync_check);
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Off by default. Bypasses the sync-word value gate so the header decode "
+                    "(and its own checksum) is visible even when the sync word doesn't match - "
+                    "useful for diagnosing real hardware, but a header shown this way is NOT "
+                    "cross-checked against the sync word. Rows produced with this on are marked "
+                    "in the table.");
+            }
+        }
+
+        if (active_band == BAND_SUB_GHZ) {
+            if (ImGui::CollapsingHeader("Save a LoRa IQ capture")) {
+                static char save_directory[1024] = PROJECT_ROOT_DIR "/data/lora_captures";
+                ImGui::InputText("Save under", save_directory, sizeof(save_directory));
+                ImGui::BeginDisabled(!scanner.status().connected || scanner.lora_capture_pending() || !save_directory[0]);
+                if (ImGui::Button("Save next completed capture")) scanner.request_lora_capture_save(save_directory);
+                ImGui::EndDisabled();
+                ImGui::TextWrapped("One capture per click, including recordings with no detections. IQ and settings are saved together. Requires a connected receiver.");
+                auto message = scanner.lora_capture_message();
+                if (!message.empty()) ImGui::TextWrapped("%s", message.c_str());
+            }
+            draw_lora_replay_panel();
         }
 
         ImGui::Spacing();
@@ -649,7 +568,7 @@ int main() {
             ImGui::TextUnformatted("Detected Wi-Fi packets");
             ImGui::TextDisabled(
                 "One row per individually detected burst, classified on its own window. "
-                "DSSS beacons/probe responses show decoded identities; other bursts show RF observations. "
+                "FCS-valid DSSS and legacy OFDM beacons/probe responses show decoded identities. "
                 "Sampled, not exhaustive: only the channel currently being swept is heard.");
             float wifi_packets_height = ImGui::GetContentRegionAvail().y * 0.5f;
             draw_wifi_packet_table(scanner.wifi_packets(), wifi_packets_height);
@@ -667,8 +586,8 @@ int main() {
             ImGui::Spacing();
             ImGui::TextUnformatted("LoRa PHY packets (Sub-GHz IN865 channels)");
             ImGui::TextDisabled(
-                "Decoded = full payload recovered. Detected = a real chirp preamble locked but "
-                "header/payload didn't fully decode (third-party hardware, see docs).");
+                "Each row is an SF/BW hypothesis, not a unique packet or identity. Hover the outcome for details. "
+                "CRC validates bytes under the named decoder; real-radio interoperability remains unverified.");
             float lora_packets_height = ImGui::GetContentRegionAvail().y * 0.5f;
             draw_lora_packet_table(scanner.lora_packets(), lora_packets_height);
 
