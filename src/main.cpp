@@ -38,13 +38,18 @@ void GlfwErrorCallback(int error, const char* description) {
     std::fprintf(stderr, "GLFW error %d: %s\n", error, description);
 }
 
-// LoRa-like -> orange, WiFi-like -> white (energy-detection only, no
-// decoded identity available here - see draw_wifi_master_table() in
-// wifi_gui.cpp for the green "has SSID/name" color, a separate table
-// that actually carries identity), narrowband guess -> yellow, else grey.
+// LoRa-like -> orange, a decoded Wi-Fi AP with a known name (scanner.cpp's
+// `"WiFi AP " + bssid + " \"" + ssid + "\""` label, built only when a
+// beacon's SSID actually decoded - see run()'s decoded_beacons loop) ->
+// green, everything else Wi-Fi (WiFi-like energy-only guess, or a
+// decoded AP with a hidden/absent SSID - no name to show) -> white,
+// narrowband guess -> yellow, else grey.
 ImVec4 category_color(const std::string& protocol) {
     if (protocol.rfind("LoRa-like", 0) == 0) return ImVec4(0.94f, 0.55f, 0.24f, 1.0f);
-    if (protocol.rfind("WiFi-like", 0) == 0) return ImVec4(0.92f, 0.92f, 0.94f, 1.0f);
+    if (protocol.rfind("WiFi AP ", 0) == 0 && protocol.find('"') != std::string::npos)
+        return ImVec4(0.25f, 0.73f, 0.31f, 1.0f);
+    if (protocol.rfind("WiFi-like", 0) == 0 || protocol.rfind("WiFi AP ", 0) == 0)
+        return ImVec4(0.92f, 0.92f, 0.94f, 1.0f);
     if (protocol.find("narrowband") != std::string::npos) return ImVec4(0.82f, 0.60f, 0.13f, 1.0f);
     return ImVec4(0.55f, 0.55f, 0.58f, 1.0f);
 }
@@ -552,47 +557,61 @@ int main() {
         // Split remaining space three ways when the two LoRa-only
         // tables are shown below it, in half when the Wi-Fi packet list
         // is, else give it all to the generic energy-detection list.
+        // Not adjusted for collapsed headers below - ImGui already
+        // reclaims a collapsed section's space within its own layout
+        // flow, so this split doesn't need to know about that state.
         float device_table_height = remaining;
         if (show_lora_packets) device_table_height = remaining * 0.3f;
         else if (show_wifi_packets) device_table_height = remaining * 0.45f;
         draw_device_table(scanner.snapshot(active_band), device_table_height,
                            scanner.wifi_source_counts(active_band));
 
+        // Each list below is its own independently collapsible
+        // CollapsingHeader (click the arrow/label to close or reopen) -
+        // starts open (ImGuiTreeNodeFlags_DefaultOpen) so behavior on
+        // first appearance is unchanged from before this was added.
         if (show_wifi_packets) {
             ImGui::Spacing();
-            ImGui::TextUnformatted("Detected Wi-Fi packets");
-            ImGui::TextDisabled(
-                "One row per individually detected burst, classified on its own window. "
-                "FCS-valid DSSS and legacy OFDM beacons/probe responses show decoded identities. "
-                "Sampled, not exhaustive: only the channel currently being swept is heard.");
-            float wifi_packets_height = ImGui::GetContentRegionAvail().y * 0.5f;
-            draw_wifi_packet_table(scanner.wifi_packets(), wifi_packets_height);
+            if (ImGui::CollapsingHeader("Detected Wi-Fi packets", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextDisabled(
+                    "One row per individually detected burst, classified on its own window. "
+                    "FCS-valid DSSS and legacy OFDM beacons/probe responses show decoded identities. "
+                    "Sampled, not exhaustive: only the channel currently being swept is heard.");
+                float wifi_packets_height = ImGui::GetContentRegionAvail().y * 0.5f;
+                draw_wifi_packet_table(scanner.wifi_packets(), wifi_packets_height);
+            }
 
             ImGui::Spacing();
-            ImGui::TextUnformatted("Wi-Fi Identities & RF Clusters (persistent)");
-            ImGui::TextDisabled("Click an identity for details. Orange = decoded BSSID; gray = provisional RF cluster. Ch = monitored; AP ch = advertised.");
-            ImGui::TextDisabled("Identity details survive restart. RF history retains the latest ~1000 accepted readings per entry.");
-            const auto wifi_storage_error = scanner.wifi_storage_error();
-            if (!wifi_storage_error.empty()) ImGui::TextColored(ImVec4(1,.5f,.3f,1), "%s", wifi_storage_error.c_str());
-            draw_wifi_master_table(scanner.wifi_master_snapshot(), ImGui::GetContentRegionAvail().y);
+            if (ImGui::CollapsingHeader("Wi-Fi Identities & RF Clusters (persistent)",
+                                         ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextDisabled("Click an identity for details. Orange = decoded BSSID; gray = provisional RF cluster. Ch = monitored; AP ch = advertised.");
+                ImGui::TextDisabled("Identity details survive restart. RF history retains the latest ~1000 accepted readings per entry.");
+                const auto wifi_storage_error = scanner.wifi_storage_error();
+                if (!wifi_storage_error.empty()) ImGui::TextColored(ImVec4(1,.5f,.3f,1), "%s", wifi_storage_error.c_str());
+                draw_wifi_master_table(scanner.wifi_master_snapshot(), ImGui::GetContentRegionAvail().y);
+            }
         }
 
         if (show_lora_packets) {
             ImGui::Spacing();
-            ImGui::TextUnformatted("LoRa PHY packets (Sub-GHz IN865 channels)");
-            ImGui::TextDisabled(
-                "Each row is an SF/BW hypothesis, not a unique packet or identity. Hover the outcome for details. "
-                "CRC validates bytes under the named decoder; real-radio interoperability remains unverified.");
-            float lora_packets_height = ImGui::GetContentRegionAvail().y * 0.5f;
-            draw_lora_packet_table(scanner.lora_packets(), lora_packets_height);
+            if (ImGui::CollapsingHeader("LoRa PHY packets (Sub-GHz IN865 channels)",
+                                         ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextDisabled(
+                    "Each row is an SF/BW hypothesis, not a unique packet or identity. Hover the outcome for details. "
+                    "CRC validates bytes under the named decoder; real-radio interoperability remains unverified.");
+                float lora_packets_height = ImGui::GetContentRegionAvail().y * 0.5f;
+                draw_lora_packet_table(scanner.lora_packets(), lora_packets_height);
+            }
 
             ImGui::Spacing();
-            ImGui::TextUnformatted("LoRa Master Emitters (persistent across restarts)");
-            ImGui::TextDisabled(
-                "Every accepted fingerprint reading ever recorded for a device - kept forever "
-                "until manually deleted. Matched on IRR/DC/IQ-imbalance only, not CFO (see docs) "
-                "- a placeholder comparison, not the final model.");
-            draw_lora_master_table(scanner.lora_master_snapshot(), ImGui::GetContentRegionAvail().y);
+            if (ImGui::CollapsingHeader("LoRa Master Emitters (persistent across restarts)",
+                                         ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextDisabled(
+                    "Every accepted fingerprint reading ever recorded for a device - kept forever "
+                    "until manually deleted. Matched on IRR/DC/IQ-imbalance only, not CFO (see docs) "
+                    "- a placeholder comparison, not the final model.");
+                draw_lora_master_table(scanner.lora_master_snapshot(), ImGui::GetContentRegionAvail().y);
+            }
         }
 
         ImGui::End();
