@@ -108,3 +108,7 @@ The existing observation/capture tests now explicitly select laboratory mode for
 | Host/radio | One UHD management timeout occurred before the successful retry. Network send-buffer warnings remain; no system-level tuning was attempted. |
 
 Recommended next validation is a second manufacturer's ordinary explicit-header transmission with independently recorded settings/payload, then inverted-IQ support and a strictly separate LoRaWAN MAC parser. Continuous reception/channelization should follow if missed packets between finite windows are the main operational problem.
+
+## Subsequent update — 2026-09-22
+
+See [LORA_SX1262_VALIDATION.md](LORA_SX1262_VALIDATION.md): independent SX1262 captures now pass; production tries normal and inverted IQ; a candidate-only LoRaWAN structural inspector and additional GUI measurements were added. This supersedes the earlier normal-IQ-only/no-MAC-inspection boundaries above. Inverted-IQ and LoRaWAN on-air validation remain outstanding.

@@ -495,3 +495,15 @@ Corrections to earlier hypotheses: upchirps multiplied by downchirp references (
 Validation: 101 fixed symbol vectors including a published independent LoRaPHY example; 48 synthesized synchronization cases across SF7–12/all CRs/both LDRO settings/nondefault sync; multi-packet, partial/erased, silence/noise tests; exact-payload regression on six local hardware recordings; fresh hardware replay; observation/capture tests; offscreen rendering and visual inspection with the fresh hardware row. Hardware corpus is locally ignored by Git; portable symbol vectors are separate and available to a clean checkout.
 
 See **[docs/LORA_RECEIVER_UPGRADE.md](docs/LORA_RECEIVER_UPGRADE.md)** for commands, provenance, evidence, unchanged hardcoded assumptions and remaining pitfalls. This is not yet universal LoRa support: implicit headers, inverted IQ, other bandwidths, LoRaWAN MAC parsing/decryption, continuous reception and cross-vendor RF verification remain. Restart the rebuilt GUI and lock to the board's current read-back frequency when testing.
+
+---
+
+## 2026-09-22 — Independent SX1262 baseline and added monitoring evidence
+
+Identified the connected board from serial output as Heltec WiFi LoRa 32 V3/SX1262 with firmware auto-transmitting at 888 MHz, SF7/BW125. After the user resolved serial permissions, the X310 passively captured 12 seconds without overflow. No flash/configuration or serial-TX commands were sent. Three packets (`Auto 888MHz #12`, `#13`, `#14`) recovered with exact bytes and valid CRC; headers indicate CR4/7, normal IQ and observed sync 0x12. Three small hardware IQ fixtures now run in the portable test suite.
+
+Receiver now tries both IQ polarities, reports failed synchronization stages and preserves polarity/coherence/fractional CFO/drift/timing/FEC evidence. GUI retains existing columns and adds these fields, retained-observation counts, and an additional frequency-map view derived from an out-of-range LoRa lock. Replay exposes the same new measurements.
+
+Added a separate conservative LoRaWAN structural inspector with visible join/data fields. All results are unauthenticated candidates; encrypted join-accept fields remain opaque, and no keys/MIC verification/decryption or version/session identification are implemented. The SX1262's current ASCII messages are not identified as LoRaWAN.
+
+See [docs/LORA_SX1262_VALIDATION.md](docs/LORA_SX1262_VALIDATION.md) for actual measurements, reproducible commands, fixture provenance and remaining limitations. Older statements that production is normal-IQ-only or has no LoRaWAN inspection are superseded by this entry; actual inverted-IQ/LoRaWAN hardware validation remains pending. Wi-Fi was left unchanged. The requested explainer document remains intentionally deferred.

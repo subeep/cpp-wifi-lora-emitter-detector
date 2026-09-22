@@ -18,6 +18,7 @@ struct LoraPacketRow {
     enum class Crc { NotChecked, Absent, Failed, Valid };
     Crc crc = Crc::NotChecked;
     std::string payload_hex;
+    std::optional<std::string> lorawan_candidate, lorawan_detail;
     double freq_mhz = 0;
     int sf = 0;
     double bandwidth_khz = 0;  // which of LORA_LISTEN_BW_LIST_HZ this was found at -
@@ -30,6 +31,10 @@ struct LoraPacketRow {
     bool ldro_ambiguous = false;
     std::optional<int> sync_word; // observation only, never a network/device ID
     std::optional<bool> sync_check_skipped; // legacy laboratory codec only
+    std::optional<bool> inverted_iq;
+    std::optional<double> preamble_peak_ratio, sfd_peak_ratio;
+    std::optional<double> cfo_hz, drift_hz_per_symbol, capture_offset_s;
+    std::optional<int> fec_disagreements;
     int cfo_bins = 0;
     std::optional<std::string> payload_repr;
 

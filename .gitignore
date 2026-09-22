@@ -50,3 +50,6 @@ tests/fixtures/lora_m2/
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Small independent SX1262 hardware regression captures.
+!tests/fixtures/lora_sx1262/**/iq.cf32_le

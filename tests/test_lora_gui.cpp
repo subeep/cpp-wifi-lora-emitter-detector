@@ -2,6 +2,7 @@
 #include "lora_gui.hpp"
 #include "lora_capture.hpp"
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "backends/imgui_impl_opengl3.h"
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -39,7 +40,19 @@ int main(int argc, char** argv) {
         for(auto& row:actual) { row.time="Hardware replay"; if(row.crc==LoraPacketRow::Crc::Valid) valid=true; rows.push_back(std::move(row)); }
         if(!valid) return 1;
     }
+    LoraPacketRow wan;
+    wan.time="Synthetic MAC";wan.status="Payload / no CRC";wan.header_valid=true;wan.payload_complete=true;
+    wan.crc=LoraPacketRow::Crc::Absent;wan.decoder="LoRa explicit PHY";
+    wan.lorawan_candidate="Unconfirmed downlink candidate";
+    wan.lorawan_detail="Synthetic display fixture. DevAddr=01020304 FCnt16=4660; MIC not verified.";
+    wan.inverted_iq=true;wan.preamble_peak_ratio=.93;wan.sfd_peak_ratio=.92;wan.cfo_hz=-123.5;
+    wan.drift_hz_per_symbol=.25;wan.capture_offset_s=.125;wan.fec_disagreements=0;
+    rows.push_back(wan);
     for (int frame=0;frame<3;++frame) {
+        if (argc>3 && frame>0) {
+            for(auto* window : ImGui::GetCurrentContext()->Windows)
+                if(window->ScrollMax.x>0) ImGui::SetScrollX(window, window->ScrollMax.x);
+        }
         ImGui_ImplOpenGL3_NewFrame(); ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0,0)); ImGui::SetNextWindowSize(io.DisplaySize);
         ImGui::Begin("LoRa interpretation - synthetic display fixtures");

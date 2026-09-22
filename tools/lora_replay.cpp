@@ -11,6 +11,11 @@ int main(int argc, char** argv) {
                   << "\nOverflow: " << (c.overflow ? "yes (discontinuous IQ)" : "no") << '\n';
         auto rows = rfmon::analyze_lora_capture(c.iq, c.sample_rate_hz, c.requested_center_hz, argc == 3);
         for (const auto& r : rows) {
+            if (r.lorawan_candidate) std::cout << *r.lorawan_candidate << ": " << *r.lorawan_detail << '\n';
+            if (r.inverted_iq) std::cout << "IQ=" << (*r.inverted_iq ? "inverted" : "normal")
+                << " preamble=" << r.preamble_peak_ratio.value_or(0) << " SFD=" << r.sfd_peak_ratio.value_or(0)
+                << " CFO_Hz=" << r.cfo_hz.value_or(0) << " drift_Hz/symbol=" << r.drift_hz_per_symbol.value_or(0)
+                << " offset_s=" << r.capture_offset_s.value_or(0) << " FEC_mismatches=" << r.fec_disagreements.value_or(0) << '\n';
             std::cout << "SF" << r.sf << " BW=" << r.bandwidth_khz << " kHz | " << r.decoder
                       << " | " << r.status << " | CRC=" << rfmon::lora_crc_label(r.crc)
                       << "\n" << r.detail << "\nHEX: " << r.payload_hex << '\n';

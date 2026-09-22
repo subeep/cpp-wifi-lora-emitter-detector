@@ -1,0 +1,18 @@
+{
+  "antenna": "RX2",
+  "decoder_revision": "lora-observation-v1",
+  "device_args": "addr=192.168.10.2",
+  "format": "cf32_le",
+  "host_start_unix_s": 1790061115.0177147,
+  "iq_fnv1a64": "17630336167669707713",
+  "overflow": false,
+  "requested_center_hz": 888000000.0,
+  "requested_duration_s": 0.160002,
+  "requested_gain_db": 5.0,
+  "requested_sample_rate_hz": 500000.0,
+  "sample_count": 80001,
+  "sample_rate_hz": 500000.0,
+  "schema": "rfmon-lora-iq",
+  "source": "live-cropped:data/lora_m2/sx1262-validation/capture-1790061126454567560-0",
+  "version": 1
+}

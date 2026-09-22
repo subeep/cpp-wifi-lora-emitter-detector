@@ -1,4 +1,5 @@
 #include "lora_capture.hpp"
+#include "lorawan_inspect.hpp"
 #include "lora_observation.hpp"
 #include "lora_phy.hpp"
 #include <nlohmann/json.hpp>
@@ -18,6 +19,22 @@ int main() {
     char path[] = "/tmp/rfmon-lora-test-XXXXXX";
     const char* tmp = mkdtemp(path); if (!tmp) return 1;
     try {
+        std::vector<uint8_t> uplink={0x40,0x04,0x03,0x02,0x01,0x80,0x34,0x12,1,0xab,0xde,0xad,0xbe,0xef};
+        auto mac=inspect_lorawan(uplink);
+        check(mac && mac->detail.find("DevAddr=01020304")!=std::string::npos &&
+              mac->detail.find("FCnt16=4660")!=std::string::npos && mac->detail.find("MIC not verified")!=std::string::npos,
+              "LoRaWAN structure/endian/authentication label wrong");
+        auto badmac=uplink;badmac[5]=0x8f;
+        check(!inspect_lorawan(badmac),"Truncated FOpts accepted");
+        badmac=uplink;badmac[0]|=1;check(!inspect_lorawan(badmac),"Unsupported major accepted");
+        check(!inspect_lorawan({'A','u','t','o'}),"ASCII mislabeled LoRaWAN");
+        auto join=std::vector<uint8_t>(23,0);check(inspect_lorawan(join).has_value(),"Join request rejected");
+        join.pop_back();check(!inspect_lorawan(join),"Truncated join accepted");
+        auto accept=std::vector<uint8_t>(17,0);accept[0]=0x20;
+        check(inspect_lorawan(accept)->detail.find("Encrypted")!=std::string::npos,"Join accept exposed encrypted fields");
+        auto down=std::vector<uint8_t>(12,0);down[0]=0x60;
+        check(inspect_lorawan(down).has_value(),"Empty downlink rejected");
+        down[5]=0x40;check(!inspect_lorawan(down),"Downlink RFU accepted");
         LoraPacketRow row;
         set_lora_integrity(row, true, false, false);
         check(row.crc == LoraPacketRow::Crc::Absent && !row.crc_valid, "Absent CRC reported as failure");

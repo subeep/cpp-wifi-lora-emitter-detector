@@ -420,6 +420,7 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
             observation->bandwidth_khz = bw_khz;
             if (overflow) observation->detail += " Capture overflow: sample continuity lost.";
             auto burst = lora::detect_burst(iq, sf);
+            if (!burst && !decoded_present) push_row(std::move(*observation));
             if (burst.has_value()) {
                 // Preserve the independently gated RF fingerprint registry path
                 // even when PHY decoding succeeds. Its older burst alignment is

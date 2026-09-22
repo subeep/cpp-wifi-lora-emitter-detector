@@ -1,6 +1,7 @@
 #include "lora_observation.hpp"
 #include "lora_phy.hpp"
 #include "lora_receiver.hpp"
+#include "lorawan_inspect.hpp"
 #include "config.hpp"
 #include <cmath>
 #include <cstdio>
@@ -86,9 +87,17 @@ std::vector<LoraPacketRow> analyze_lora_packets(const std::vector<std::complex<f
         return row ? std::vector<LoraPacketRow>{*row} : std::vector<LoraPacketRow>{};
     }
     std::vector<LoraPacketRow> rows;
-    for (const auto& p : lora::receiver::demodulate(iq, sf, bandwidth)) {
+    lora::receiver::Diagnostics diagnostics;
+    for (const auto& p : lora::receiver::demodulate(iq, sf, bandwidth, {}, &diagnostics)) {
         LoraPacketRow row;
         row.decoder = "LoRa explicit PHY";
+        row.inverted_iq = p.inverted_iq;
+        row.preamble_peak_ratio = p.preamble_peak_ratio;
+        row.sfd_peak_ratio = p.sfd_peak_ratio;
+        row.cfo_hz = p.cfo_bins * bandwidth / (1 << sf);
+        row.drift_hz_per_symbol = p.drift_bins_per_symbol * bandwidth / (1 << sf);
+        row.capture_offset_s = p.start_sample / bandwidth;
+        row.fec_disagreements = p.fec_disagreements;
         row.sf = sf; row.cr = p.cr; row.payload_len = p.declared_payload_len;
         row.cfo_bins = int(std::lround(p.cfo_bins)); row.ldro = p.ldro;
         row.ldro_ambiguous = p.ldro_ambiguous; row.sync_word = p.sync_word;
@@ -102,14 +111,25 @@ std::vector<LoraPacketRow> analyze_lora_packets(const std::vector<std::complex<f
                               std::to_string(p.sync_bins[1]) + " (not quantized).";
         if (p.ldro_ambiguous) row.detail += " LDRO hypothesis unresolved by CRC.";
         if (p.payload_complete) payload_text(row, p.payload);
+        if (p.payload_complete && (!p.crc_on || p.crc_valid)) {
+            if (auto candidate=inspect_lorawan(p.payload)) {
+                row.lorawan_candidate=candidate->type;
+                row.lorawan_detail=candidate->detail;
+                if (!p.crc_on) *row.lorawan_detail += " Physical payload CRC absent; bytes also unverified.";
+            }
+        }
         rows.push_back(std::move(row));
     }
     if (rows.empty()) {
         auto burst = lora::detect_burst(iq, sf);
-        if (burst) {
-            LoraPacketRow row; row.sf = sf; row.cfo_bins = burst->cfo_bins;
+        if (burst || diagnostics.preamble_candidates) {
+            LoraPacketRow row; row.sf = sf; if (burst) row.cfo_bins = burst->cfo_bins;
             row.status = "Detected only";
             row.detail = "Preamble evidence; no valid supported explicit header. May be truncated, implicit, unsupported or interference.";
+            row.detail += " Search attempts across IQ polarities: preamble=" + std::to_string(diagnostics.preamble_candidates) +
+                ", SFD=" + std::to_string(diagnostics.sfd_candidates) + ", aligned=" +
+                std::to_string(diagnostics.aligned_candidates) + ", header rejected=" +
+                std::to_string(diagnostics.headers_rejected) + ". These are not packet counts.";
             rows.push_back(std::move(row));
         }
     }

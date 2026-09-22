@@ -1,0 +1,35 @@
+[
+  {
+    "directory": "capture-1790061256825496286-0",
+    "payload_hex": "4175746f203838384d487a20233132",
+    "sf": 7,
+    "bandwidth_hz": 125000,
+    "center_hz": 888000000,
+    "cr": 3,
+    "sync_word": 18,
+    "crc_on": true,
+    "inverted_iq": false
+  },
+  {
+    "directory": "capture-1790061256915056249-0",
+    "payload_hex": "4175746f203838384d487a20233133",
+    "sf": 7,
+    "bandwidth_hz": 125000,
+    "center_hz": 888000000,
+    "cr": 3,
+    "sync_word": 18,
+    "crc_on": true,
+    "inverted_iq": false
+  },
+  {
+    "directory": "capture-1790061257005581306-0",
+    "payload_hex": "4175746f203838384d487a20233134",
+    "sf": 7,
+    "bandwidth_hz": 125000,
+    "center_hz": 888000000,
+    "cr": 3,
+    "sync_word": 18,
+    "crc_on": true,
+    "inverted_iq": false
+  }
+]

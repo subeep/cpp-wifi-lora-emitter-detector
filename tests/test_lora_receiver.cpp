@@ -47,6 +47,12 @@ int main(int argc,char** argv){try{
   auto packets=rx::demodulate(iq,sf,125000);
   bool found=false;for(auto&p:packets)if(p.crc_valid&&p.payload==expected&&p.sync_word==0xab)found=true;
   require(found,"IQ vector SF"+std::to_string(sf)+" LDRO"+v["ldro"].dump());
+  for (auto& sample : iq) sample=std::conj(sample);
+  auto inverted=rx::demodulate(iq,sf,125000);
+  found=false;
+  for(auto&p:inverted) if(p.crc_valid&&p.payload==expected&&p.inverted_iq&&
+       p.preamble_peak_ratio>.5&&p.sfd_peak_ratio>.5)found=true;
+  require(found,"Inverted IQ vector SF"+std::to_string(sf));
  }
  // Multiple frames, truncation, corruption, negative CFO and public sync.
  const auto& base=vectors[2];
@@ -70,6 +76,29 @@ int main(int argc,char** argv){try{
  auto bad_packet=rx::demodulate(waveform(damaged,7,0x34,16,47,0.375),7,125000);
  require(bad_packet.size()==1&&bad_packet[0].header_valid&&bad_packet[0].payload_complete&&
          !bad_packet[0].crc_valid,"Corrupted symbols accepted by CRC");
+ // Independent SX1262 hardware fixtures are small and included in portable CI.
+ nlohmann::json hardware;auto sxroot=root.parent_path()/"lora_sx1262";
+ std::ifstream(sxroot/"expected.json")>>hardware;
+ for(const auto& fixture:hardware) {
+  auto c=load_lora_capture((sxroot/fixture["directory"].get<std::string>()).string());
+  require(c.sample_rate_hz==500000&&!c.overflow,"SX1262 fixture metadata");
+  std::vector<std::complex<float>> iq(c.iq.size()/4);
+  for(size_t i=0;i<iq.size();++i)for(int j=0;j<4;++j)iq[i]+=c.iq[i*4+j]/4.f;
+  auto packets=rx::demodulate(iq,7,125000);bool found=false;
+  for(const auto& p:packets) {
+   std::string hex;const char* digits="0123456789abcdef";
+   for(auto b:p.payload){hex+=digits[b>>4];hex+=digits[b&15];}
+   if(p.crc_valid&&p.cr==fixture["cr"].get<int>()&&p.sync_word==fixture["sync_word"].get<int>()&&
+      !p.inverted_iq&&hex==fixture["payload_hex"].get<std::string>())found=true;
+  }
+  require(found,"SX1262 byte-exact regression "+fixture["directory"].get<std::string>());
+ }
+ require(hardware.size()==3,"Expected three SX1262 recordings");
+ auto broken_header=fixed;std::fill(broken_header.begin(),broken_header.begin()+8,1);
+ rx::Diagnostics diagnostics;
+ auto rejected_header=rx::demodulate(waveform(broken_header,7,0x12,16,47,0.375),7,125000,{},&diagnostics);
+ require(rejected_header.empty()&&diagnostics.preamble_candidates>0&&diagnostics.aligned_candidates>0&&
+         diagnostics.headers_rejected>0,"Synchronization failure diagnostics missing");
  size_t captures=0;
  if(argc>1) {
  for(auto& entry:std::filesystem::recursive_directory_iterator(root)){
@@ -98,5 +127,5 @@ int main(int argc,char** argv){try{
  require(rx::demodulate(std::vector<std::complex<float>>(100000),7,125000).empty(),"Silence accepted");
  require(rx::demodulate({},6,125000).empty(),"Unsupported SF accepted");
  require(!rx::decode_symbols(std::vector<double>(8,std::numeric_limits<double>::quiet_NaN()),7,false).header_valid,"NaN accepted");
- std::cout<<"PASS: "<<tested<<" symbol vectors, 48 synchronization cases, "<<captures<<" real CRC-valid captures, multiple frames, truncation and negative controls\n";
+ std::cout<<"PASS: "<<tested<<" symbol vectors, 96 normal/inverted synchronization cases, "<<captures<<" real CRC-valid captures, multiple frames, truncation and negative controls\n";
  }catch(const std::exception&e){std::cerr<<"FAIL: "<<e.what()<<'\n';return 1;}}

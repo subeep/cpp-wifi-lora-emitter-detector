@@ -533,6 +533,15 @@ int main() {
         for (const auto& range : track_ranges_for_band(active_band)) {
             draw_frequency_track(range, scanner.snapshot(active_band));
         }
+        if (active_band == BAND_SUB_GHZ) {
+            auto locked = scanner.lora_lock_freq();
+            if (locked && std::isfinite(*locked) && (*locked < 863e6 || *locked > 868e6)) {
+                double mhz = *locked / 1e6;
+                char label[128];
+                std::snprintf(label, sizeof(label), "Additional receive view: %.3f-%.3f MHz (frequency lock)", mhz-.5, mhz+.5);
+                draw_frequency_track({label, mhz-.5, mhz+.5}, scanner.snapshot(active_band));
+            }
+        }
         auto legend_item = [](const char* id, ImVec4 color, const char* text) {
             ImGui::ColorButton(id, color,
                                 ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop |

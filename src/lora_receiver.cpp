@@ -135,7 +135,7 @@ Packet decode_symbols(const std::vector<double>& syms,int sf,bool ldro) {
                          "Payload CRC absent; bytes are not integrity-verified.";
     return p;
 }
-std::vector<Packet> demodulate(const std::vector<std::complex<float>>& iq,int sf,double bw,const Options& opt) {
+static std::vector<Packet> demodulate_normal(const std::vector<std::complex<float>>& iq,int sf,double bw,const Options& opt, Diagnostics& diagnostics) {
     std::vector<Packet> results;
     if(sf<7||sf>12||!std::isfinite(bw)||bw<=0)return results;
     if(opt.min_preamble_symbols<4||opt.max_preamble_symbols<opt.min_preamble_symbols||opt.max_preamble_symbols>4096||
@@ -151,12 +151,14 @@ std::vector<Packet> demodulate(const std::vector<std::complex<float>>& iq,int sf
             if(peaks[i+k].ratio<opt.minimum_peak_ratio || (k && std::abs(signed_bin(peaks[i+k].bin-peaks[i+k-1].bin,n))>1.5)){run=false;break;}
         }
         if(!run)continue;
+        ++diagnostics.preamble_candidates;
         long sfd=-1;
         for(size_t j=i+opt.min_preamble_symbols;j<std::min(windows,i+size_t(opt.max_preamble_symbols));++j) {
             auto d=a.peak(long(j*n),true,false);
             if(d.ratio>opt.minimum_peak_ratio && d.ratio>peaks[j].ratio){sfd=long(j*n);break;}
         }
         if(sfd<0)continue;
+        ++diagnostics.sfd_candidates;
         double u=a.peak(sfd-4*n).bin, d=a.peak(sfd+n,true).bin;
         // Both slopes resolve timing/CFO up to an N/2 ambiguity. Select by
         // preamble + two full SFD chirp correlations, not by guessed payload text.
@@ -171,6 +173,7 @@ std::vector<Packet> demodulate(const std::vector<std::complex<float>>& iq,int sf
             }
         }
         if(aligned<0){i=size_t(sfd/n);continue;}
+        ++diagnostics.aligned_candidates;
         double sy=0,sxy=0,sx=0,sxx=0;
         double origin=a.peak(aligned-3*n).bin;
         for(int j=-8;j<=-3;++j) {
@@ -207,9 +210,11 @@ std::vector<Packet> demodulate(const std::vector<std::complex<float>>& iq,int sf
             p.ldro_ambiguous=!(p.crc_on&&p.crc_valid);
             if(!have || (p.crc_valid&&!best.crc_valid) || (p.payload_complete&&!best.payload_complete)) {best=std::move(p);have=true;}
         }
-        if(!have){i=size_t(sfd/n);continue;}
+        if(!have){++diagnostics.headers_rejected;i=size_t(sfd/n);continue;}
         best.start_sample=long(i*n);best.data_start_sample=data_start;
         best.end_sample=best.payload_complete?data_start+best.end_sample*n:long(iq.size());
+        best.preamble_peak_ratio=a.peak(aligned-3*n).ratio;
+        best.sfd_peak_ratio=std::min(a.peak(aligned,true).ratio,a.peak(aligned+n,true).ratio);
         best.cfo_bins=intercept;best.drift_bins_per_symbol=slope;
         for(int k=0;k<2;++k)best.sync_bins[k]=wrap(a.peak(aligned+(k-2)*n).bin-(intercept+slope*(k-2)),n);
         int hi=int(std::lround(best.sync_bins[0]/8)),lo=int(std::lround(best.sync_bins[1]/8));
@@ -219,5 +224,27 @@ std::vector<Packet> demodulate(const std::vector<std::complex<float>>& iq,int sf
         i=std::max(i,size_t(std::max(0L,best.end_sample)/n)-1);
     }
     return results;
+}
+std::vector<Packet> demodulate(const std::vector<std::complex<float>>& iq, int sf, double bw, const Options& opt, Diagnostics* diagnostics) {
+    Diagnostics counters;
+    auto packets = demodulate_normal(iq, sf, bw, opt, counters);
+    if (opt.try_inverted_iq && sf >= 7 && sf <= 12 && std::isfinite(bw) && bw > 0) {
+        std::vector<std::complex<float>> inverted;
+        inverted.reserve(iq.size());
+        for (auto sample : iq) inverted.push_back(std::conj(sample));
+        auto other = demodulate_normal(inverted, sf, bw, opt, counters);
+        for (auto& packet : other) {
+            packet.inverted_iq = true;
+            // Report the offset/drift in the original captured IQ convention.
+            packet.cfo_bins = -packet.cfo_bins;
+            packet.drift_bins_per_symbol = -packet.drift_bins_per_symbol;
+            packets.push_back(std::move(packet));
+        }
+        std::stable_sort(packets.begin(), packets.end(), [](const Packet& a, const Packet& b) {
+            return a.start_sample < b.start_sample;
+        });
+    }
+    if (diagnostics) *diagnostics = counters;
+    return packets;
 }
 } // namespace rfmon::lora::receiver

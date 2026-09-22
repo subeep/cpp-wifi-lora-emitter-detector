@@ -18,11 +18,17 @@ struct Packet {
     double cfo_bins = 0, drift_bins_per_symbol = 0;
     std::array<double, 2> sync_bins{};
     std::optional<int> sync_word; // quantized observation; not an identity/filter
-    int fec_disagreements = 0;
+    int fec_disagreements = 0; // codewords with nonzero nearest-codeword distance, not corrected bits
+    bool inverted_iq = false;
+    double preamble_peak_ratio = 0, sfd_peak_ratio = 0;
     std::vector<uint8_t> payload;
     std::string detail;
 };
+struct Diagnostics {
+    int preamble_candidates = 0, sfd_candidates = 0, aligned_candidates = 0, headers_rejected = 0;
+};
 struct Options {
+    bool try_inverted_iq = true;
     int min_preamble_symbols = 6;
     int max_preamble_symbols = 256;
     int max_packets = 32;
@@ -33,5 +39,5 @@ struct Options {
 Packet decode_symbols(const std::vector<double>& symbols, int sf, bool ldro);
 // Input rate must equal bandwidth. Explicit headers, SF7..12. No sync bypass.
 std::vector<Packet> demodulate(const std::vector<std::complex<float>>& iq,
-                               int sf, double bandwidth_hz, const Options& options = {});
+                               int sf, double bandwidth_hz, const Options& options = {}, Diagnostics* diagnostics = nullptr);
 } // namespace rfmon::lora::receiver

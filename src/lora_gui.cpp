@@ -12,11 +12,21 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
         return;
     }
 
+    size_t headers=0, verified_count=0, partial=0, failed=0;
+    for (const auto& row : packets) {
+        headers += row.header_valid;
+        verified_count += row.crc == LoraPacketRow::Crc::Valid;
+        partial += row.header_valid && !row.payload_complete;
+        failed += row.crc == LoraPacketRow::Crc::Failed;
+    }
+    ImGui::Text("Retained observations: %zu | Valid headers: %zu | CRC valid: %zu | Partial: %zu | CRC failed: %zu",
+                packets.size(), headers, verified_count, partial, failed);
+    ImGui::TextDisabled("SF/BW/polarity hypotheses; counts are not unique transmitters or delivery rates.");
     static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
                                    ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
                                    ImGuiTableFlags_ScrollX;
     ImVec2 outer_size(0.0f, height);
-    if (!ImGui::BeginTable("lora_packets", 23, flags, outer_size)) return;
+    if (!ImGui::BeginTable("lora_packets", 31, flags, outer_size)) return;
 
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 80.0f);
@@ -49,7 +59,15 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
     ImGui::TableSetupColumn("IQ phi (deg)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
     ImGui::TableSetupColumn("DC (dBc)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
     ImGui::TableSetupColumn("DC ang (deg)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-    ImGui::TableSetupColumn("Payload", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Payload", ImGuiTableColumnFlags_WidthFixed, 360.0f);
+    ImGui::TableSetupColumn("IQ polarity", ImGuiTableColumnFlags_WidthFixed, 95.0f);
+    ImGui::TableSetupColumn("Preamble peak", ImGuiTableColumnFlags_WidthFixed, 105.0f);
+    ImGui::TableSetupColumn("SFD peak", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+    ImGui::TableSetupColumn("CFO estimate (Hz)", ImGuiTableColumnFlags_WidthFixed, 130.0f);
+    ImGui::TableSetupColumn("Drift (Hz/symbol)", ImGuiTableColumnFlags_WidthFixed, 135.0f);
+    ImGui::TableSetupColumn("Capture offset (s)", ImGuiTableColumnFlags_WidthFixed, 135.0f);
+    ImGui::TableSetupColumn("FEC mismatches", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+    ImGui::TableSetupColumn("LoRaWAN structure", ImGuiTableColumnFlags_WidthFixed, 220.0f);
     ImGui::TableHeadersRow();
 
     ImVec4 dim(0.55f, 0.55f, 0.58f, 1.0f);
@@ -146,6 +164,31 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
             ImGui::TextUnformatted(d.payload_hex.empty() ? "(empty payload)" : d.payload_hex.c_str());
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("ASCII: %s\n%s", d.payload_repr->c_str(), d.detail.c_str());
         } else ImGui::TextDisabled("--");
+        ImGui::TableNextColumn();
+        if (d.inverted_iq) ImGui::TextUnformatted(*d.inverted_iq ? "Inverted" : "Normal"); else ImGui::TextDisabled("--");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Polarity hypothesis used to recover the header; does not establish uplink/downlink or LoRaWAN.");
+        ImGui::TableNextColumn();
+        if (d.preamble_peak_ratio) ImGui::Text("%.3f", *d.preamble_peak_ratio); else ImGui::TextDisabled("--");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Aligned dechirped FFT peak / sum of sample magnitudes. Correlation evidence, not probability or SNR.");
+        ImGui::TableNextColumn();
+        if (d.sfd_peak_ratio) ImGui::Text("%.3f", *d.sfd_peak_ratio); else ImGui::TextDisabled("--");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Weaker peak ratio of the two aligned SFD downchirps.");
+        ImGui::TableNextColumn();
+        if (d.cfo_hz) ImGui::Text("%.2f", *d.cfo_hz); else ImGui::TextDisabled("--");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Fractional preamble offset estimate in captured-IQ convention; includes receiver and residual timing error. Not calibrated transmitter frequency.");
+        ImGui::TableNextColumn();
+        if (d.drift_hz_per_symbol) ImGui::Text("%.3f", *d.drift_hz_per_symbol); else ImGui::TextDisabled("--");
+        ImGui::TableNextColumn();
+        if (d.capture_offset_s) ImGui::Text("%.6f", *d.capture_offset_s); else ImGui::TextDisabled("--");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Coarse detected preamble position relative to this capture; not a hardware timestamp or precise packet onset.");
+        ImGui::TableNextColumn();
+        if (d.fec_disagreements) ImGui::Text("%d", *d.fec_disagreements); else ImGui::TextDisabled("--");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Codewords differing from their nearest valid codeword. Not corrected-bit count; zero does not guarantee integrity.");
+        ImGui::TableNextColumn();
+        if (d.lorawan_candidate) {
+            ImGui::TextUnformatted(d.lorawan_candidate->c_str());
+            if (ImGui::IsItemHovered() && d.lorawan_detail) ImGui::SetTooltip("%s", d.lorawan_detail->c_str());
+        } else ImGui::TextDisabled("Unclassified");
     }
     ImGui::EndTable();
 }
