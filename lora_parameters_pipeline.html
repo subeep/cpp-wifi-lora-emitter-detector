@@ -1,0 +1,1080 @@
+<title>LoRa Parameter Pipeline</title>
+<style>
+  :root {
+    --paper: #f5f6f8;
+    --panel: #ffffff;
+    --panel-2: #eef1f4;
+    --ink: #13171f;
+    --ink-2: #4a5361;
+    --ink-3: #757f8c;
+    --line: #dbdfe6;
+    --line-2: #c7cdd6;
+    --accent: #0b7d8c;
+    --accent-ink: #ffffff;
+    --accent-soft: #e3f3f4;
+    --warm: #a8690a;
+    --warm-soft: #f7ead2;
+    --good: #21813a;
+    --good-soft: #dff3e3;
+    --bad: #b3382f;
+    --bad-soft: #fbe2df;
+    --code-bg: #eef1f4;
+    --shadow: 0 1px 2px rgba(20, 25, 35, .06), 0 8px 24px -12px rgba(20, 25, 35, .12);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #0a0d13;
+      --panel: #11151d;
+      --panel-2: #161b25;
+      --ink: #e7ecf3;
+      --ink-2: #a9b3c2;
+      --ink-3: #7c8797;
+      --line: #232a37;
+      --line-2: #2d3543;
+      --accent: #57d3e3;
+      --accent-ink: #06171b;
+      --accent-soft: #10262a;
+      --warm: #e5ab52;
+      --warm-soft: #2a2013;
+      --good: #57c976;
+      --good-soft: #10251a;
+      --bad: #e2726a;
+      --bad-soft: #2a1614;
+      --code-bg: #161b25;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 32px -16px rgba(0, 0, 0, .5);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #0a0d13;
+    --panel: #11151d;
+    --panel-2: #161b25;
+    --ink: #e7ecf3;
+    --ink-2: #a9b3c2;
+    --ink-3: #7c8797;
+    --line: #232a37;
+    --line-2: #2d3543;
+    --accent: #57d3e3;
+    --accent-ink: #06171b;
+    --accent-soft: #10262a;
+    --warm: #e5ab52;
+    --warm-soft: #2a2013;
+    --good: #57c976;
+    --good-soft: #10251a;
+    --bad: #e2726a;
+    --bad-soft: #2a1614;
+    --code-bg: #161b25;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 32px -16px rgba(0, 0, 0, .5);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { background: var(--paper); }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15.5px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+    padding-inline: 20px;
+  }
+  a { color: var(--accent); }
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: .1em .4em;
+    font-size: .88em;
+    color: var(--ink);
+  }
+  h1, h2, h3, h4 { text-wrap: balance; font-weight: 600; letter-spacing: -.01em; }
+  p { margin: .7em 0; color: var(--ink-2); }
+  strong { color: var(--ink); font-weight: 600; }
+
+  /* ---------- shell ---------- */
+  .shell {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding-block: 28px 80px;
+  }
+
+  /* ---------- masthead ---------- */
+  .masthead {
+    display: flex;
+    align-items: flex-end;
+    gap: 28px;
+    flex-wrap: wrap;
+    padding: 30px clamp(18px, 4vw, 38px);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    margin-bottom: 28px;
+  }
+  .masthead-text { flex: 1 1 380px; min-width: 0; }
+  .eyebrow {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11.5px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .eyebrow::before {
+    content: "";
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+    flex: none;
+  }
+  h1.title {
+    font-size: clamp(26px, 4vw, 36px);
+    margin: 0 0 10px;
+    line-height: 1.12;
+  }
+  .masthead p.lede { max-width: 62ch; margin: 0; color: var(--ink-2); font-size: 15px; }
+  .masthead-chirp { flex: 0 0 auto; }
+  canvas#chirp {
+    display: block;
+    width: 260px; height: 74px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel-2);
+  }
+  .chirp-caption {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10.5px;
+    color: var(--ink-3);
+    text-align: right;
+    margin-top: 6px;
+    letter-spacing: .02em;
+  }
+
+  .scope-note {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 10px 14px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 30px;
+    font-size: 14px;
+  }
+  .scope-note .tag {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 700;
+    padding-top: 2px;
+  }
+  .scope-note p { margin: 0; color: var(--ink-2); }
+
+  /* ---------- layout: nav + content ---------- */
+  .layout {
+    display: grid;
+    grid-template-columns: 236px 1fr;
+    gap: 34px;
+    align-items: start;
+  }
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+  }
+
+  nav.toc {
+    position: sticky;
+    top: 20px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px;
+    font-size: 13px;
+    max-height: calc(100vh - 40px);
+    overflow-y: auto;
+  }
+  @media (max-width: 900px) {
+    nav.toc {
+      position: static;
+      max-height: none;
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      padding: 10px;
+      white-space: nowrap;
+    }
+    nav.toc .toc-title { display: none; }
+    nav.toc ol { display: flex; gap: 6px; }
+    nav.toc li { margin: 0 !important; }
+    nav.toc a { border-radius: 999px; padding: 6px 12px !important; background: var(--panel-2); }
+    nav.toc .toc-sub { display: none; }
+  }
+  nav.toc .toc-title {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-bottom: 10px;
+    font-weight: 600;
+  }
+  nav.toc ol { list-style: none; margin: 0; padding: 0; counter-reset: toc; }
+  nav.toc li { margin: 1px 0; }
+  nav.toc a {
+    display: block;
+    padding: 6px 8px;
+    border-radius: 6px;
+    color: var(--ink-2);
+    text-decoration: none;
+    font-weight: 500;
+  }
+  nav.toc a:hover { background: var(--panel-2); color: var(--ink); }
+  nav.toc a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  nav.toc .toc-sub { padding-left: 14px; }
+  nav.toc .toc-sub a { font-weight: 400; font-size: 12.3px; padding: 4px 8px; }
+
+  main { min-width: 0; }
+
+  /* ---------- sections ---------- */
+  .section { margin-bottom: 54px; scroll-margin-top: 16px; }
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 6px;
+    padding-bottom: 12px;
+    border-bottom: 2px solid var(--line);
+  }
+  .section-num {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent-ink);
+    background: var(--accent);
+    border-radius: 6px;
+    padding: 3px 9px;
+    flex: none;
+  }
+  .section-head h2 { font-size: 22px; margin: 0; }
+  .section-intro { max-width: 74ch; }
+
+  /* ---------- parameter cards ---------- */
+  .param-card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 22px clamp(16px, 3vw, 26px) 24px;
+    margin-top: 20px;
+    box-shadow: var(--shadow);
+    scroll-margin-top: 16px;
+  }
+  .param-card h3 {
+    font-size: 16.5px;
+    margin: 0 0 4px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .param-id {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    color: var(--ink-3);
+    font-weight: 500;
+  }
+  .param-card p.lede { color: var(--ink); font-size: 14.5px; margin-top: 8px; }
+  .param-card p.how-label { color: var(--ink-3); font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em; font-weight: 600; margin: 16px 0 4px; }
+  .param-card p.how { margin-top: 0; }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    line-height: 1.6;
+  }
+  .pill-good { background: var(--good-soft); color: var(--good); }
+  .pill-bad { background: var(--bad-soft); color: var(--bad); }
+  .pill-warn { background: var(--warm-soft); color: var(--warm); }
+  .pill-neutral { background: var(--panel-2); color: var(--ink-2); border: 1px solid var(--line); }
+
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 22px;
+  }
+  @media (max-width: 720px) { .two-col { grid-template-columns: 1fr; } }
+
+  .callout {
+    background: var(--warm-soft);
+    border: 1px solid color-mix(in srgb, var(--warm) 35%, transparent);
+    border-radius: 10px;
+    padding: 13px 16px;
+    font-size: 13.6px;
+    margin-top: 14px;
+    color: var(--ink-2);
+  }
+  .callout strong { color: var(--warm); }
+  .callout.info {
+    background: var(--accent-soft);
+    border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  }
+  .callout.info strong { color: var(--accent); }
+
+  /* ---------- diagrams ---------- */
+  figure.diagram {
+    margin: 16px 0 0;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 14px 12px;
+  }
+  figure.diagram .mermaid-wrap { overflow-x: auto; }
+  figure.diagram pre.mermaid { margin: 0; background: transparent; }
+  figure.diagram figcaption {
+    font-size: 12px;
+    color: var(--ink-3);
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--line-2);
+  }
+
+  /* ---------- reference table ---------- */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+  table.reftable {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    min-width: 720px;
+    background: var(--panel);
+  }
+  table.reftable th {
+    text-align: left;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10.5px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    background: var(--panel-2);
+    padding: 10px 14px;
+    position: sticky; top: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  table.reftable td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+    color: var(--ink-2);
+  }
+  table.reftable tr:last-child td { border-bottom: none; }
+  table.reftable tr:hover td { background: var(--panel-2); }
+  table.reftable td.src, table.reftable td.gui { font-family: "IBM Plex Mono", monospace; font-size: 12px; }
+  table.reftable td.param { color: var(--ink); font-weight: 600; }
+
+  footer.page {
+    margin-top: 48px;
+    padding-top: 22px;
+    border-top: 1px solid var(--line);
+    font-size: 12.5px;
+    color: var(--ink-3);
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+  html { scroll-behavior: smooth; }
+</style>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"></script>
+
+<div class="shell">
+
+  <div class="masthead">
+    <div class="masthead-text">
+      <div class="eyebrow">rfmon &middot; src/lora_receiver.cpp &amp; fingerprint.cpp</div>
+      <h1 class="title">Every parameter, and exactly how it's derived</h1>
+      <p class="lede">A field-by-field walk through the LoRa receive pipeline — detection, header, LDRO,
+        payload, LoRaWAN structure and RF fingerprinting — with a flowchart for each measurement showing
+        the chain of dechirps, fits and gates that produce it.</p>
+    </div>
+    <div class="masthead-chirp">
+      <canvas id="chirp" width="520" height="148"></canvas>
+      <div class="chirp-caption">upchirp, SF7 &middot; the shape everything below dechirps against</div>
+    </div>
+  </div>
+
+  <div class="scope-note">
+    <span class="tag">Scope</span>
+    <p>Production decoder (<code>lora_receiver.cpp</code>), the RF fingerprint system
+      (<code>fingerprint.cpp</code>), and the LoRaWAN structural inspector
+      (<code>lorawan_inspect.hpp</code>). Every formula below was read directly from the current
+      source, not recalled — nothing here changes any code.</p>
+  </div>
+
+  <div class="layout">
+    <nav class="toc" aria-label="Table of contents">
+      <div class="toc-title">Contents</div>
+      <ol>
+        <li><a href="#overview">0 &middot; Big picture</a></li>
+        <li><a href="#detection">1 &middot; Detection</a>
+          <ol class="toc-sub">
+            <li><a href="#preamble-polarity">1.1 Preamble &amp; polarity</a></li>
+            <li><a href="#sfd">1.2 SFD candidate</a></li>
+            <li><a href="#alignment">1.3 Alignment</a></li>
+            <li><a href="#peak-ratios">1.4 Peak ratios</a></li>
+          </ol>
+        </li>
+        <li><a href="#timing">2 &middot; Timing &amp; frequency</a>
+          <ol class="toc-sub">
+            <li><a href="#cfo">2.1 CFO</a></li>
+            <li><a href="#drift">2.2 Drift</a></li>
+            <li><a href="#offset">2.3 Capture offset</a></li>
+          </ol>
+        </li>
+        <li><a href="#header">3 &middot; Header fields</a></li>
+        <li><a href="#ldro">4 &middot; LDRO</a></li>
+        <li><a href="#sync">5 &middot; Sync word</a></li>
+        <li><a href="#payload">6 &middot; Payload</a>
+          <ol class="toc-sub">
+            <li><a href="#fec">6.1 FEC mismatches</a></li>
+            <li><a href="#bytes">6.2 Payload bytes</a></li>
+            <li><a href="#pcrc">6.3 CRC validity</a></li>
+          </ol>
+        </li>
+        <li><a href="#lorawan">7 &middot; LoRaWAN structure</a></li>
+        <li><a href="#fingerprint">8 &middot; RF fingerprint</a>
+          <ol class="toc-sub">
+            <li><a href="#snr">8.1 SNR gate</a></li>
+            <li><a href="#cfoppm">8.2 CFO (ppm)</a></li>
+            <li><a href="#iq">8.3 IQ / DC</a></li>
+            <li><a href="#evm">8.4 EVM &amp; sync_corr</a></li>
+          </ol>
+        </li>
+        <li><a href="#identity">9 &middot; Master-list matching</a></li>
+        <li><a href="#reference">10 &middot; Quick reference</a></li>
+      </ol>
+    </nav>
+
+    <main>
+
+      <section class="section" id="overview">
+        <div class="section-head"><span class="section-num">0</span><h2>The big picture first</h2></div>
+        <div class="section-intro">
+          <p>Two systems run on the <em>same</em> captured IQ, independently, built at different times for
+            different purposes. This matters everywhere below, because several parameters exist in
+            <strong>two versions</strong> computed two different ways &mdash; most notably CFO
+            (<a href="#cfo">2.1</a> vs <a href="#cfoppm">8.2</a>).</p>
+        </div>
+        <figure class="diagram">
+          <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    IQ["Captured IQ samples\n(one bandwidth hypothesis)"]
+    IQ --> DEC["Decoder &middot; lora_receiver.cpp\n(sections 1-7)"]
+    IQ --> FP["RF fingerprint &middot; fingerprint.cpp\n(section 8, independent alignment)"]
+    DEC --> ROW["LoraPacketRow\n(one GUI table row)"]
+    FP --> ROW
+    FP --> MASTER["Persistent master list\n(section 9)"]
+    DEC -->|"payload_complete AND\n(no CRC OR CRC valid)"| LORAWAN["LoRaWAN structural inspector\n(section 7)"]
+    LORAWAN --> ROW
+          </pre></div>
+          <figcaption>The decoder tries to fully decode a packet. The fingerprint system characterizes the
+            transmitting hardware, whether or not a header ever decodes &mdash; using its own, separate
+            preamble alignment (<code>lora::detect_burst()</code>).</figcaption>
+        </figure>
+      </section>
+
+      <section class="section" id="detection">
+        <div class="section-head"><span class="section-num">1</span><h2>Detection stage</h2></div>
+
+        <article class="param-card" id="preamble-polarity">
+          <h3>1.1 Preamble candidate &amp; IQ polarity <span class="param-id">inverted_iq</span></h3>
+          <p class="lede">The receiver doesn't assume the signal is right-side-up. LoRaWAN downlinks (and
+            some other traffic) transmit with <em>inverted</em> IQ &mdash; the imaginary component
+            negated, which flips a chirp's effective slope. Both polarities are tried on every capture.</p>
+          <p class="how-label">How</p>
+          <p class="how">The capture is chopped into non-overlapping <code>N = 2^sf</code> windows, each
+            coarsely dechirped against the upchirp reference. A start index becomes a candidate only if
+            the next <code>min_preamble_symbols</code> (default 6) windows all clear
+            <code>minimum_peak_ratio</code> (0.5) and no consecutive pair drifts more than 1.5 bins. This
+            search runs once on the IQ as captured, then again on its complex conjugate &mdash; that
+            conjugation <em>is</em> the inversion.</p>
+          <figure class="diagram">
+            <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["Captured IQ buffer"] --> B["Run 1: search as-is\n(demodulate_normal)"]
+    A --> C["Conjugate every sample\n(std::conj)"]
+    C --> D["Run 2: search conjugated buffer\n(demodulate_normal)"]
+    B --> E{"6 consecutive windows:\nratio &ge; 0.5 AND\nadjacent drift &le; 1.5 bins?"}
+    D --> F{"same check\non conjugated buffer"}
+    E -->|yes| G["Preamble candidate\ninverted_iq = false"]
+    F -->|yes| H["Preamble candidate\ninverted_iq = true"]
+    G --> I["Merge both runs' results,\nsort by start_sample"]
+    H --> I
+            </pre></div>
+            <figcaption>Results from Run 2 have CFO/drift signs flipped back before merging, so every
+              downstream value reports in the original capture's own convention.</figcaption>
+          </figure>
+        </article>
+
+        <article class="param-card" id="sfd">
+          <h3>1.2 SFD candidate</h3>
+          <p class="lede">The point where the signal stops looking like more preamble and starts looking
+            like the Start-Frame-Delimiter's downchirps.</p>
+          <p class="how-label">How</p>
+          <p class="how">From right after a confirmed preamble run, each subsequent window is dechirped
+            against the <em>downchirp</em> reference. The first window whose downchirp ratio clears 0.5
+            <strong>and</strong> exceeds that same window's own already-computed upchirp ratio is the SFD
+            candidate.</p>
+          <figure class="diagram">
+            <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["Confirmed preamble run\nends at window i"] --> B["Scan forward window by window\n(up to max_preamble_symbols = 256)"]
+    B --> C["Dechirp this window\nagainst DOWNCHIRP reference"]
+    C --> D{"downchirp ratio &gt; 0.5\nAND\nratio &gt; this window's\nown upchirp ratio?"}
+    D -->|no| B
+    D -->|yes| E["SFD candidate position"]
+            </pre></div>
+            <figcaption>Diagnostics::sfd_candidates increments here &mdash; visible in the "Detected only"
+              row's tooltip when nothing decodes further.</figcaption>
+          </figure>
+        </article>
+
+        <article class="param-card" id="alignment">
+          <h3>1.3 Alignment <span class="param-id">aligned</span></h3>
+          <p class="lede">The single most important internal value &mdash; the resolved start of the SFD's
+            first full downchirp. Almost every other parameter below is measured relative to this point.</p>
+          <p class="how-label">How</p>
+          <p class="how">Two <em>fine</em> (8&times; zero-padded) measurements bracket the SFD candidate:
+            <code>u</code> (upchirp-matched, 4 symbols before it) and <code>d</code> (downchirp-matched, 1
+            symbol after it). Both slopes resolve timing/CFO up to an N/2 ambiguity;
+            <code>(d&minus;u)/2</code> gives a position correction, tried at 3 half-symbol offsets &times;
+            3 symbol offsets &mdash; 9 candidates. The highest-scoring one, subject to three ratios all
+            clearing 0.5, wins.</p>
+          <figure class="diagram">
+            <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["SFD candidate"] --> B["u = fine upchirp-matched peak,\n4 symbols before SFD candidate"]
+    A --> C["d = fine downchirp-matched peak,\n1 symbol after SFD candidate"]
+    B --> D["timing correction &asymp; (d-u)/2"]
+    C --> D
+    D --> E["9 candidate positions:\n3 half-symbol branches &times; 3 symbol offsets"]
+    E --> F["For each: check pre (3 syms earlier)\nlooks like preamble; d0, d1\nlook like clean downchirps"]
+    F --> G{"all three\nratios &gt; 0.5?"}
+    G -->|no| H["candidate rejected"]
+    G -->|yes| I["score = sum of the 3 ratios"]
+    I --> J["Highest-scoring candidate\n= aligned"]
+            </pre></div>
+            <figcaption>Diagnostics::aligned_candidates increments here.</figcaption>
+          </figure>
+        </article>
+
+        <article class="param-card" id="peak-ratios">
+          <h3>1.4 Preamble &amp; SFD peak ratio <span class="param-id">preamble_peak_ratio &middot; sfd_peak_ratio</span></h3>
+          <p class="lede">Two confidence numbers shown directly in the GUI ("Preamble peak" / "SFD peak")
+            &mdash; how cleanly the signal dechirped, on a 0&ndash;1 scale where &asymp;1.0 is a single
+            dominant FFT bin. Lower values mean energy spread across many bins: noise, interference, or
+            <strong>clipping</strong> &mdash; the same mechanism that made the 25&nbsp;dB gain experiment
+            fail earlier in this project's own history.</p>
+          <p class="how-label">How</p>
+          <figure class="diagram">
+            <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["aligned position"] --> B["Fine peak at aligned-3N,\nupchirp-matched"]
+    B --> C["preamble_peak_ratio\n= that peak's ratio"]
+    A --> D["Fine peak at aligned,\ndownchirp-matched"]
+    A --> E["Fine peak at aligned+N,\ndownchirp-matched"]
+    D --> F["sfd_peak_ratio\n= min(D's ratio, E's ratio)"]
+    E --> F
+            </pre></div>
+            <figcaption>sfd_peak_ratio takes the <em>worse</em> of the two SFD symbols &mdash; a
+              weakest-link measure, not an average.</figcaption>
+          </figure>
+        </article>
+      </section>
+
+      <section class="section" id="timing">
+        <div class="section-head"><span class="section-num">2</span><h2>Timing &amp; frequency</h2></div>
+
+        <article class="param-card" id="cfo">
+          <h3>2.1 CFO &mdash; bins and Hz <span class="param-id">cfo_bins &middot; cfo_hz</span></h3>
+          <p class="lede">Carrier Frequency Offset: transmitter and receiver oscillators are never
+            perfectly matched. Because a symbol's value <em>is</em> "which FFT bin has the peak," any CFO
+            shifts every symbol's measured bin by the same constant amount. This is the decoder's own
+            estimate &mdash; separate from the fingerprint's <code>cfo_ppm</code> (<a href="#cfoppm">8.2</a>).</p>
+          <p class="how-label">How</p>
+          <p class="how">Six preamble symbols well before <code>aligned</code> (offsets &minus;8 through
+            &minus;3) are fine-dechirped and fit with an ordinary least-squares line:
+            <code>bin &asymp; slope&middot;j + intercept</code>.</p>
+          <figure class="diagram">
+            <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["aligned position"] --> B["Fine-dechirp 6 preamble symbols\nat offsets -8..-3 (upchirp-matched)"]
+    B --> C["Least-squares line fit:\nbin &asymp; slope&middot;j + intercept"]
+    C --> D["intercept = Packet::cfo_bins"]
+    D --> E["cfo_hz = cfo_bins &times; bandwidth_hz / 2^sf\n(lora_observation.cpp)"]
+            </pre></div>
+            <figcaption>If the winning hypothesis came from the inverted-IQ run, the sign is flipped back
+              before this value is ever reported.</figcaption>
+          </figure>
+        </article>
+
+        <article class="param-card" id="drift">
+          <h3>2.2 Drift &mdash; bins/symbol and Hz/symbol <span class="param-id">drift_bins_per_symbol &middot; drift_hz_per_symbol</span></h3>
+          <p class="lede">The oscillator mismatch isn't perfectly constant &mdash; it drifts slowly across
+            a long packet. This is the <em>rate</em> of that drift, reused as-is from the same fit as
+            CFO.</p>
+          <figure class="diagram">
+            <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["Same 6-symbol least-squares fit\nas CFO &sect;2.1"] --> B["slope = Packet::drift_bins_per_symbol"]
+    B --> C["drift_hz_per_symbol\n= slope &times; bandwidth_hz / 2^sf"]
+            </pre></div>
+            <figcaption>Feeds forward into decoding itself: ordinary payload symbols are corrected by
+              extrapolating this line; header and LDRO-payload symbols use a separate mod-4-lattice
+              tracker instead (see <a href="#bytes">6.2</a>).</figcaption>
+          </figure>
+        </article>
+
+        <article class="param-card" id="offset">
+          <h3>2.3 Capture offset (s) <span class="param-id">capture_offset_s</span></h3>
+          <p class="lede">Where in this particular capture the packet's preamble was found &mdash; a
+            coarse position marker, not a hardware timestamp.</p>
+          <figure class="diagram">
+            <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["start_sample\n(from preamble detection, &sect;1.1)"] --> B["capture_offset_s\n= start_sample / bandwidth_hz"]
+            </pre></div>
+          </figure>
+        </article>
+      </section>
+
+      <section class="section" id="header">
+        <div class="section-head"><span class="section-num">3</span><h2>Header-derived fields</h2></div>
+        <div class="section-intro">
+          <p>All four fields come from one operation: dechirping the 8 symbols right after the SFD,
+            correcting them (the mod-4-lattice variant of &sect;2's drift model), Gray-decoding, diagonally
+            deinterleaving at width <code>sf&minus;2</code>, and FEC-decoding each codeword at the
+            header's fixed <code>CR=4</code> (4/8).</p>
+        </div>
+        <figure class="diagram">
+          <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["8 symbols after aligned + 2.25N\n(right after the SFD)"] --> B["Correct via mod-4-lattice\ndrift tracker"]
+    B --> C["Round, wrap into [0, 2^sf),\ndivide by 4 (reduce to SF-2 grid)"]
+    C --> D["Gray transform: x XOR (x&gt;&gt;1)"]
+    D --> E["Diagonal deinterleave,\nwidth = sf-2"]
+    E --> F["FEC-decode each codeword\nat fixed CR=4 (unfec: brute-force\nnearest-codeword search)"]
+    F --> G["5 header nibbles"]
+    G --> H["nibbles 0-1:\ndeclared_payload_len"]
+    G --> I["nibble 2:\ncr = nib2 &gt;&gt; 1\ncrc_on = nib2 &amp; 1"]
+    G --> J["nibbles 3-4:\n5-bit checksum"]
+    H --> K{"header_sum(nib0,nib1,nib2)\n== checksum bits?\nAND cr in 1..4?"}
+    I --> K
+    J --> K
+    K -->|yes| L["header_valid = true"]
+    K -->|no| M["header rejected;\nDiagnostics::headers_rejected++"]
+          </pre></div>
+          <figcaption>The 5&times;12 checksum matrix (<code>header_sum()</code>) was cross-checked against
+            the independent LoRaPHY reference and its published test vector &mdash; that comparison caught
+            a real transcription error before this shipped.</figcaption>
+        </figure>
+        <div class="two-col">
+          <div class="callout info"><strong>Declared payload length</strong> &mdash; nibbles 0&ndash;1,
+            <code>nib[0]&times;16 + nib[1]</code>.</div>
+          <div class="callout info"><strong>Coding rate (CR)</strong> &mdash; nibble 2 bits 1&ndash;3.
+            Displayed as <code>4/(4+cr)</code>: CR=3 shows as "4/7".</div>
+          <div class="callout info"><strong>CRC-on flag</strong> &mdash; nibble 2, bit 0.</div>
+          <div class="callout info"><strong>SF itself</strong> isn't calculated here &mdash; it's one of
+            the (bandwidth, SF) hypotheses the scan loop already tries; a header only validates if the
+            hypothesis matches the transmitter's real SF.</div>
+        </div>
+        <p style="margin-top:14px">If <code>sf&minus;2 &gt; 5</code>, leftover nibbles beyond the first 5
+          (still coded at CR=4) are already the start of the payload &mdash; carried into
+          <a href="#payload">&sect;6</a> as a head start, not re-derived there.</p>
+      </section>
+
+      <section class="section" id="ldro">
+        <div class="section-head"><span class="section-num">4</span><h2>LDRO</h2></div>
+        <article class="param-card">
+          <h3>4.1&ndash;4.2 LDRO on/off &amp; ambiguity <span class="param-id">ldro &middot; ldro_ambiguous</span></h3>
+          <p class="lede">Low Data Rate Optimization &mdash; whether the payload's symbol alphabet was
+            reduced by 2 bits. Not signalled anywhere in the header; the receiver has to <em>infer</em> it
+            by trying both possibilities.</p>
+          <p class="how-label">How</p>
+          <figure class="diagram">
+            <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["preferred = (2^sf / bandwidth_hz) &gt; 0.016\n(16ms symbol-duration threshold)"] --> B["Try hypothesis 1:\nldro = preferred"]
+    A --> C["Try hypothesis 2:\nldro = NOT preferred"]
+    B --> D["Full decode_symbols(...)\nfor each"]
+    C --> D
+    D --> E{"Which hypotheses produced\nheader_valid = true?"}
+    E -->|none| F["Candidate position abandoned"]
+    E -->|one or both| G["Prefer crc_valid, then\npayload_complete, then\nwhichever came first"]
+    G --> H["Packet::ldro\n= winner's flag"]
+    G --> I["ldro_ambiguous =\nNOT (crc_on AND crc_valid)\nfor the winner"]
+            </pre></div>
+            <figcaption><code>ldro_ambiguous</code> is what shows as <span class="pill pill-warn">On?</span>
+              / <span class="pill pill-warn">Off?</span> in the GUI &mdash; the winning hypothesis's own
+              CRC didn't actually confirm the choice.</figcaption>
+          </figure>
+        </article>
+      </section>
+
+      <section class="section" id="sync">
+        <div class="section-head"><span class="section-num">5</span><h2>Sync word</h2></div>
+        <article class="param-card">
+          <h3>5.1&ndash;5.2 Raw sync bins &amp; quantized sync word <span class="param-id">sync_bins &middot; sync_word</span></h3>
+          <p class="lede">Two symbols immediately before <code>aligned</code> carry a sync-word byte (e.g.
+            <code>0x12</code>). <strong>Production never gates on this</strong> &mdash; it's observed and
+            reported only.</p>
+          <p class="how-label">How</p>
+          <figure class="diagram">
+            <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["aligned position"] --> B["Fine peak at aligned-2N\n(upchirp-matched)"]
+    A --> C["Fine peak at aligned-N\n(upchirp-matched)"]
+    B --> D["Correct each with the\nCFO+drift linear model,\nevaluated at that offset"]
+    C --> D
+    D --> E["sync_bins[0], sync_bins[1]\n(raw, unquantized)"]
+    E --> F["hi = round(sync_bins[0] / 8)\nlo = round(sync_bins[1] / 8)"]
+    F --> G{"hi, lo in [0,16) AND\nwithin 1.5 bins of an\nexact multiple of 8?"}
+    G -->|yes| H["sync_word = (hi&lt;&lt;4) | lo\ne.g. 0x12"]
+    G -->|no| I["sync_word unset;\nraw sync_bins shown instead"]
+            </pre></div>
+            <figcaption>This fixed "&divide;8, no SF-dependent shift" mapping matches the independent
+              LoRaPHY reference &mdash; and is exactly what a real SX1262 capture decoded to
+              (<code>0x12</code>).</figcaption>
+          </figure>
+        </article>
+      </section>
+
+      <section class="section" id="payload">
+        <div class="section-head"><span class="section-num">6</span><h2>Payload</h2></div>
+
+        <article class="param-card" id="fec">
+          <h3>6.1 FEC disagreements <span class="param-id">fec_disagreements</span></h3>
+          <p class="lede">How many codewords &mdash; across <em>both</em> the header's 8 symbols and every
+            payload block &mdash; needed any correction at all. Not a corrected-bit count, just "the
+            received codeword wasn't already a perfect match."</p>
+          <p class="how-label">How</p>
+          <figure class="diagram">
+            <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["Every codeword decoded\n(header CR=4 + all payload\nblocks at the packet's own CR)"] --> B["unfec(): try all 16 possible\n4-bit nibbles, re-encode each,\ncompare distance"]
+    B --> C{"best-match\ndistance == 0?"}
+    C -->|yes| D["clean codeword,\ncounter unchanged"]
+    C -->|no| E["fec_disagreements++"]
+            </pre></div>
+            <figcaption>A shared counter, not two separate ones for header vs. payload. A CRC can still
+              pass with a nonzero count &mdash; a real SX1262 capture showed exactly that: 3 mismatched
+              codewords, CRC still valid.</figcaption>
+          </figure>
+        </article>
+
+        <article class="param-card" id="bytes">
+          <h3>6.2 Payload bytes <span class="param-id">payload</span></h3>
+          <p class="how-label">How</p>
+          <p class="how">Each payload block (<code>cr+4</code> symbols wide) is corrected, Gray-transformed
+            &mdash; <strong>&divide;4 for LDRO symbols, a &minus;1 adjustment for ordinary symbols</strong>
+            (genuinely different operations, not the same one) &mdash; deinterleaved, FEC-decoded, packed
+            low-nibble-first into bytes (opposite of the header's high-nibble-first order), then dewhitened.</p>
+          <figure class="diagram">
+            <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["Payload symbols,\nblocks of cr+4"] --> B["Correct via linear extrapolation\n(ordinary) or mod-4 lattice (LDRO)"]
+    B --> C["Gray transform:\n&divide;4 if LDRO, -1 adjustment if not"]
+    C --> D["Diagonal deinterleave,\nwidth = sf or sf-2 under LDRO"]
+    D --> E["FEC-decode at packet's own CR"]
+    E --> F["Pack nibble pairs into bytes,\nLOW nibble first"]
+    F --> G["Dewhiten declared-length bytes only\n(8-bit LFSR, taps 7/5/4/3, seed 0xFF)"]
+    G --> H["Packet::payload"]
+            </pre></div>
+            <figcaption>Dewhitening never touches the trailing CRC bytes &mdash; only the declared payload
+              length.</figcaption>
+          </figure>
+        </article>
+
+        <article class="param-card" id="pcrc">
+          <h3>6.3 Payload CRC validity <span class="param-id">crc_valid &middot; payload_complete</span></h3>
+          <figure class="diagram">
+            <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["Dewhitened payload bytes"] --> B["payload_crc(): CRC-16/CCITT over\nall bytes except the last 2,\nthen XOR-fold the last 2 in directly"]
+    C["Received trailing 2 bytes\n(low byte first)"] --> D{"computed\n== received?"}
+    B --> D
+    D -->|yes| E["crc_valid = true"]
+    D -->|no| F["crc_valid = false"]
+    G["Enough symbols were\navailable to reach this point"] --> H["payload_complete = true"]
+            </pre></div>
+            <figcaption><code>payload_complete</code> and <code>crc_valid</code> are independent &mdash; a
+              truncated capture can leave the first false with CRC never attempted at all ("Header only" in
+              the GUI).</figcaption>
+          </figure>
+        </article>
+      </section>
+
+      <section class="section" id="lorawan">
+        <div class="section-head"><span class="section-num">7</span><h2>LoRaWAN structural fields</h2></div>
+        <div class="section-intro">
+          <p><strong>Gate before any of this runs:</strong> <code>payload_complete &amp;&amp; (!crc_on ||
+            crc_valid)</code> &mdash; a candidate is only ever attempted against bytes that are either
+            CRC-verified or declared to carry no CRC at all.</p>
+        </div>
+        <figure class="diagram">
+          <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["Packet::payload\n(already physically verified)"] --> B{"b[0] &amp; 0x1F == 0?\n(RFU + Major bits must be zero)"}
+    B -->|no| Z["Not a candidate\n(std::nullopt)"]
+    B -->|yes| C["type = b[0] &gt;&gt; 5\n(MHDR MType)"]
+    C --> D{"type == 0?"}
+    D -->|yes, size 23| E["Join Request:\nJoinEUI/AppEUI, DevEUI (reversed),\nDevNonce, MIC"]
+    C --> F{"type == 1?"}
+    F -->|yes, size 17 or 33| G["Join Accept:\nbody stays OPAQUE\n(encrypted, no keys)"]
+    C --> H{"type 2-5?\n(Data Up/Down,\nConfirmed/Unconfirmed)"}
+    H -->|yes, size &ge; 12| I["DevAddr (reversed), FCtrl,\nADR/ACK bits, FOptsLen, FOpts,\nFCnt16 (lower 16 bits only)"]
+    I --> J{"bytes remain before\nthe trailing MIC?"}
+    J -->|yes| K["FPort + FRMPayload\n(FRMPayload stays OPAQUE)"]
+    J -->|no| L["FPort absent"]
+    K --> M["MIC bytes\n(shown, NEVER verified - no keys)"]
+    L --> M
+    C --> N{"type 6 or 7?\n(Rejoin / Proprietary)"}
+    N -->|yes| Z
+          </pre></div>
+          <figcaption>Every result branch appends the same disclaimer: "Structural candidate only; MIC not
+            verified, protocol/session/version not established. No decryption." Nothing here is
+            verifiable without the actual session keys.</figcaption>
+        </figure>
+      </section>
+
+      <section class="section" id="fingerprint">
+        <div class="section-head"><span class="section-num">8</span><h2>RF fingerprint</h2></div>
+        <div class="section-intro">
+          <p>Runs independently of &sect;&sect;1&ndash;7, on its own alignment from
+            <code>lora::detect_burst()</code> &mdash; a simpler, older detector, not the decoder's own
+            <code>aligned</code>. It runs whether or not a header ever decodes: on hardware whose traffic
+            never validates a header at all, this is still how it can be characterized.</p>
+        </div>
+
+        <article class="param-card" id="snr">
+          <h3>8.1 SNR (dB) &mdash; first gate <span class="param-id">fp_snr_db</span></h3>
+          <figure class="diagram">
+            <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["Pre-burst samples\n(N samples right before start_sample)"] --> B["noise_power = mean(|x|&sup2;)"]
+    C["Full measured preamble\n(preamble_len symbols)"] --> D["burst_power = mean(|x|&sup2;)"]
+    B --> E{"burst_power &gt;\nnoise_power?"}
+    D --> E
+    E -->|no| F["gated_out = true:\nSNR non-positive"]
+    E -->|yes| G["snr_db = 10&middot;log10(\n(burst_power-noise_power)/noise_power)"]
+    G --> H{"snr_db &ge; 10.0 dB?"}
+    H -->|no| I["gated_out = true:\nbelow SNR floor"]
+    H -->|yes| J["Proceed to CFO\nrefinement &sect;8.2"]
+            </pre></div>
+          </figure>
+        </article>
+
+        <article class="param-card" id="cfoppm">
+          <h3>8.2 CFO (ppm) <span class="param-id">fp_cfo_ppm</span></h3>
+          <p class="lede">Not the same number as <a href="#cfo">&sect;2.1</a>. The decoder's
+            <code>cfo_bins</code>/<code>cfo_hz</code> never receives the absolute RF center frequency
+            &mdash; only bandwidth. This calculation genuinely needs the carrier frequency (it's
+            <code>center_hz</code>-relative by definition), uses a <em>different</em> estimator
+            (Moose-style differential correlation), and a <em>different</em> alignment. Related, not
+            identical, and not expected to match exactly.</p>
+          <p class="how-label">How</p>
+          <figure class="diagram">
+            <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["Coarse integer-bin CFO estimate\n(from detect_burst)"] --> B["delta_f_hz = cfo_bins &times; bandwidth_hz / N\n(&plusmn;0.5 bin uncertainty)"]
+    B --> C["Derotate up to 10 preamble\nsymbols by the coarse estimate"]
+    C --> D["Correlate each derotated symbol\nagainst a synthesized ideal reference chirp"]
+    D --> E["Phase rotation between CONSECUTIVE\nsymbols' correlations\n= residual sub-bin frequency error"]
+    E --> F["delta_f_hz_refined =\ndelta_f_hz + residual"]
+    F --> G["cfo_ppm = (delta_f_hz_refined\n/ center_hz) &times; 1e6"]
+            </pre></div>
+          </figure>
+        </article>
+
+        <article class="param-card" id="iq">
+          <h3>8.3 IRR, IQ eps/phi, DC dBc/angle <span class="param-id">fp_irr_db &middot; fp_iq_eps &middot; fp_iq_phi_deg &middot; fp_dc_dbc &middot; fp_dc_ang_deg</span></h3>
+          <p class="lede">Radio-hardware characteristics &mdash; image-rejection ratio, gain/phase
+            imbalance between I and Q, and residual DC offset. These are the "stable core" identity
+            features the persistent master list matches devices on (<a href="#identity">&sect;9</a>).</p>
+          <p class="how-label">How &mdash; one 3&times;3 complex least-squares solve</p>
+          <figure class="diagram">
+            <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["Up to 10 preamble symbols,\nunit-RMS normalized, CFO-derotated"] --> B["Widely-linear model:\nr' = &mu;&middot;s + &nu;&middot;conj(s) + c"]
+    B --> C["Solve 3x3 normal-equations\nfor &mu;, &nu;, c\n(Gaussian elimination, partial pivot)"]
+    C --> D["q = &nu; / &mu;"]
+    D --> E["irr_db = 20&middot;log10(|q|)"]
+    D --> F["iq_eps = -2&middot;Re(q)"]
+    D --> G["iq_phi_deg = -2&middot;Im(q)&middot;180/&pi;"]
+    C --> H["dc_dbc = 20&middot;log10(|c|/|&mu;|)"]
+    C --> I["dc_ang_deg = arg(c/&mu;)&middot;180/&pi;"]
+            </pre></div>
+          </figure>
+        </article>
+
+        <article class="param-card" id="evm">
+          <h3>8.4 EVM (%) &amp; sync_corr &mdash; second gate <span class="param-id">fp_evm_pct &middot; fp_sync_corr</span></h3>
+          <figure class="diagram">
+            <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["&mu;, &nu;, c from the fit &sect;8.3"] --> B["For each fit symbol:\nmodel = &mu;s + &nu;conj(s) + c\nerror = r' - model"]
+    B --> C["evm_pct = 100&middot;sqrt(\nmean(|error|&sup2;) / mean(|s|&sup2;))"]
+    A --> D["sync_corr = min(1, |&mu;|&middot;sqrt(&Sigma;|s|&sup2;)\n/ sqrt(&Sigma;|r'|&sup2;))"]
+    C --> E{"evm_pct &le; 75.0%\nAND sync_corr &ge; 0.65?"}
+    D --> E
+    E -->|no| F["gated_out = true\n(evm_pct/sync_corr still recorded)"]
+    E -->|yes| G["Fingerprint accepted;\nfeeds the master list &sect;9"]
+            </pre></div>
+            <figcaption>Both thresholds were calibrated from real controlled TarangMini data, not the
+              generic numbers a first pass assumed.</figcaption>
+          </figure>
+        </article>
+      </section>
+
+      <section class="section" id="identity">
+        <div class="section-head"><span class="section-num">9</span><h2>Persistent identity: master-list matching</h2></div>
+        <article class="param-card">
+          <p class="lede">Which device ID (<code>LORA-0001</code>, etc.) an accepted fingerprint reading
+            gets attributed to &mdash; a new device, or an existing one. Only ever runs on readings that
+            already cleared <em>both</em> gates in &sect;8.</p>
+          <p class="how-label">How</p>
+          <figure class="diagram">
+            <div class="mermaid-wrap"><pre class="mermaid">
+flowchart TD
+    A["Accepted fingerprint:\nirr_db, dc_dbc, iq_eps, iq_phi_deg\n(cfo_ppm deliberately excluded)"] --> B["For each known device:\ntake its most recent 20 readings"]
+    B --> C["Compute the MEDIAN of\neach parameter over that window"]
+    C --> D{"New reading within tolerance?\nIRR/DC: &plusmn;8dB, eps: &plusmn;0.02,\nphi: &plusmn;3deg"}
+    D -->|no match, any device| E["Create a new device"]
+    D -->|matches one or more| F["Pick the closest\n(weighted distance tiebreak)"]
+    E --> G["Append reading to that\ndevice's NDJSON file"]
+    F --> G
+            </pre></div>
+            <figcaption><code>cfo_ppm</code> is computed and stored per-reading but deliberately excluded
+              from matching &mdash; real testing showed it swinging tens of ppm burst-to-burst for one
+              confirmed physical device, most likely receiver-LO variance rather than identity.</figcaption>
+          </figure>
+        </article>
+      </section>
+
+      <section class="section" id="reference">
+        <div class="section-head"><span class="section-num">10</span><h2>Quick reference</h2></div>
+        <div class="table-wrap">
+          <table class="reftable">
+            <thead>
+              <tr><th>Parameter</th><th>Where computed</th><th>GUI column</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="param">IQ polarity</td><td class="src">lora_receiver.cpp :: demodulate</td><td class="gui">IQ polarity</td></tr>
+              <tr><td class="param">Preamble peak ratio</td><td class="src">demodulate_normal</td><td class="gui">Preamble peak</td></tr>
+              <tr><td class="param">SFD peak ratio</td><td class="src">demodulate_normal</td><td class="gui">SFD peak</td></tr>
+              <tr><td class="param">CFO (bins / Hz)</td><td class="src">linear fit / lora_observation.cpp</td><td class="gui">CFO (bins) &middot; CFO estimate (Hz)</td></tr>
+              <tr><td class="param">Drift (bins &middot; Hz per symbol)</td><td class="src">same linear fit</td><td class="gui">Drift (Hz/symbol)</td></tr>
+              <tr><td class="param">Capture offset (s)</td><td class="src">lora_observation.cpp</td><td class="gui">Capture offset (s)</td></tr>
+              <tr><td class="param">Payload length &middot; CR &middot; CRC-on &middot; header_valid</td><td class="src">decode_symbols header block</td><td class="gui">Header len &middot; CR &middot; Header</td></tr>
+              <tr><td class="param">LDRO &middot; LDRO ambiguous</td><td class="src">demodulate_normal two-hypothesis trial</td><td class="gui">LDRO</td></tr>
+              <tr><td class="param">Sync bins &middot; sync word</td><td class="src">demodulate_normal</td><td class="gui">Sync observed</td></tr>
+              <tr><td class="param">FEC disagreements</td><td class="src">unfec(), accumulated in decode_symbols</td><td class="gui">FEC mismatches</td></tr>
+              <tr><td class="param">Payload bytes &middot; CRC valid</td><td class="src">decode_symbols payload block</td><td class="gui">Payload &middot; Payload CRC</td></tr>
+              <tr><td class="param">LoRaWAN candidate + fields</td><td class="src">lorawan_inspect.hpp</td><td class="gui">LoRaWAN structure</td></tr>
+              <tr><td class="param">SNR (dB)</td><td class="src">fingerprint.cpp SNR gate</td><td class="gui">SNR (dB)</td></tr>
+              <tr><td class="param">CFO (ppm)</td><td class="src">fingerprint.cpp Moose estimator</td><td class="gui">CFO (ppm)</td></tr>
+              <tr><td class="param">IRR &middot; IQ eps &middot; IQ phi &middot; DC dBc &middot; DC angle</td><td class="src">fingerprint.cpp 3&times;3 LS fit</td><td class="gui">IRR (dB) &middot; IQ eps &middot; IQ phi (deg) &middot; DC (dBc) &middot; DC ang (deg)</td></tr>
+              <tr><td class="param">EVM (%) &middot; sync_corr</td><td class="src">fingerprint.cpp fit-quality gate</td><td class="gui">EVM (%) &middot; Sync corr</td></tr>
+              <tr><td class="param">Device ID</td><td class="src">lora_master.cpp matching</td><td class="gui">LoRa Master Emitters table</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <footer class="page">
+        <span>Read directly from <code>src/lora_receiver.cpp</code>, <code>fingerprint.cpp</code>,
+          <code>lora_observation.cpp</code>, <code>lorawan_inspect.hpp</code> and <code>lora_master.cpp</code>.</span>
+        <span>rfmon &middot; LoRa Milestone 2</span>
+      </footer>
+
+    </main>
+  </div>
+</div>
+
+<script>
+(function () {
+  // Chirp glyph: an actual upsweep, drawn once, not decoration-for-its-own-sake.
+  try {
+    var c = document.getElementById('chirp');
+    var ctx = c.getContext('2d');
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var w = c.clientWidth, h = c.clientHeight;
+    c.width = w * dpr; c.height = h * dpr;
+    ctx.scale(dpr, dpr);
+    var style = getComputedStyle(document.documentElement);
+    var accent = style.getPropertyValue('--accent').trim() || '#0b7d8c';
+    ctx.clearRect(0, 0, w, h);
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 1.6;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    var n = 400, f0 = 1.2, f1 = 14;
+    for (var i = 0; i <= n; i++) {
+      var t = i / n;
+      var freq = f0 + (f1 - f0) * t;
+      var phase = 2 * Math.PI * freq * t * t;
+      var x = 10 + t * (w - 20);
+      var y = h / 2 - Math.sin(phase) * (h * 0.34);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  } catch (e) {}
+
+  // Mermaid: theme-aware init.
+  try {
+    var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    var explicit = document.documentElement.getAttribute('data-theme');
+    if (explicit === 'dark') dark = true; else if (explicit === 'light') dark = false;
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: dark ? 'dark' : 'default',
+      securityLevel: 'loose',
+      fontFamily: 'IBM Plex Sans, sans-serif',
+      flowchart: { curve: 'basis', htmlLabels: true }
+    });
+  } catch (e) {}
+
+  // TOC active-section tracking.
+  try {
+    var links = Array.prototype.slice.call(document.querySelectorAll('nav.toc a'));
+    var map = {};
+    links.forEach(function (a) { map[a.getAttribute('href').slice(1)] = a; });
+    var sections = Array.prototype.slice.call(document.querySelectorAll('.section[id]'));
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) {
+          links.forEach(function (a) { a.classList.remove('active'); });
+          var link = map[entry.target.id];
+          if (link) link.classList.add('active');
+        }
+      });
+    }, { rootMargin: '-10% 0px -70% 0px' });
+    sections.forEach(function (s) { io.observe(s); });
+  } catch (e) {}
+})();
+</script>
