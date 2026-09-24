@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <filesystem>
 #include <map>
 #include <string>
 #include <vector>
@@ -29,6 +30,7 @@
 #include "scanner.hpp"
 #include "wifi_master.hpp"
 #include "wifi_gui.hpp"
+#include "security_gui.hpp"
 
 using namespace rfmon;
 
@@ -323,6 +325,10 @@ int main() {
     // to be the instant the window appears.
     Scanner scanner;
     bool scanner_started = false;
+    // Wi-Fi security monitor recording (opt-in). Applied on the next
+    // Connect/Reconnect, because the monitor is configured before start().
+    bool record_wifi_security = false;
+    std::string wifi_security_recording;  // path in use, "" when off
 
     int selftest_frames = -1;
     if (const char* env = std::getenv("RF_MONITOR_GUI_SELFTEST_FRAMES")) {
@@ -378,6 +384,22 @@ int main() {
             agc = false;
             gain_db = float(new_profile.default_gain_db);
             scanner.set_gain(gain_db);
+            wifi_security_recording.clear();
+            if (record_wifi_security) {
+                // One file per connection under data/wifi_security/, bounded
+                // to ~64 MB (current + one rotated file). Replay it with
+                // build/wifi_security_replay.
+                const std::filesystem::path dir = std::filesystem::path(PROJECT_ROOT_DIR) / "data" / "wifi_security";
+                std::error_code ec;
+                std::filesystem::create_directories(dir, ec);
+                std::time_t now = std::time(nullptr);
+                std::tm tm{};
+                localtime_r(&now, &tm);
+                char name[64];
+                std::strftime(name, sizeof(name), "wifi-security-%Y%m%d-%H%M%S.ndjson", &tm);
+                wifi_security_recording = (dir / name).string();
+            }
+            scanner.set_wifi_security_recording(wifi_security_recording);
             scanner.start();
             scanner_started = true;
         }
@@ -391,6 +413,15 @@ int main() {
         if (is_connected_to_selected) {
             ImGui::SameLine();
             ImGui::TextDisabled("(currently running)");
+        }
+        ImGui::SameLine();
+        ImGui::Checkbox("Record Wi-Fi security events", &record_wifi_security);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Writes every capture's coverage record and every FCS-valid frame to "
+                              "data/wifi_security/ (bounded to ~64 MB). Takes effect on the next Connect.");
+        if (scanner_started && record_wifi_security != !wifi_security_recording.empty()) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.2f, 1), "(applies on Reconnect)");
         }
         DeviceProfile profile = device_profile(selected_device);
 
@@ -411,6 +442,13 @@ int main() {
             ImGui::SameLine();
             ImGui::Text("| step: %s | cycles: %d", status.active_step_label.c_str(),
                         status.cycle_count);
+            if (status.wifi_fixed_channel) {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.36f, 0.68f, 0.93f, 1), "| fixed on channel %d", *status.wifi_fixed_channel);
+            } else if (status.wifi_fixed_channel_invalid) {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.2f, 1), "| requested channel not in this band: sweeping");
+            }
             if (status.last_overflow) {
                 ImGui::SameLine();
                 ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.1f, 1), "| USB overflow last cycle");
@@ -434,9 +472,35 @@ int main() {
             bool selected = active_band == modes[i].second;
             if (i > 0) ImGui::SameLine();
             if (ImGui::RadioButton(modes[i].first, selected)) {
+                if (active_band != modes[i].second) scanner.set_wifi_fixed_channel(std::nullopt);
                 scanner.set_active_band(modes[i].second);
                 active_band = modes[i].second;
             }
+        }
+
+        // --- Wi-Fi channel: sweep, or stay on one channel ---
+        // Fixed-channel monitoring observes one channel near-continuously
+        // (security plan, package B) instead of ~4 s per sweep.
+        if (active_band == BAND_WIFI_2G4 || active_band == BAND_WIFI_5G) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+            const auto& channels = active_band == BAND_WIFI_2G4 ? wifi_2g4_channels() : wifi_5g_channels();
+            const std::optional<int> fixed = scanner.wifi_fixed_channel();
+            const std::string preview = fixed ? "Channel " + std::to_string(*fixed) : std::string("Sweep all channels");
+            ImGui::SetNextItemWidth(190.0f);
+            if (ImGui::BeginCombo("Wi-Fi channel", preview.c_str())) {
+                if (ImGui::Selectable("Sweep all channels", !fixed)) scanner.set_wifi_fixed_channel(std::nullopt);
+                for (const auto& [ch, hz] : channels) {
+                    char label[48];
+                    std::snprintf(label, sizeof(label), "Channel %d (%.0f MHz)", ch, hz / 1e6);
+                    if (ImGui::Selectable(label, fixed && *fixed == ch)) scanner.set_wifi_fixed_channel(ch);
+                }
+                ImGui::EndCombo();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Stay on one channel: consecutive captures skip the retune, so far more of that "
+                                  "channel's air is sampled. Other channels are not heard at all meanwhile.");
         }
 
         // --- LoRa frequency lock (only meaningful in Sub-GHz mode) ---
@@ -588,6 +652,20 @@ int main() {
                     "Sampled, not exhaustive: only the channel currently being swept is heard.");
                 float wifi_packets_height = ImGui::GetContentRegionAvail().y * 0.5f;
                 draw_wifi_packet_table(scanner.wifi_packets(), wifi_packets_height);
+            }
+
+            // Collapsed by default; the header itself carries the totals.
+            ImGui::Spacing();
+            {
+                const auto security = scanner.wifi_security_snapshot();
+                if (ImGui::CollapsingHeader(wifi_security_header_label(*security).c_str())) {
+                    draw_wifi_security_panel(*security, scanner.wifi_security_queue_stats(),
+                                             scanner.wifi_security_run_id(), wifi_security_recording,
+                                             std::max(260.0f, ImGui::GetContentRegionAvail().y * 0.6f), nullptr,
+                                             [&](const std::string& action, const std::string& key) {
+                                                 scanner.wifi_security_command(action, key);
+                                             });
+                }
             }
 
             ImGui::Spacing();

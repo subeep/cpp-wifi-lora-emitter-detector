@@ -28,6 +28,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "wifi_frame.hpp"
@@ -40,6 +41,23 @@ struct DsssDecodeResult {
     std::optional<BeaconInfo> beacon;  // present only for beacon/probe-response
     size_t mpdu_len = 0;
     int chip_phase = 0;  // winning timing offset, for diagnostics
+
+    // General MPDU exposure for the passive security monitor
+    // (docs/WIFI_SECURITY_IMPLEMENTATION_PLAN.md, package A step 3).
+    // `mpdu` holds the recovered PSDU octets including the trailing FCS
+    // whenever the PLCP header passed its CRC at the one rate this chain
+    // demodulates and the whole PSDU fitted in the burst window - for ANY
+    // frame type, not just beacons. `fcs_valid` is checked here directly,
+    // independently of parse_beacon(); bytes alone are not acceptance, so
+    // consumers must gate on it. `beacon` above is unchanged: still only an
+    // FCS-valid beacon/probe response.
+    std::vector<uint8_t> mpdu;
+    bool rate_supported = false;  // PLCP SIGNAL 0x0A: 1 Mbps DBPSK, long preamble
+    bool psdu_complete = false;
+    bool fcs_valid = false;
+    // Furthest stage reached, for decode-yield diagnostics - mirrors
+    // OfdmDecodeResult::status. Never an identity claim.
+    std::string status = "No DSSS preamble";
 
     // For src/wifi_fingerprint.cpp - only populated when preamble_found.
     // Every Barker-despread symbol (the complex correlator output

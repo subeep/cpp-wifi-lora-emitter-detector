@@ -14,7 +14,7 @@ void draw_wifi_packet_table(const std::vector<WifiPacketRow>& packets, float hei
                                    ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
                                    ImGuiTableFlags_ScrollX;
     ImVec2 outer_size(0.0f, height);
-    if (!ImGui::BeginTable("wifi_packets_identity_v3", 22, flags, outer_size)) return;
+    if (!ImGui::BeginTable("wifi_packets_identity_v4", 23, flags, outer_size)) return;
 
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 80.0f);
@@ -25,6 +25,10 @@ void draw_wifi_packet_table(const std::vector<WifiPacketRow>& packets, float hei
     ImGui::TableSetupColumn("AP ch", ImGuiTableColumnFlags_WidthFixed, 55.0f);
     ImGui::TableSetupColumn("Advertised security", ImGuiTableColumnFlags_WidthFixed, 230.0f);
     ImGui::TableSetupColumn("Decode status", ImGuiTableColumnFlags_WidthFixed, 270.0f);
+    // MAC type/subtype of any FCS-valid MPDU (both receive chains);
+    // "short" marks a sub-beacon-length DSSS burst decoded for the
+    // security monitor only (never used for identity/fingerprints).
+    ImGui::TableSetupColumn("Frame type", ImGuiTableColumnFlags_WidthFixed, 200.0f);
     ImGui::TableSetupColumn("OFDM Mbps", ImGuiTableColumnFlags_WidthFixed, 95.0f);
     ImGui::TableSetupColumn("PSDU bytes", ImGuiTableColumnFlags_WidthFixed, 95.0f);
     ImGui::TableSetupColumn("Modulation", ImGuiTableColumnFlags_WidthFixed, 100.0f);
@@ -79,6 +83,14 @@ void draw_wifi_packet_table(const std::vector<WifiPacketRow>& packets, float hei
         ImGui::TextUnformatted(p.identity ? p.identity->security.c_str() : "Unknown");
         ImGui::TableNextColumn();
         ImGui::TextUnformatted(p.decode_status.empty() ? "Not attempted" : p.decode_status.c_str());
+        ImGui::TableNextColumn();
+        if (p.frame_type.empty()) ImGui::TextColored(dim, "--");
+        else if (p.security_decode_only) {
+            ImGui::Text("%s (short)", p.frame_type.c_str());
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Short DSSS burst decoded for the security monitor only: not used for "
+                                  "identity, fingerprints or beacon-cadence source counts.");
+        } else ImGui::TextUnformatted(p.frame_type.c_str());
         ImGui::TableNextColumn();
         if (p.ofdm_rate_mbps) ImGui::Text("%d", p.ofdm_rate_mbps); else ImGui::TextDisabled("--");
         ImGui::TableNextColumn();

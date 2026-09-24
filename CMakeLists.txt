@@ -310,11 +310,16 @@ target_include_directories(test_wifi_identity PRIVATE ${CMAKE_SOURCE_DIR}/src ${
 find_path(WIFI_EGL_INCLUDE_DIR EGL/egl.h)
 find_library(WIFI_EGL_LIBRARY EGL)
 if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
-  add_executable(test_wifi_gui tests/test_wifi_gui.cpp src/wifi_gui.cpp src/wifi_frame.cpp
+  add_executable(test_wifi_gui tests/test_wifi_gui.cpp src/wifi_gui.cpp src/wifi_frame.cpp src/security_gui.cpp
+      src/security/wifi_mac_frame.cpp src/security/wifi_frame_event.cpp src/security/wifi_security_io.cpp
+      src/security/wifi_security_state.cpp src/security/wifi_security_monitor.cpp
+      src/security/wifi_security_baseline.cpp src/security/wifi_security_incidents.cpp
       ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp
       ${IMGUI_DIR}/imgui_widgets.cpp ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
-  target_include_directories(test_wifi_gui PRIVATE ${CMAKE_SOURCE_DIR}/src ${IMGUI_DIR} ${WIFI_EGL_INCLUDE_DIR})
-  target_link_libraries(test_wifi_gui PRIVATE OpenGL::GL ${WIFI_EGL_LIBRARY} dl)
+  target_include_directories(test_wifi_gui PRIVATE ${CMAKE_SOURCE_DIR}/src ${IMGUI_DIR} ${WIFI_EGL_INCLUDE_DIR}
+      ${WIFI_JSON_INCLUDE_DIR})
+  target_compile_definitions(test_wifi_gui PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
+  target_link_libraries(test_wifi_gui PRIVATE OpenGL::GL ${WIFI_EGL_LIBRARY} Threads::Threads dl)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -478,3 +483,59 @@ target_link_libraries(test_lora_receiver PRIVATE PkgConfig::KISSFFT)
 enable_testing()
 add_test(NAME lora_receiver COMMAND test_lora_receiver)
 add_test(NAME lora_observation COMMAND test_lora_observation)
+
+# ---------------------------------------------------------------------------
+# Passive Wi-Fi security monitor - general 802.11 MAC frame parser (work
+# package A, docs/WIFI_SECURITY_IMPLEMENTATION_PLAN.md). Pure byte logic, no
+# radio. src/security/ is NOT covered by the src/*.cpp glob above, so every
+# consumer lists these sources explicitly. Test vectors are independently
+# generated (zlib CRC-32) and field-checked against tshark; see the test file.
+# ---------------------------------------------------------------------------
+set(WIFI_SECURITY_FRAME_SOURCES src/security/wifi_mac_frame.cpp src/wifi_frame.cpp)
+add_executable(test_wifi_security_frame tests/test_wifi_security_frame.cpp ${WIFI_SECURITY_FRAME_SOURCES})
+add_executable(wifi_frame_inspect tools/wifi_frame_inspect.cpp ${WIFI_SECURITY_FRAME_SOURCES})
+foreach(target test_wifi_security_frame wifi_frame_inspect)
+  target_include_directories(${target} PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+endforeach()
+target_compile_definitions(test_wifi_security_frame PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
+add_test(NAME wifi_security_frame COMMAND test_wifi_security_frame)
+# The production scanner names the frame type of every FCS-valid MPDU with
+# this parser (package A step 3), so each target that compiles scanner.cpp
+# needs it. wifi_scan_smoke copied band_smoke_test's source list earlier, so
+# it is listed separately. The DSSS test checks decoded frames with it too.
+# Package A step 4: the scanner also feeds the security monitor (event
+# contracts, NDJSON I/O, consumer state, queue/recorder thread).
+set(WIFI_SECURITY_MONITOR_SOURCES
+  src/security/wifi_mac_frame.cpp
+  src/security/wifi_frame_event.cpp
+  src/security/wifi_security_io.cpp
+  src/security/wifi_security_state.cpp
+  src/security/wifi_security_baseline.cpp
+  src/security/wifi_security_incidents.cpp
+  src/security/wifi_security_monitor.cpp)
+foreach(target rf_monitor_gui band_smoke_test wifi_scan_smoke)
+  target_sources(${target} PRIVATE ${WIFI_SECURITY_MONITOR_SOURCES})
+  target_include_directories(${target} PRIVATE ${WIFI_JSON_INCLUDE_DIR})
+endforeach()
+target_sources(test_wifi_dsss_rx PRIVATE src/security/wifi_mac_frame.cpp)
+
+# Offline security runner (package A step 4): replays monitor recordings or
+# receive-only IQ manifests through the same pipeline/state, no radio.
+set(WIFI_SECURITY_OFFLINE_SOURCES ${WIFI_SECURITY_MONITOR_SOURCES}
+  src/wifi_frame.cpp src/wifi_phy.cpp src/wifi_dsss_rx.cpp src/wifi_ofdm_rx.cpp)
+add_executable(wifi_security_replay tools/wifi_security_replay.cpp ${WIFI_SECURITY_OFFLINE_SOURCES})
+add_executable(test_wifi_security_events tests/test_wifi_security_events.cpp ${WIFI_SECURITY_OFFLINE_SOURCES})
+foreach(target wifi_security_replay test_wifi_security_events)
+  target_include_directories(${target} PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+  target_link_libraries(${target} PRIVATE PkgConfig::KISSFFT Threads::Threads)
+endforeach()
+target_compile_definitions(test_wifi_security_events PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
+add_test(NAME wifi_security_events COMMAND test_wifi_security_events)
+
+# Package B: parallel pipeline determinism, timeline, baselines, incidents,
+# monitor persistence (docs/WIFI_SECURITY_IMPLEMENTATION_PLAN.md).
+add_executable(test_wifi_security_baseline tests/test_wifi_security_baseline.cpp ${WIFI_SECURITY_OFFLINE_SOURCES})
+target_include_directories(test_wifi_security_baseline PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+target_link_libraries(test_wifi_security_baseline PRIVATE PkgConfig::KISSFFT Threads::Threads)
+target_compile_definitions(test_wifi_security_baseline PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
+add_test(NAME wifi_security_baseline COMMAND test_wifi_security_baseline)

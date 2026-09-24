@@ -20,6 +20,7 @@
 #include "lora_observation.hpp"
 #include "registry.hpp"
 #include "sdr_capture.hpp"
+#include "security/wifi_security_monitor.hpp"
 #include "wifi_master.hpp"
 
 namespace rfmon {
@@ -37,6 +38,8 @@ struct ScannerStatus {
     // Scanner::note_capture_health(). Distinct from `connected`: the
     // SDR handle is still alive, but samples have stopped flowing.
     bool rx_stalled = false;
+    std::optional<int> wifi_fixed_channel;  // set when a fixed-channel request is in effect
+    bool wifi_fixed_channel_invalid = false; // requested channel is not in the active band
 };
 
 // One detected Wi-Fi transmission - a single burst found by
@@ -56,8 +59,15 @@ struct WifiPacketRow {
     std::string decode_status;
     int ofdm_rate_mbps = 0;
     size_t psdu_length = 0;
-    bool fcs_valid = false;
+    bool fcs_valid = false;  // recovered MPDU passed its FCS (any frame type, DSSS or OFDM)
     std::string master_key;  // persistent BSSID or accepted fingerprint-cluster key
+    // MAC type/subtype of an FCS-valid MPDU, e.g. "Mgmt/Deauthentication"
+    // (security/wifi_mac_frame.hpp). Empty when nothing FCS-valid was recovered.
+    std::string frame_type;
+    // Short DSSS burst decoded for security analysis only: never offered to
+    // beacon-cadence clustering, identity recording or fingerprinting (see
+    // wifi_burst_policy.hpp), even when it decodes as a beacon.
+    bool security_decode_only = false;
 
     // RF fingerprint (see wifi_fingerprint.hpp) - unset when extraction
     // wasn't attempted for this row (OFDM without a usable L-LTF range,
@@ -116,6 +126,14 @@ public:
     void set_lora_lock_freq(std::optional<double> freq_hz);
     std::optional<double> lora_lock_freq() const;
 
+    // Fixed-channel Wi-Fi monitoring (security plan, package B): stay on one
+    // channel of the active Wi-Fi band instead of sweeping, so a channel is
+    // observed near-continuously rather than for ~4 s per sweep. nullopt =
+    // sweep all channels (default). A channel not in the active band's plan
+    // leaves the sweep unchanged; the status line reports it.
+    void set_wifi_fixed_channel(std::optional<int> channel);
+    std::optional<int> wifi_fixed_channel() const;
+
     // Explicit opt-in to the old experimental codecs; production never falls back.
     void set_lora_laboratory_mode(bool skip);
     bool lora_laboratory_mode() const;
@@ -155,6 +173,22 @@ public:
     std::vector<wifi_master::WifiMasterRow> wifi_master_snapshot() const;
     std::string wifi_storage_error() const { return wifi_master_.storage_error(); }
 
+    // Passive Wi-Fi security monitor (docs/WIFI_SECURITY_IMPLEMENTATION_PLAN.md,
+    // package A step 4): every Wi-Fi capture's coverage record and every
+    // FCS-valid MPDU are submitted to it without blocking the scan thread.
+    // Observations only - no detector rules exist yet.
+    std::shared_ptr<const wifi_security::SecuritySnapshot> wifi_security_snapshot() const;
+    wifi_security::QueueStats wifi_security_queue_stats() const;
+    const std::string& wifi_security_run_id() const { return security_run_id_; }
+    // Opt-in NDJSON recording of everything the monitor ingests, bounded to
+    // about `max_bytes` on disk (current file + one rotated ".1"). Replay it
+    // with tools/wifi_security_replay. Only takes effect before start();
+    // returns false if the scanner is already running.
+    bool set_wifi_security_recording(const std::string& path, uint64_t max_bytes = uint64_t(64) << 20);
+    // Baseline review actions ("baseline_freeze" / "baseline_unfreeze" /
+    // "baseline_reset"; key "" = all). Applied in order with ingested data.
+    bool wifi_security_command(const std::string& action, const std::string& key = "");
+
 private:
     void run();
     // Appends any energy-detected segment(s) found in this same
@@ -165,6 +199,11 @@ private:
     void run_lora_listen_step(double freq_hz, const DeviceProfile& profile, double threshold_db,
                                std::vector<Detection>& detections);
     DeviceRegistry& registry_for(const std::string& band);
+    // Coverage record for one Wi-Fi capture (security monitor input): what
+    // was requested, what the radio reported, and how its time is known.
+    wifi_security::CaptureRecord new_capture_record(const ScanStep& step, const DeviceProfile& profile,
+                                                    double requested_rate_hz, double requested_duration_s,
+                                                    const CaptureResult& capture);
     // Attempts to (re)connect sdr_, retrying a few times (X310
     // connections over Ethernet fail intermittently - see run()'s
     // comment). Updates status_.connected/error itself either way.
@@ -187,6 +226,7 @@ private:
     std::optional<double> gain_db_ = DEFAULT_GAIN_DB;
     bool gain_dirty_ = false;
     std::optional<double> lora_lock_freq_;
+    std::optional<int> wifi_fixed_channel_;
     bool lora_laboratory_mode_ = false;
     double lora_capture_seconds_ = LORA_LISTEN_DURATION_S;
     SdrDeviceType device_type_ = SdrDeviceType::B210;
@@ -212,6 +252,16 @@ private:
 
     lora_master::LoraMasterList lora_master_;
     wifi_master::WifiMasterList wifi_master_;
+
+    // Security monitor input. The run id is fixed per Scanner instance;
+    // radio_session_ increments on every successful radio (re)connect,
+    // because USRP device time restarts with each new handle.
+    std::string security_run_id_;
+    wifi_security::MonitorConfig security_config_;
+    std::unique_ptr<wifi_security::WifiSecurityMonitor> security_;
+    uint64_t security_capture_seq_ = 0;
+    uint64_t radio_session_ = 0;
+    bool running_ = false;
 
     int rx_fail_streak_ = 0;
     static constexpr int kRxStallThreshold = 3;

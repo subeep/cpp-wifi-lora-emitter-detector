@@ -1,6 +1,7 @@
 // Offscreen GUI smoke/interaction test. Renders the actual production Wi-Fi
 // tables with controlled fixtures, without starting Scanner or accessing a radio.
 #include "wifi_gui.hpp"
+#include "security_gui.hpp"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "backends/imgui_impl_opengl3.h"
@@ -59,6 +60,10 @@ int main(int argc, char** argv) {
     packets[1].identity=b; packets[1].decode_status="Decoded OFDM beacon/probe response";
     packets[1].ofdm_rate_mbps=6; packets[1].psdu_length=454; packets[1].fcs_valid=true;
     packets[0].decode_status="Decoded DSSS beacon/probe response"; packets[0].fcs_valid=true;
+    packets[0].frame_type="Mgmt/Beacon"; packets[1].frame_type="Mgmt/Probe response";
+    packets.push_back(packets[0]); packets[2].time="12:00:02"; packets[2].identity.reset();
+    packets[2].master_key.clear(); packets[2].frame_type="Mgmt/Deauthentication";
+    packets[2].security_decode_only=true; packets[2].decode_status="FCS-valid non-beacon frame";
     auto save=[&](const char* suffix) {
         if (argc<2) return;
         std::vector<unsigned char> pixels(1600*1000*3); glPixelStorei(GL_PACK_ALIGNMENT,1);
@@ -97,9 +102,113 @@ int main(int argc, char** argv) {
         if (i==1) save("-table.ppm"); if (i==7) save("-details.ppm");
         if (glGetError()!=GL_NO_ERROR) ++failures;
     }
+    // Security monitor panel, driven by a snapshot built from the
+    // independently generated MAC fixtures (tests/fixtures/wifi_security).
+    {
+        using namespace rfmon::wifi_security;
+        SecurityState st;
+        auto cap = [](uint64_t seq, const char* band, int ch, bool capped) {
+            CaptureRecord c; c.run_id = "gui-test"; c.capture_seq = seq; c.band = band; c.channel = ch;
+            c.channel_hz = ch < 20 ? 2407e6 + 5e6 * ch : 5000e6 + 5e6 * ch; c.sample_rate_hz = 20e6;
+            c.samples_received = 20000000; c.clock = ClockDomain::UsrpDevice; c.device_time_ns = 1000000000;
+            c.host_before_ns = int64_t(std::time(nullptr)) * 1000000000LL; c.host_after_ns = c.host_before_ns + 150000;
+            c.processed = true; c.burst_cap_reached = capped; c.analysed_samples = capped ? 9000000 : 20000000;
+            c.bursts_detected = capped ? 400 : 120; c.dsss_decode_attempts = 12; c.dsss_fcs_valid = 7;
+            c.ofdm_decode_attempts = 40; c.ofdm_fcs_valid = 22; return c;
+        };
+        CaptureRecord c6 = cap(1, "wifi_2g4", 6, false), c36 = cap(2, "wifi_5g", 36, true);
+        std::ifstream in(std::string(PROJECT_ROOT_DIR) + "/tests/fixtures/wifi_security/frames.hex");
+        std::string line; size_t sample = 0; int frames = 0;
+        while (std::getline(in, line)) {
+            auto tab = line.find('\t'); std::vector<uint8_t> b;
+            if (tab == std::string::npos || !from_hex(line.substr(tab + 1), b)) continue;
+            FrameEvent e = make_frame_event(frames % 2 ? c36 : c6, sample += 4000, 300, frames % 2 ? "OFDM" : "DSSS",
+                                            frames % 2 ? 6 : 1, frames % 3 == 0, b, true);
+            e.power_db = -20.0 - frames; st.ingest(e); ++frames;
+        }
+        st.ingest(c6); st.ingest(c36);
+        // Enough clean captures on channel 6 to close baseline windows, and one
+        // incident, so the Baselines and Incidents tabs render real content.
+        for (uint64_t k = 0; k < 25; ++k) {
+            CaptureRecord c = cap(10 + k, "wifi_2g4", 6, false);
+            c.device_time_ns = 2000000000LL + int64_t(k) * 1150000000LL;
+            st.ingest(c);
+        }
+        IncidentObservation obs;
+        obs.rule = "fixture_rule"; obs.rule_version = "0"; obs.config_version = "gui-test";
+        obs.severity = IncidentSeverity::Low; obs.confidence = IncidentConfidence::Low;
+        obs.band = "wifi_2g4"; obs.channel = 6; obs.claimed_source = "00:11:22:33:44:55";
+        obs.target = "ff:ff:ff:ff:ff:ff"; obs.numerator = 12; obs.denominator_analysed_s = 30;
+        obs.coverage_note = "test fixture, not a detection"; obs.benign_alternatives = {"AP reboot", "roaming"};
+        obs.host_ns = int64_t(std::time(nullptr)) * 1000000000LL;
+        st.observe(obs);
+        const SecuritySnapshot& snap = st.snapshot();
+        if (snap.frames_accepted < 25) { std::cerr << "security fixture snapshot too small\n"; ++failures; }
+        bool deauth_info = false;
+        for (const auto& p : snap.recent)
+            if (p.frame.is_management(mgmt::Deauthentication) && wifi_security_key_info(p).find("reason 7") != std::string::npos)
+                deauth_info = true;
+        if (!deauth_info) { std::cerr << "deauth key fields missing reason\n"; ++failures; }
+        if (wifi_security_header_label(snap).find("1 hit burst cap") == std::string::npos) {
+            std::cerr << "header label does not report burst-cap saturation\n"; ++failures;
+        }
+        QueueStats q; q.high_water = 3;
+        if (snap.baselines.empty() || snap.baselines[0].windows_closed < 2) {
+            std::cerr << "baseline fixture did not close windows\n"; ++failures;
+        }
+        int commands = 0;
+        SecurityCommandFn on_command = [&](const std::string&, const std::string&) { ++commands; };
+        const char* tabs[] = {"Coverage", "Coverage", "Frame types", "Frame types", "Recent frames"};
+        for (int i = 0; i < 14; ++i) {
+            ImGui_ImplOpenGL3_NewFrame(); ImGui::NewFrame();
+            ImGui::SetNextWindowPos(ImVec2(0,0)); ImGui::SetNextWindowSize(io.DisplaySize);
+            ImGui::Begin("Wi-Fi security GUI verification",nullptr,ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove);
+            ImGui::TextUnformatted(wifi_security_header_label(snap).c_str());
+            draw_wifi_security_panel(snap, q, "gui-test", "", 900, i < 5 ? tabs[i] : nullptr, on_command);
+            if (i == 7) {
+                for (auto* window : ImGui::GetCurrentContext()->Windows) {
+                    if (std::string(window->Name).find("wifi_security_recent") != std::string::npos) {
+                        io.AddMousePosEvent(window->Pos.x + 40, window->Pos.y + 32);
+                        io.AddMouseButtonEvent(0, true);
+                        break;
+                    }
+                }
+            }
+            if (i == 8) io.AddMouseButtonEvent(0, false);
+            // Opened inside the tab bar's ID scope, so query any open popup.
+            if (i == 12 && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) {
+                std::cerr << "Security frame detail popup did not open\n"; ++failures;
+            }
+            ImGui::End(); ImGui::Render();
+            if (ImGui::GetDrawData()->TotalVtxCount <= 0) ++failures;
+            glViewport(0,0,1600,1000); glClearColor(.1f,.1f,.1f,1); glClear(GL_COLOR_BUFFER_BIT);
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData()); glFinish();
+            if (i == 1) save("-security-coverage.ppm");
+            if (i == 3) save("-security-types.ppm");
+            if (i == 6) save("-security-recent.ppm");
+            if (i == 13) save("-security-details.ppm");
+            if (glGetError() != GL_NO_ERROR) ++failures;
+        }
+        // Baselines and Incidents tabs.
+        ImGui::CloseCurrentPopup();
+        for (int i = 0; i < 10; ++i) {
+            ImGui_ImplOpenGL3_NewFrame(); ImGui::NewFrame();
+            ImGui::SetNextWindowPos(ImVec2(0,0)); ImGui::SetNextWindowSize(io.DisplaySize);
+            ImGui::Begin("Wi-Fi security GUI verification",nullptr,ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove);
+            draw_wifi_security_panel(snap, q, "gui-test", "", 900, i < 2 ? "Baselines" : (i >= 7 ? "Incidents" : nullptr),
+                                     on_command);
+            ImGui::End(); ImGui::Render();
+            if (ImGui::GetDrawData()->TotalVtxCount <= 0) ++failures;
+            glViewport(0,0,1600,1000); glClearColor(.1f,.1f,.1f,1); glClear(GL_COLOR_BUFFER_BIT);
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData()); glFinish();
+            if (i == 5) save("-security-baselines.ppm");
+            if (i == 9) save("-security-incidents.ppm");
+            if (glGetError() != GL_NO_ERROR) ++failures;
+        }
+    }
     ImGui_ImplOpenGL3_Shutdown(); ImGui::DestroyContext();
     eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);
     eglDestroyContext(display,context); eglDestroySurface(display,surface); eglTerminate(display);
-    std::cout << "GUI render and identity interaction: " << (failures ? "FAIL" : "PASS") << '\n';
+    std::cout << "GUI render, identity and security interaction: " << (failures ? "FAIL" : "PASS") << '\n';
     return failures ? 1 : 0;
 }

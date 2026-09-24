@@ -12,6 +12,8 @@
 #include "lora_phy_std.hpp"
 #include "lora_capture.hpp"
 #include "spectrum.hpp"
+#include "security/wifi_mac_frame.hpp"
+#include "wifi_burst_pipeline.hpp"
 #include "wifi_dsss_rx.hpp"
 #include "wifi_ofdm_rx.hpp"
 #include "wifi_fingerprint.hpp"
@@ -97,24 +99,98 @@ std::vector<std::complex<float>> decimate_boxcar(const std::vector<std::complex<
 
 Scanner::Scanner()
     : lora_master_(std::string(PROJECT_ROOT_DIR) + "/data/lora_master"),
-      wifi_master_(std::string(PROJECT_ROOT_DIR) + "/data/wifi_master") {}
+      wifi_master_(std::string(PROJECT_ROOT_DIR) + "/data/wifi_master"),
+      security_run_id_(wifi_security::new_run_id()) {
+    security_config_.run_id = security_run_id_;
+    // Baselines and incidents survive restarts (bounded; see wifi_security_baseline.hpp).
+    security_config_.state_path = std::string(PROJECT_ROOT_DIR) + "/data/wifi_security/state.json";
+    security_ = std::make_unique<wifi_security::WifiSecurityMonitor>(security_config_);
+}
 
 Scanner::~Scanner() { stop(); }
 
 void Scanner::start() {
     stop_flag_ = false;
+    security_->start();
+    running_ = true;
     thread_ = std::thread(&Scanner::run, this);
 }
 
 void Scanner::stop() {
     stop_flag_ = true;
     if (thread_.joinable()) thread_.join();
+    // After the scan thread: everything it submitted is drained and recorded.
+    security_->stop();
+    running_ = false;
     std::lock_guard<std::mutex> lock(capture_mutex_);
     if (capture_pending_) {
         capture_save_directory_.clear();
         capture_pending_ = false;
         capture_message_ = "Pending capture save cancelled because scanning stopped.";
     }
+}
+
+wifi_security::CaptureRecord Scanner::new_capture_record(const ScanStep& step, const DeviceProfile& profile,
+                                                         double requested_rate_hz, double requested_duration_s,
+                                                         const CaptureResult& capture) {
+    wifi_security::CaptureRecord r;
+    r.run_id = security_run_id_;
+    r.capture_seq = ++security_capture_seq_;
+    r.radio_session = radio_session_;
+    r.band = step.band;
+    r.channel_hz = step.center_hz - WIFI_CHANNEL_CAPTURE_OFFSET_HZ;
+    r.channel = nearest_wifi_channel(step.band, r.channel_hz);
+    r.capture_center_hz = step.center_hz;
+    r.requested_rate_hz = requested_rate_hz;
+    r.sample_rate_hz = capture.sample_rate_hz;
+    r.requested_duration_s = requested_duration_s;
+    r.antenna = profile.antenna;
+    r.device = profile.device_args;
+    const CaptureTiming& t = capture.timing;
+    r.actual_rf_hz = t.actual_rf_hz;
+    r.actual_dsp_hz = t.actual_dsp_hz;
+    r.gain_db = t.gain_db;
+    r.samples_requested = t.requested_samples;
+    r.samples_received = capture.samples.size();
+    r.clock = t.device_time_valid ? wifi_security::ClockDomain::UsrpDevice
+              : (t.host_before_ns > 0 ? wifi_security::ClockDomain::HostOnly : wifi_security::ClockDomain::Unknown);
+    r.device_time_ns = t.device_time_ns;
+    r.host_before_ns = t.host_before_ns;
+    r.host_after_ns = t.host_after_ns;
+    for (const auto& o : t.overflows) {
+        wifi_security::OverflowMark m;
+        m.at_sample = o.at_sample;
+        if (o.resume_time_valid) m.resume_device_ns = o.resume_device_ns;
+        r.overflows.push_back(m);
+    }
+    r.timed_out = t.timed_out;
+    r.exception = t.exception;
+    r.retuned = t.retuned;
+    r.burst_cap = WIFI_SECURITY_MAX_BURSTS_PER_CAPTURE;
+    return r;
+}
+
+std::shared_ptr<const wifi_security::SecuritySnapshot> Scanner::wifi_security_snapshot() const {
+    return security_->snapshot();
+}
+
+wifi_security::QueueStats Scanner::wifi_security_queue_stats() const { return security_->queue_stats(); }
+
+bool Scanner::wifi_security_command(const std::string& action, const std::string& key) {
+    wifi_security::ControlCommand c;
+    c.action = action;
+    c.key = key;
+    c.host_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+    return security_->submit(std::move(c));
+}
+
+bool Scanner::set_wifi_security_recording(const std::string& path, uint64_t max_bytes) {
+    if (running_) return false;
+    security_config_.record_path = path;
+    security_config_.record_max_bytes = max_bytes;
+    security_ = std::make_unique<wifi_security::WifiSecurityMonitor>(security_config_);
+    return true;
 }
 
 void Scanner::request_lora_capture_save(const std::string& directory) {
@@ -182,6 +258,16 @@ void Scanner::set_lora_lock_freq(std::optional<double> freq_hz) {
 std::optional<double> Scanner::lora_lock_freq() const {
     std::lock_guard<std::mutex> lock(config_mutex_);
     return lora_lock_freq_;
+}
+
+void Scanner::set_wifi_fixed_channel(std::optional<int> channel) {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    wifi_fixed_channel_ = channel;
+}
+
+std::optional<int> Scanner::wifi_fixed_channel() const {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    return wifi_fixed_channel_;
 }
 
 void Scanner::set_lora_laboratory_mode(bool skip) {
@@ -281,6 +367,7 @@ bool Scanner::connect_sdr(const DeviceProfile& profile, std::optional<double> ga
         }
         try {
             sdr_ = std::make_unique<UsrpCapture>(profile.antenna, gain, 0, profile.device_args);
+            ++radio_session_;
             last_error = nullptr;
             break;
         } catch (const std::exception&) {
@@ -503,11 +590,13 @@ void Scanner::run() {
         std::string band;
         double threshold;
         std::optional<double> locked_freq;
+        std::optional<int> fixed_channel;
         {
             std::lock_guard<std::mutex> lock(config_mutex_);
             band = active_band_;
             threshold = threshold_db_;
             locked_freq = lora_lock_freq_;
+            fixed_channel = wifi_fixed_channel_;
             if (gain_dirty_) {
                 sdr_->set_gain(gain_db_);
                 gain_dirty_ = false;
@@ -535,6 +624,23 @@ void Scanner::run() {
         // since cycles themselves now come much faster.
         bool skip_wideband_scan = (band == BAND_SUB_GHZ) && locked_freq.has_value();
         std::vector<ScanStep> plan = skip_wideband_scan ? std::vector<ScanStep>{} : scan_plan_for_band(band);
+        // Fixed-channel Wi-Fi: keep only that channel's step. One step is
+        // then one cycle, and its consecutive captures skip the retune.
+        bool fixed_invalid = false;
+        if (fixed_channel && (band == BAND_WIFI_2G4 || band == BAND_WIFI_5G)) {
+            std::vector<ScanStep> only;
+            for (const auto& st : plan)
+                if (nearest_wifi_channel(band, st.center_hz - WIFI_CHANNEL_CAPTURE_OFFSET_HZ) == *fixed_channel)
+                    only.push_back(st);
+            if (only.empty()) fixed_invalid = true;
+            else plan = std::move(only);
+        }
+        {
+            std::lock_guard<std::mutex> lock(status_mutex_);
+            const bool wifi = band == BAND_WIFI_2G4 || band == BAND_WIFI_5G;
+            status_.wifi_fixed_channel = wifi && !fixed_invalid ? fixed_channel : std::nullopt;
+            status_.wifi_fixed_channel_invalid = wifi && fixed_invalid;
+        }
 
         for (const auto& step : plan) {
             if (stop_flag_.load()) break;
@@ -543,7 +649,7 @@ void Scanner::run() {
                 // cycle's steps and let the outer loop pick up the new
                 // band fresh next iteration.
                 std::lock_guard<std::mutex> lock(config_mutex_);
-                if (active_band_ != band) break;
+                if (active_band_ != band || wifi_fixed_channel_ != fixed_channel) break;
             }
 
             {
@@ -559,13 +665,28 @@ void Scanner::run() {
             // control channel and take the whole connection down.
             double request_rate = std::min(step.sample_rate_hz, profile.max_sample_rate_hz);
             std::vector<std::vector<std::complex<float>>> captures;
+            // Wi-Fi only: one coverage record per non-empty capture, kept
+            // index-aligned with `captures`. Empty/failed captures are
+            // submitted immediately - they are coverage too, just with
+            // nothing sampled.
+            const bool wifi_step = step.band == BAND_WIFI_2G4 || step.band == BAND_WIFI_5G;
+            std::vector<wifi_security::CaptureRecord> capture_records;
             double actual_rate = request_rate;
             for (int i = 0; i < SUB_CAPTURES_PER_STEP; ++i) {
-                auto [iq, rate, overflow] =
-                    sdr_->capture(step.center_hz, request_rate, SUB_CAPTURE_DURATION_S);
-                actual_rate = rate;
-                any_overflow = any_overflow || overflow;
-                if (!iq.empty()) captures.push_back(std::move(iq));
+                // Wi-Fi: consecutive captures on the same frequency skip the
+                // retune and settle delay (the LO has not moved), which was
+                // pure dead time between sub-captures. Sub-GHz/LoRa keep the
+                // historical always-retune behaviour.
+                CaptureResult cr = sdr_->capture_detailed(step.center_hz, request_rate, SUB_CAPTURE_DURATION_S,
+                                                          RETUNE_SETTLE_S, /*retune_always=*/!wifi_step);
+                actual_rate = cr.sample_rate_hz;
+                any_overflow = any_overflow || cr.overflow;
+                if (wifi_step) {
+                    auto rec = new_capture_record(step, profile, request_rate, SUB_CAPTURE_DURATION_S, cr);
+                    if (cr.samples.empty()) security_->submit(std::move(rec));
+                    else capture_records.push_back(std::move(rec));
+                }
+                if (!cr.samples.empty()) captures.push_back(std::move(cr.samples));
             }
             note_capture_health(!captures.empty());
             if (captures.empty()) continue;
@@ -631,34 +752,84 @@ void Scanner::run() {
                 double best_bw_dsss = 0.0, best_power_dsss = -200.0;
                 double best_bw_ofdm = 0.0, best_power_ofdm = -200.0;
                 int source_count = 0;
-                for (const auto& cap : captures) {
+                for (size_t ci = 0; ci < captures.size(); ++ci) {
+                    const auto& cap = captures[ci];
+                    wifi_security::CaptureRecord& rec = capture_records[ci];
+                    const auto processing_start = std::chrono::steady_clock::now();
+                    // Detect up to the security limit; the first
+                    // WIFI_MAX_BURSTS_PER_CAPTURE keep the full identity /
+                    // fingerprint / packet-row treatment, the rest are
+                    // security-only (see config.hpp).
                     auto bursts = wifi::detect_bursts(cap.data(), cap.size(), actual_rate,
-                                                       threshold, WIFI_MAX_BURSTS_PER_CAPTURE);
+                                                       threshold, WIFI_SECURITY_MAX_BURSTS_PER_CAPTURE);
+                    rec.bursts_detected = bursts.size();
+                    rec.burst_cap_reached = bursts.size() >= WIFI_SECURITY_MAX_BURSTS_PER_CAPTURE;
+                    rec.analysed_samples = rec.burst_cap_reached && !bursts.empty()
+                                               ? bursts.back().start + bursts.back().length
+                                               : cap.size();
                     // Beacon-train timing is per-capture: each capture
                     // has its own t0, so phases cannot be compared
                     // across them. Cluster within each and keep the
                     // most sources any one capture resolved.
                     std::vector<double> burst_starts_s, burst_powers_db;
-                    for (const auto& b : bursts) {
-                        std::vector<std::complex<float>> window(
-                            cap.begin() + long(b.start), cap.begin() + long(b.start + b.length));
-                        auto result = wifi::classify_modulation(window, actual_rate,
-                                                                  step.center_hz, real_channel_hz,
-                                                                  try_dsss);
-                        if (result.mod == wifi::ModClass::Unknown) continue;
+                    // The pure per-burst work (classification + narrowband
+                    // gate, and the applicable decode) runs in parallel;
+                    // everything order-dependent below stays sequential in
+                    // burst order. Shared with the offline security runner
+                    // (wifi_burst_pipeline.hpp).
+                    const std::vector<wifi::BurstWork> works = wifi::process_bursts(
+                        cap.data(), cap.size(), bursts, actual_rate, step.center_hz, real_channel_hz, try_dsss);
+                    for (size_t bi = 0; bi < bursts.size(); ++bi) {
+                        const auto& b = bursts[bi];
+                        const wifi::BurstWork& work = works[bi];
+                        const wifi::BurstClassification& cls = work.cls;
+                        if (cls.outcome == wifi::BurstClassification::Outcome::Unknown) { ++rec.bursts_unknown; continue; }
+                        if (cls.outcome == wifi::BurstClassification::Outcome::Narrowband) { ++rec.bursts_narrowband; continue; }
+                        const auto& result = cls.result;
+                        const double bw_hz = cls.bandwidth_hz;
+                        const double power_db = cls.power_db;
+                        const double duration_s = cls.duration_s;
+                        ++(result.mod == wifi::ModClass::DSSS ? rec.bursts_dsss : rec.bursts_ofdm);
 
-                        double bw_hz = wifi::estimate_occupied_bandwidth_hz(
-                            window.data(), window.size(), actual_rate);
-                        // Nothing in Wi-Fi is narrowband. Rejecting
-                        // sub-4MHz bursts here is what keeps Bluetooth,
-                        // BLE and Zigbee - all of which share this band
-                        // and can correlate against Barker - out of the
-                        // packet list. See MIN_WIFI_BANDWIDTH_HZ.
-                        if (bw_hz < wifi::MIN_WIFI_BANDWIDTH_HZ) continue;
-
-                        double power_db =
-                            wifi::estimate_mean_power_db(window.data(), window.size());
-                        double duration_s = double(b.length) / actual_rate;
+                        // Past the identity/packet-row limit: security-only.
+                        // Count the decode outcome, submit any FCS-valid frame,
+                        // and touch nothing else (no fingerprint, identity,
+                        // row or cadence input).
+                        if (bi >= WIFI_MAX_BURSTS_PER_CAPTURE) {
+                            ++rec.bursts_beyond_identity_limit;
+                            const std::vector<uint8_t>* mpdu = nullptr;
+                            std::string phy;
+                            int rate_mbps = 0;
+                            bool short_dsss = false;
+                            if (work.ofdm) {
+                                ++rec.ofdm_decode_attempts;
+                                if (work.ofdm->fcs_valid) {
+                                    ++rec.ofdm_fcs_valid;
+                                    mpdu = &work.ofdm->mpdu; phy = "OFDM"; rate_mbps = work.ofdm->rate_mbps;
+                                }
+                            } else if (work.dsss.policy.decode) {
+                                ++rec.dsss_decode_attempts;
+                                if (work.dsss.policy.security_only) ++rec.dsss_security_only_attempts;
+                                if (work.dsss.result->fcs_valid) {
+                                    ++rec.dsss_fcs_valid;
+                                    mpdu = &work.dsss.result->mpdu; phy = "DSSS"; rate_mbps = 1;
+                                    short_dsss = work.dsss.policy.security_only;
+                                }
+                            } else {
+                                ++rec.dsss_not_attempted;
+                            }
+                            if (mpdu) {
+                                auto ev = wifi_security::make_frame_event(rec, b.start, b.length, phy, rate_mbps,
+                                                                          short_dsss, *mpdu, true);
+                                ev.power_db = power_db;
+                                ev.bandwidth_hz = bw_hz;
+                                ev.duration_us = duration_s * 1e6;
+                                ev.confidence = result.confidence;
+                                if (security_->submit(std::move(ev))) ++rec.events_submitted;
+                                else ++rec.events_rejected_by_queue;
+                            }
+                            continue;
+                        }
 
                         // RF fingerprint extraction (see
                         // wifi_fingerprint.hpp - a separate engine from
@@ -683,13 +854,11 @@ void Scanner::run() {
                         }
 
                         if (result.mod == wifi::ModClass::OFDM) {
-                            // Energy segmentation can trim the preamble. Decode with
-                            // 4 us of context; OFDM beacons do not use the DSSS duration gate.
-                            const size_t pad = size_t(actual_rate * 4e-6);
-                            const size_t start = b.start > pad ? b.start - pad : 0;
-                            const size_t end = std::min(cap.size(), b.start + b.length + pad);
-                            ofdm_decode = wifi::decode_ofdm_burst(cap.data() + start, end - start,
-                                actual_rate, step.center_hz, real_channel_hz);
+                            // 4 us of context either side (wifi_burst_pipeline.hpp);
+                            // OFDM beacons do not use the DSSS duration gate.
+                            ofdm_decode = *work.ofdm;
+                            ++rec.ofdm_decode_attempts;
+                            if (ofdm_decode.fcs_valid) ++rec.ofdm_fcs_valid;
                             if (ofdm_decode.beacon) {
                                 packet_identity = ofdm_decode.beacon;
                                 fp_mac = packet_identity->bssid;
@@ -716,21 +885,39 @@ void Scanner::run() {
                         // hundred microseconds, so duration separates
                         // them cleanly and drops the candidate count by
                         // more than an order of magnitude.
-                        if (result.mod == wifi::ModClass::DSSS &&
-                            duration_s >= WIFI_BEACON_MIN_DURATION_S) {
+                        //
+                        // Shorter DSSS bursts (deauth, auth, association,
+                        // EAPOL, control frames) are now also decoded, but
+                        // for security analysis only - they stay out of the
+                        // cadence clustering, identity store and
+                        // fingerprinting. wifi::dsss_burst_policy() is the
+                        // single place that split is decided.
+                        //
+                        // A beacon-shaped DSSS burst is worth a full decode
+                        // attempt: it is the one frame that names its own
+                        // network. Cheap to try and self-validating - the FCS
+                        // either passes or the frame is discarded, so a
+                        // returned beacon is real identity rather than
+                        // inference.
+                        wifi::DsssBurstPolicy dsss_policy;
+                        std::optional<wifi::DsssDecodeResult> dsss_decode;
+                        if (result.mod == wifi::ModClass::DSSS) {
+                            dsss_policy = work.dsss.policy;
+                            dsss_decode = work.dsss.result;
+                            if (dsss_policy.decode) {
+                                ++rec.dsss_decode_attempts;
+                                if (dsss_policy.security_only) ++rec.dsss_security_only_attempts;
+                                if (dsss_decode->fcs_valid) ++rec.dsss_fcs_valid;
+                            } else {
+                                ++rec.dsss_not_attempted;
+                            }
+                        }
+                        if (dsss_policy.beacon_cadence) {
                             burst_starts_s.push_back(double(b.start) / actual_rate);
                             burst_powers_db.push_back(power_db);
-
-                            // A beacon-shaped DSSS burst is worth a full
-                            // decode attempt: it is the one frame that
-                            // names its own network. Cheap to try and
-                            // self-validating - the FCS either passes or
-                            // the frame is discarded, so a returned
-                            // beacon is real identity rather than
-                            // inference.
-                            auto dec = wifi::decode_dsss_burst(window.data(), window.size(),
-                                                                actual_rate, step.center_hz,
-                                                                real_channel_hz);
+                        }
+                        if (dsss_policy.identity_and_fingerprint) {
+                            const auto& dec = *dsss_decode;
                             if (dec.beacon) {
                                 decoded_beacons[dec.beacon->bssid] = *dec.beacon;
                                 // A decoded beacon's BSSID is a real,
@@ -758,6 +945,39 @@ void Scanner::run() {
                                                          packet_ts);
                         }
 
+                        // Security monitor input: every FCS-valid MPDU from
+                        // either chain, with its capture position and RF
+                        // context. submit() never blocks; a full queue drops
+                        // and the loss is reported downstream.
+                        {
+                            const wifi::DsssDecodeResult* d = dsss_decode && dsss_decode->fcs_valid ? &*dsss_decode : nullptr;
+                            const bool ofdm_ok = result.mod == wifi::ModClass::OFDM && ofdm_decode.fcs_valid;
+                            if (d || ofdm_ok) {
+                                auto ev = wifi_security::make_frame_event(
+                                    rec, b.start, b.length, d ? "DSSS" : "OFDM", d ? 1 : ofdm_decode.rate_mbps,
+                                    d && dsss_policy.security_only, d ? d->mpdu : ofdm_decode.mpdu, true);
+                                ev.power_db = power_db;
+                                ev.bandwidth_hz = bw_hz;
+                                ev.duration_us = duration_s * 1e6;
+                                ev.confidence = result.confidence;
+                                if (fp_opt) {
+                                    ev.fp_cfo_ppm = fp_opt->cfo_ppm;
+                                    ev.fp_dc_dbc = fp_opt->dc_dbc;
+                                    ev.fp_snr_db = fp_opt->snr_db;
+                                    ev.fp_evm_pct = fp_opt->evm_pct;
+                                    ev.fp_sync_corr = fp_opt->sync_corr;
+                                    if (result.mod == wifi::ModClass::OFDM) {
+                                        ev.fp_irr_db = fp_opt->irr_db;
+                                        ev.fp_iq_eps = fp_opt->iq_eps;
+                                        ev.fp_iq_phi_deg = fp_opt->iq_phi_deg;
+                                    }
+                                    if (fp_opt->gated_out) ev.fp_gate_reason = fp_opt->gate_reason;
+                                }
+                                if (security_->submit(std::move(ev))) ++rec.events_submitted;
+                                else ++rec.events_rejected_by_queue;
+                            }
+                        }
+
                         WifiPacketRow row;
                         row.time = ts;
                         row.freq_mhz = real_channel_hz / 1e6;
@@ -774,9 +994,27 @@ void Scanner::run() {
                             row.ofdm_rate_mbps = ofdm_decode.rate_mbps;
                             row.psdu_length = ofdm_decode.psdu_length;
                             row.fcs_valid = ofdm_decode.fcs_valid;
+                        } else if (dsss_decode) {
+                            row.fcs_valid = dsss_decode->fcs_valid;
+                            row.security_decode_only = dsss_policy.security_only;
+                            if (row.identity) row.decode_status = "Decoded DSSS beacon/probe response";
+                            else if (dsss_policy.security_only && dsss_decode->beacon)
+                                row.decode_status = "FCS-valid beacon/probe response (short burst; identity not recorded)";
+                            else row.decode_status = dsss_decode->status;
                         } else {
-                            row.decode_status = row.identity ? "Decoded DSSS beacon/probe response" : "Identity not decoded";
-                            row.fcs_valid = row.identity.has_value();
+                            row.decode_status = "Identity not decoded";
+                        }
+                        // Name the frame type of any FCS-valid MPDU, from
+                        // either receive chain. Bytes without a valid FCS
+                        // are never interpreted.
+                        {
+                            const std::vector<uint8_t>* mpdu = nullptr;
+                            if (result.mod == wifi::ModClass::OFDM && ofdm_decode.fcs_valid) mpdu = &ofdm_decode.mpdu;
+                            if (dsss_decode && dsss_decode->fcs_valid) mpdu = &dsss_decode->mpdu;
+                            if (mpdu) {
+                                auto frame = wifi_security::parse_mac_frame(mpdu->data(), mpdu->size());
+                                row.frame_type = wifi_security::frame_type_label(frame);
+                            }
                         }
                         row.master_key = std::move(master_key);
                         if (fp_opt.has_value()) {
@@ -820,6 +1058,10 @@ void Scanner::run() {
                             }
                         }
                     }
+                    rec.processed = true;
+                    rec.processing_s = std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                                     processing_start).count();
+                    security_->submit(std::move(rec));
                     auto srcs = wifi::find_beacon_sources(burst_starts_s, burst_powers_db);
                     source_count = std::max(source_count, int(srcs.size()));
                 }

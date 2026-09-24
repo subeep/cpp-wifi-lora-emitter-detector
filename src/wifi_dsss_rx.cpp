@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 namespace rfmon::wifi {
 
@@ -193,6 +194,7 @@ DsssDecodeResult decode_dsss_burst(const std::complex<float>* x, size_t n,
     }
     if (!found) return result;
     result.preamble_found = true;
+    result.status = "DSSS preamble; PLCP header incomplete";
 
     // Walk backward from the matched SFD to the true start of the
     // confirmed all-ones run (the search above only required
@@ -216,25 +218,56 @@ DsssDecodeResult decode_dsss_burst(const std::complex<float>* x, size_t n,
     std::vector<uint8_t> hdr_bits(bits.begin() + long(sfd_end), bits.begin() + long(sfd_end + 48));
     std::vector<uint8_t> hdr = bits_to_bytes_lsb_first(hdr_bits);
     auto plcp = parse_plcp_header(hdr.data(), hdr.size());
-    if (!plcp || !plcp->crc_valid) return result;
+    if (!plcp || !plcp->crc_valid) {
+        result.status = "DSSS preamble; PLCP header CRC failed";
+        return result;
+    }
     result.plcp = plcp;
+
+    // Only 1 Mbps DBPSK is demodulated here. A header announcing another
+    // rate (2 Mbps DQPSK, 5.5/11 Mbps CCK) is reported as such rather than
+    // read as 1 Mbps bits - which could only ever fail the FCS anyway.
+    result.rate_supported = plcp->signal == 0x0A;
+    if (!result.rate_supported) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "PLCP rate %.1f Mbps not decoded (1 Mbps only)", plcp->rate_mbps());
+        result.status = buf;
+        return result;
+    }
 
     // --- PSDU ---------------------------------------------------------
     // LENGTH is the PSDU duration in microseconds; at 1 Mbps one
     // microsecond is exactly one bit, so it doubles as the bit count.
     size_t psdu_bits = size_t(plcp->length_us);
     size_t body_start = sfd_end + 48;
-    if (psdu_bits < 8 || body_start + psdu_bits > bits.size()) return result;
+    if (psdu_bits < 8 || body_start + psdu_bits > bits.size()) {
+        result.status = "PSDU incomplete in burst window";
+        return result;
+    }
 
     std::vector<uint8_t> psdu_bits_v(bits.begin() + long(body_start),
                                       bits.begin() + long(body_start + psdu_bits));
     std::vector<uint8_t> mpdu = bits_to_bytes_lsb_first(psdu_bits_v);
     result.mpdu_len = mpdu.size();
+    result.psdu_complete = true;
+
+    // General FCS check for any frame type (the FCS is the last four
+    // octets, little-endian), independent of the beacon parser below.
+    if (mpdu.size() >= 4) {
+        const size_t body = mpdu.size() - 4;
+        const uint32_t want = uint32_t(mpdu[body]) | (uint32_t(mpdu[body + 1]) << 8) |
+                              (uint32_t(mpdu[body + 2]) << 16) | (uint32_t(mpdu[body + 3]) << 24);
+        result.fcs_valid = fcs32(mpdu.data(), body) == want;
+    }
 
     // parse_beacon() verifies the FCS itself and rejects anything that
     // is not a beacon or probe response.
     auto info = parse_beacon(mpdu.data(), mpdu.size());
     if (info && info->fcs_valid) result.beacon = info;
+    result.status = !result.fcs_valid ? "FCS failed"
+                    : result.beacon   ? "FCS-valid beacon/probe response"
+                                      : "FCS-valid non-beacon frame";
+    result.mpdu = std::move(mpdu);
     return result;
 }
 

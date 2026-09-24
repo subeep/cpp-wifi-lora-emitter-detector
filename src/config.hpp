@@ -344,6 +344,18 @@ constexpr int WIFI_PACKET_LOG_MAX = 1000;
 // sources on channels carrying six known BSSIDs.
 constexpr size_t WIFI_MAX_BURSTS_PER_CAPTURE = 400;
 
+// Security analysis limit (docs/WIFI_SECURITY_IMPLEMENTATION_PLAN.md,
+// package B). Measured on receive-only X310 1 s captures (2026-09-24): 429
+// and 872 bursts on busy 2.4 GHz channels, 2139 and 2460 on 5 GHz - so the
+// 400 limit above analysed as little as 16% of a sampled second. Bursts past
+// WIFI_MAX_BURSTS_PER_CAPTURE are still classified and decoded (in parallel,
+// wifi::process_bursts) and every FCS-valid frame reaches the security
+// monitor, but they do NOT feed identities, fingerprints, packet rows or
+// cadence clustering: those keep exactly their previous 400-burst scope.
+// 4000 leaves ~60% headroom over the busiest measured second; captures that
+// still reach it record their analysed span (CaptureRecord::analysed_samples).
+constexpr size_t WIFI_SECURITY_MAX_BURSTS_PER_CAPTURE = 4000;
+
 // Shortest burst still plausibly a 2.4GHz beacon. Beacons go out at the
 // lowest basic rate, which on 2.4GHz is normally 1 Mbps DBPSK, making a
 // typical ~250-byte beacon roughly 2ms; ordinary data frames are tens to
@@ -351,6 +363,22 @@ constexpr size_t WIFI_MAX_BURSTS_PER_CAPTURE = 400;
 // wifi::find_beacon_sources() - see the comment at that call site for
 // why feeding it everything makes the clustering fail outright.
 constexpr double WIFI_BEACON_MIN_DURATION_S = 1e-3;
+
+// Security decode path (docs/WIFI_SECURITY_IMPLEMENTATION_PLAN.md, package
+// A step 3). Deauthentication, disassociation, authentication, association,
+// control and EAPOL frames at 1 Mbps are far shorter than a beacon: the long
+// preamble + PLCP header alone is 192us, so a 30-octet deauth (header, reason,
+// FCS) is ~432us and a 14-octet ACK ~304us. Those bursts were never
+// decoded, because the only DSSS decode attempt sat behind the beacon gate
+// above. They are now decoded for security analysis only - see
+// wifi::dsss_burst_policy() for exactly which downstream uses each burst
+// length is eligible for. 250us leaves margin for energy segmentation
+// trimming the start of the SYNC field; anything shorter cannot hold a
+// complete long-preamble 1 Mbps MPDU with an FCS.
+constexpr double WIFI_SECURITY_DSSS_MIN_DURATION_S = 250e-6;
+// Off switch for the extra decode work, pending the processing-capacity
+// measurement in package B. Disabling it restores the previous behaviour.
+constexpr bool WIFI_SECURITY_DSSS_DECODE_ENABLED = true;
 
 // Append-only NDJSON fingerprint log (see fingerprint.hpp) - relative
 // to whatever directory the binary is launched from, matching how

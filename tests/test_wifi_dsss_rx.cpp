@@ -20,6 +20,10 @@
 #include <string>
 #include <vector>
 
+#include <chrono>
+
+#include "security/wifi_mac_frame.hpp"
+#include "wifi_burst_policy.hpp"
 #include "wifi_dsss_rx.hpp"
 #include "wifi_frame.hpp"
 
@@ -85,10 +89,26 @@ std::vector<uint8_t> build_beacon_mpdu(const std::string& bssid_bytes, const std
     return f;
 }
 
+// A 30-octet deauthentication MPDU (header, reason, FCS) from the 802.11
+// management-frame layout - the short-burst case the security path adds.
+std::vector<uint8_t> build_deauth_mpdu(uint16_t reason, uint16_t seq) {
+    std::vector<uint8_t> f = {0xC0, 0x00, 0x3A, 0x01};             // FC deauth, duration 314us
+    for (int i = 0; i < 6; ++i) f.push_back(0xFF);                 // A1 broadcast
+    const uint8_t ap[6] = {0x3c, 0x52, 0xa1, 0x0b, 0xbf, 0xd7};
+    f.insert(f.end(), ap, ap + 6);                                 // A2 transmitter
+    f.insert(f.end(), ap, ap + 6);                                 // A3 BSSID
+    f.push_back(uint8_t((seq << 4) & 0xF0)); f.push_back(uint8_t(seq >> 4));
+    f.push_back(uint8_t(reason & 0xFF)); f.push_back(uint8_t(reason >> 8));
+    uint32_t crc = fcs32(f.data(), f.size());
+    for (int i = 0; i < 4; ++i) f.push_back(uint8_t((crc >> (8 * i)) & 0xFF));
+    return f;
+}
+
 // Full 1 Mbps long-preamble PPDU as complex baseband at 22 Msps
 // (2 samples/chip).
 std::vector<std::complex<float>> build_dsss_ppdu(const std::vector<uint8_t>& mpdu, double snr_db,
-                                                  double cfo_hz, unsigned seed, int lead_symbols) {
+                                                  double cfo_hz, unsigned seed, int lead_symbols,
+                                                  uint8_t signal = 0x0A) {
     // --- assemble the pre-scrambler bit stream --------------------
     std::vector<uint8_t> plain;
     for (int i = 0; i < 128; ++i) plain.push_back(1);  // SYNC: 128 ones
@@ -96,7 +116,8 @@ std::vector<std::complex<float>> build_dsss_ppdu(const std::vector<uint8_t>& mpd
     for (int i = 15; i >= 0; --i) plain.push_back(uint8_t((0xF3A0u >> i) & 1u));
 
     // PLCP header: SIGNAL, SERVICE, LENGTH, then CRC-16 MSB-first.
-    uint8_t signal = 0x0A;   // 1 Mbps
+    // SIGNAL is 0x0A (1 Mbps) unless a test deliberately announces another
+    // rate; the payload bits below are always DBPSK either way.
     uint8_t service = 0x00;
     uint16_t length_us = uint16_t(mpdu.size() * 8);  // 1 bit per us at 1 Mbps
     uint8_t hdr[4] = {signal, service, uint8_t(length_us & 0xFF), uint8_t(length_us >> 8)};
@@ -264,6 +285,117 @@ int main() {
         auto r = decode_dsss_burst(iq.data(), iq.size(), 22e6);
         check(!r.beacon.has_value(), "dsss_no_beacon_from_noise",
               r.beacon ? ("fabricated " + r.beacon->bssid) : "correctly nothing");
+    }
+
+    // 6. Security path (docs/WIFI_SECURITY_IMPLEMENTATION_PLAN.md, package A
+    // step 3): a short non-beacon frame is exposed as FCS-checked bytes.
+    const std::string ap_mac = "3c:52:a1:0b:bf:d7";
+    {
+        auto mpdu = build_deauth_mpdu(7, 291);
+        check(mpdu.size() == 30, "deauth_mpdu_is_30_octets", std::to_string(mpdu.size()));
+        auto iq = build_dsss_ppdu(mpdu, 25.0, 10e3, 7, 7);
+        auto r = decode_dsss_burst(iq.data(), iq.size(), 22e6);
+        check(r.fcs_valid && r.psdu_complete && r.rate_supported, "deauth_fcs_valid", r.status);
+        check(r.mpdu == mpdu, "deauth_mpdu_bytes_exact", std::to_string(r.mpdu.size()) + " octets");
+        check(r.mpdu_len == r.mpdu.size(), "deauth_mpdu_len_consistent", std::to_string(r.mpdu_len));
+        check(!r.beacon, "deauth_not_a_beacon", r.beacon ? "beacon fabricated" : "no beacon");
+        check(r.status == "FCS-valid non-beacon frame", "deauth_status", r.status);
+        auto f = rfmon::wifi_security::parse_mac_frame(r.mpdu.data(), r.mpdu.size());
+        check(f.fcs_valid() && f.is_management(rfmon::wifi_security::mgmt::Deauthentication) &&
+                  f.management && f.management->reason_code == 7 && f.sequence_number == 291 &&
+                  f.bssid && rfmon::wifi_security::format_mac(*f.bssid) == ap_mac,
+              "deauth_parsed_from_decoded_bytes", rfmon::wifi_security::describe(f));
+        // On-air length: 192us preamble+header plus 240 PSDU bits.
+        const double on_air_s = (128 + 16 + 48 + 30 * 8) * 1e-6;
+        auto p = dsss_burst_policy(on_air_s, true);
+        check(p.decode && p.security_only && !p.beacon_cadence && !p.identity_and_fingerprint,
+              "deauth_length_is_security_only", std::to_string(on_air_s * 1e6) + " us");
+    }
+    // 7. The beacon path still exposes its bytes, with beacon identity unchanged.
+    {
+        auto mpdu = build_beacon_mpdu(bssid_raw, want_ssid, 9);
+        auto iq = build_dsss_ppdu(mpdu, 30.0, 0.0, 8, 7);
+        auto r = decode_dsss_burst(iq.data(), iq.size(), 22e6);
+        check(r.beacon && r.beacon->bssid == want_bssid && r.fcs_valid && r.mpdu == mpdu &&
+                  r.status == "FCS-valid beacon/probe response",
+              "beacon_bytes_and_identity", r.status);
+    }
+    // 8. A corrupted FCS keeps the bytes for diagnostics but never validates.
+    {
+        auto mpdu = build_deauth_mpdu(3, 12);
+        mpdu.back() ^= 0x5A;
+        auto iq = build_dsss_ppdu(mpdu, 30.0, 0.0, 9, 7);
+        auto r = decode_dsss_burst(iq.data(), iq.size(), 22e6);
+        check(r.psdu_complete && !r.fcs_valid && r.mpdu == mpdu && r.status == "FCS failed" && !r.beacon,
+              "corrupted_fcs_rejected", r.status);
+    }
+    // 9. A header announcing an undecoded rate stops at the header.
+    {
+        auto mpdu = build_deauth_mpdu(3, 13);
+        auto iq = build_dsss_ppdu(mpdu, 30.0, 0.0, 10, 7, /*signal=*/0x14);
+        auto r = decode_dsss_burst(iq.data(), iq.size(), 22e6);
+        check(r.plcp && r.plcp->crc_valid && !r.rate_supported && r.mpdu.empty() && !r.fcs_valid &&
+                  r.status.find("2.0 Mbps") != std::string::npos,
+              "unsupported_rate_reported", r.status);
+    }
+    // 10. A burst window that ends inside the PSDU says so.
+    {
+        auto mpdu = build_deauth_mpdu(3, 14);
+        auto iq = build_dsss_ppdu(mpdu, 30.0, 0.0, 11, 7);
+        iq.resize(size_t((7 + 128 + 16 + 48 + 120) * 22));  // stops half-way through the PSDU
+        auto r = decode_dsss_burst(iq.data(), iq.size(), 22e6);
+        check(r.plcp && !r.psdu_complete && r.mpdu.empty() && r.status == "PSDU incomplete in burst window",
+              "truncated_psdu_reported", r.status);
+    }
+    // 11. Short-frame yield vs SNR: the FCS must still make wrong frames impossible.
+    {
+        std::printf("\n=== 1 Mbps deauth (30 octets) decode yield vs SNR ===\n");
+        for (double snr : {20.0, 10.0, 5.0, 0.0, -3.0}) {
+            int ok = 0, wrong = 0;
+            constexpr int kTrials = 20;
+            for (int t = 0; t < kTrials; ++t) {
+                auto mpdu = build_deauth_mpdu(uint16_t(1 + t % 7), uint16_t(t));
+                auto iq = build_dsss_ppdu(mpdu, snr, 10e3, unsigned(500 + t), 7);
+                auto r = decode_dsss_burst(iq.data(), iq.size(), 22e6);
+                if (r.fcs_valid) (r.mpdu == mpdu ? ok : wrong)++;
+            }
+            std::printf("  SNR %5.1f dB -> %2d/%d decoded, %d WRONG\n", snr, ok, kTrials, wrong);
+            check(wrong == 0, "deauth_no_wrong_decode_at_" + std::to_string(int(snr)) + "db",
+                  std::to_string(wrong) + " wrong");
+            if (snr == 10.0) check(ok >= 18, "deauth_yield_at_10db", std::to_string(ok) + "/20");
+        }
+    }
+    // 12. Eligibility policy: security decoding never widens cadence,
+    // identity or fingerprint eligibility.
+    {
+        auto p_beacon = dsss_burst_policy(2e-3, true);
+        check(p_beacon.decode && p_beacon.beacon_cadence && p_beacon.identity_and_fingerprint &&
+                  !p_beacon.security_only, "policy_beacon_length", "unchanged treatment");
+        auto p_edge = dsss_burst_policy(rfmon::WIFI_BEACON_MIN_DURATION_S, true);
+        check(p_edge.beacon_cadence && !p_edge.security_only, "policy_beacon_boundary", "1 ms is beacon-eligible");
+        auto p_short = dsss_burst_policy(rfmon::WIFI_SECURITY_DSSS_MIN_DURATION_S, true);
+        check(p_short.decode && p_short.security_only && !p_short.beacon_cadence && !p_short.identity_and_fingerprint,
+              "policy_security_boundary", "250 us is security-only");
+        auto p_tiny = dsss_burst_policy(100e-6, true);
+        check(!p_tiny.decode && !p_tiny.beacon_cadence && !p_tiny.identity_and_fingerprint, "policy_too_short",
+              "cannot hold a complete MPDU");
+        auto p_off = dsss_burst_policy(432e-6, false);
+        check(!p_off.decode && !p_off.security_only, "policy_disabled_restores_previous", "no extra decode");
+        auto p_off_beacon = dsss_burst_policy(2e-3, false);
+        check(p_off_beacon.decode && p_off_beacon.beacon_cadence && p_off_beacon.identity_and_fingerprint,
+              "policy_disabled_keeps_beacon_path", "beacon path independent of the switch");
+    }
+    // 13. Cost of the extra work, reported rather than asserted - package B
+    // measures real processing capacity against live dead time.
+    {
+        auto mpdu = build_deauth_mpdu(7, 1);
+        auto iq = build_dsss_ppdu(mpdu, 20.0, 10e3, 42, 7);
+        constexpr int kRuns = 200;
+        auto t0 = std::chrono::steady_clock::now();
+        int decoded = 0;
+        for (int i = 0; i < kRuns; ++i) decoded += decode_dsss_burst(iq.data(), iq.size(), 22e6).fcs_valid;
+        double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / kRuns;
+        std::printf("\n  short-frame decode cost: %.1f us per burst at 22 Msps (%d/%d decoded)\n", us, decoded, kRuns);
     }
 
     if (failures > 0) {
