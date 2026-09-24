@@ -539,3 +539,21 @@ target_include_directories(test_wifi_security_baseline PRIVATE ${CMAKE_SOURCE_DI
 target_link_libraries(test_wifi_security_baseline PRIVATE PkgConfig::KISSFFT Threads::Threads)
 target_compile_definitions(test_wifi_security_baseline PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
 add_test(NAME wifi_security_baseline COMMAND test_wifi_security_baseline)
+
+# Wi-Fi capture/processing overlap (package B): the ordered processing lane
+# and a radio-free equivalence test of Scanner's inline vs lane processing.
+add_executable(test_serial_lane tests/test_serial_lane.cpp)
+target_include_directories(test_serial_lane PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_serial_lane PRIVATE Threads::Threads)
+add_test(NAME serial_lane COMMAND test_serial_lane)
+
+get_target_property(SCANNER_TEST_SOURCES band_smoke_test SOURCES)
+list(REMOVE_ITEM SCANNER_TEST_SOURCES tools/band_smoke_test.cpp)
+add_executable(test_scanner_wifi_lane tests/test_scanner_wifi_lane.cpp ${SCANNER_TEST_SOURCES})
+foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
+  get_target_property(value band_smoke_test ${property})
+  if(value)
+    set_target_properties(test_scanner_wifi_lane PROPERTIES ${property} "${value}")
+  endif()
+endforeach()
+add_test(NAME scanner_wifi_lane COMMAND test_scanner_wifi_lane)

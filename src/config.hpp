@@ -133,6 +133,18 @@ inline std::vector<ScanStep> scan_plan_for_band(const std::string& band) {
 // revisiting (e.g. fewer sub-captures per step) if that cycle time
 // turns out too slow in practice.
 constexpr int SUB_CAPTURES_PER_STEP = 4;
+
+// Wi-Fi capture/processing overlap (security plan, package B). A single
+// ordered worker processes Wi-Fi step N while the scan thread captures step
+// N+1, so the ~1.5 s of per-step spectrum + burst processing no longer
+// leaves the radio idle (measured duty 71-74% before). It needs two steps of
+// IQ resident: X310 at 20 Msps = 2 x 640 MB = 1.28 GB, allowed; B210 at 56 Msps
+// = 2 x 1.79 GB, over budget, so the B210 keeps the old inline path. Setting
+// the environment variable RFMON_WIFI_LANE=0 also disables it (A/B runs).
+constexpr size_t WIFI_LANE_MAX_IQ_BYTES = size_t(1536) << 20;
+// Niceness of the processing worker (and the process_bursts helpers it
+// spawns, which inherit it on Linux) so acquisition wins CPU contention.
+constexpr int WIFI_LANE_NICE = 5;
 constexpr double SUB_CAPTURE_DURATION_S = 1.0;
 constexpr double RETUNE_SETTLE_S = 0.1;
 

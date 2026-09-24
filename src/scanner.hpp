@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <map>
 #include <mutex>
@@ -21,6 +22,7 @@
 #include "registry.hpp"
 #include "sdr_capture.hpp"
 #include "security/wifi_security_monitor.hpp"
+#include "serial_lane.hpp"
 #include "wifi_master.hpp"
 
 namespace rfmon {
@@ -40,6 +42,12 @@ struct ScannerStatus {
     bool rx_stalled = false;
     std::optional<int> wifi_fixed_channel;  // set when a fixed-channel request is in effect
     bool wifi_fixed_channel_invalid = false; // requested channel is not in the active band
+    // Wi-Fi processing lane (capture/processing overlap; see config.hpp).
+    // While it is on, cycle_count and the Wi-Fi tables are published by the
+    // lane after processing, so they can trail active_step_label by one step.
+    bool wifi_lane_enabled = false;
+    double wifi_lane_wait_s = 0;  // cumulative time acquisition waited for the lane
+    size_t wifi_lane_high_water = 0;  // max jobs queued+running (bounded: one step + one marker)
 };
 
 // One detected Wi-Fi transmission - a single burst found by
@@ -93,6 +101,9 @@ struct WifiPacketRow {
 class Scanner {
 public:
     Scanner();
+    // Same as Scanner(), with every persistent store rooted at `data_root`
+    // instead of <project>/data (tests use a temporary directory).
+    explicit Scanner(const std::string& data_root);
     ~Scanner();
 
     void start();  // spawns the background thread and connects to the SDR
@@ -190,6 +201,7 @@ public:
     bool wifi_security_command(const std::string& action, const std::string& key = "");
 
 private:
+    friend struct ScannerTestAccess;  // radio-free tests (tests/test_scanner_wifi_lane.cpp)
     void run();
     // Appends any energy-detected segment(s) found in this same
     // capture to `detections` (see .cpp) - reuses the one capture
@@ -199,6 +211,26 @@ private:
     void run_lora_listen_step(double freq_hz, const DeviceProfile& profile, double threshold_db,
                                std::vector<Detection>& detections);
     DeviceRegistry& registry_for(const std::string& band);
+    // A Wi-Fi step handed from acquisition to the processing lane, or (with
+    // cycle_end set) the end-of-cycle status marker for a Wi-Fi cycle.
+    struct WifiStepJob {
+        ScanStep step{};
+        std::string band;
+        double threshold = 0, actual_rate = 0;
+        std::vector<std::vector<std::complex<float>>> captures;
+        std::vector<wifi_security::CaptureRecord> capture_records;  // index-aligned with captures
+        std::vector<wifi_security::CaptureRecord> empty_records;    // failed/empty captures, in capture order
+        bool cycle_end = false;
+        int cycle_count = 0;
+        bool last_overflow = false;
+    };
+    void run_wifi_lane_job(WifiStepJob& job);
+    // One step's spectrum/segments and (Wi-Fi) burst processing through the
+    // per-hop registry flush - the former inline block of run(), unchanged.
+    void process_step_captures(const ScanStep& step, const std::string& band, double threshold,
+                               double actual_rate, const std::vector<std::vector<std::complex<float>>>& captures,
+                               std::vector<wifi_security::CaptureRecord>& capture_records,
+                               std::vector<Detection>& detections);
     // Coverage record for one Wi-Fi capture (security monitor input): what
     // was requested, what the radio reported, and how its time is known.
     wifi_security::CaptureRecord new_capture_record(const ScanStep& step, const DeviceProfile& profile,
@@ -216,7 +248,10 @@ private:
     // locking - only the status_ write it produces does.
     void note_capture_health(bool got_data);
 
-    std::unique_ptr<UsrpCapture> sdr_;
+    std::unique_ptr<CaptureDevice> sdr_;
+    // Creates the radio in connect_sdr(). Unset in production (a UsrpCapture
+    // for the profile's device); tests install a fake radio here.
+    std::function<std::unique_ptr<CaptureDevice>(const DeviceProfile&, std::optional<double>)> device_factory_;
     std::thread thread_;
     std::atomic<bool> stop_flag_{false};
 

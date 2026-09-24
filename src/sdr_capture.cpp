@@ -91,12 +91,6 @@ void UsrpCapture::ensure_streamer(double sample_rate_hz) {
     }
 }
 
-std::tuple<std::vector<std::complex<float>>, double, bool> UsrpCapture::capture(
-    double center_hz, double sample_rate_hz, double duration_s, double settle_s) {
-    CaptureResult r = capture_detailed(center_hz, sample_rate_hz, duration_s, settle_s);
-    return {std::move(r.samples), r.sample_rate_hz, r.overflow};
-}
-
 namespace {
 int64_t host_now_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(

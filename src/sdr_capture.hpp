@@ -67,17 +67,33 @@ struct CaptureResult {
     CaptureTiming timing;
 };
 
-class UsrpCapture {
+// The capture operations Scanner needs, as an interface so tests can drive
+// Scanner::run() end to end with a fake radio. UsrpCapture is the only
+// production implementation; behaviour is unchanged by the indirection.
+class CaptureDevice {
+public:
+    virtual ~CaptureDevice() = default;
+    virtual CaptureResult capture_detailed(double center_hz, double sample_rate_hz, double duration_s,
+                                           double settle_s = RETUNE_SETTLE_S, bool retune_always = true) = 0;
+    // Change gain live (nullopt = switch to AGC). Safe to call between captures.
+    virtual void set_gain(std::optional<double> gain_db) = 0;
+
+    // Tune to center_hz and return duration_s worth of IQ samples.
+    // Returns (samples, actual_sample_rate_hz, overflow_flag) - a thin
+    // wrapper over capture_detailed, so both run the same stream logic.
+    std::tuple<std::vector<std::complex<float>>, double, bool> capture(
+        double center_hz, double sample_rate_hz, double duration_s,
+        double settle_s = RETUNE_SETTLE_S) {
+        CaptureResult r = capture_detailed(center_hz, sample_rate_hz, duration_s, settle_s);
+        return {std::move(r.samples), r.sample_rate_hz, r.overflow};
+    }
+};
+
+class UsrpCapture : public CaptureDevice {
 public:
     UsrpCapture(const std::string& antenna = ANTENNA,
                 std::optional<double> gain_db = DEFAULT_GAIN_DB, size_t channel = 0,
                 const std::string& device_args = DEVICE_ARGS);
-
-    // Tune to center_hz and return duration_s worth of IQ samples.
-    // Returns (samples, actual_sample_rate_hz, overflow_flag).
-    std::tuple<std::vector<std::complex<float>>, double, bool> capture(
-        double center_hz, double sample_rate_hz, double duration_s,
-        double settle_s = RETUNE_SETTLE_S);
 
     // capture() plus receive timing/continuity metadata. capture() is a
     // thin wrapper over this, so both run exactly the same stream logic.
@@ -86,10 +102,10 @@ public:
     // so there is nothing to settle. Default true keeps the historical
     // always-retune behaviour (LoRa and capture() rely on it).
     CaptureResult capture_detailed(double center_hz, double sample_rate_hz, double duration_s,
-                                   double settle_s = RETUNE_SETTLE_S, bool retune_always = true);
+                                   double settle_s = RETUNE_SETTLE_S, bool retune_always = true) override;
 
     // Change gain live (nullopt = switch to AGC). Safe to call between captures.
-    void set_gain(std::optional<double> gain_db);
+    void set_gain(std::optional<double> gain_db) override;
 
 private:
     void ensure_streamer(double sample_rate_hz);
