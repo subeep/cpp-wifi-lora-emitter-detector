@@ -16,7 +16,10 @@
 //  - Versioned and reviewable: reset bumps the version and clears history;
 //    each window records the version it was learned under.
 //  - Freeze during candidate incidents: while frozen, windows still close
-//    but are marked excluded, so a persistent attack cannot become "normal".
+//    but are marked excluded, so persistent suspicious activity cannot become
+//    "normal". There are two independent sources: the operator's freeze
+//    (set_frozen) and detector-rule holds (set_hold, one set of holders per
+//    key). Neither can release the other.
 //  - Restart does not pretend continuity: restored baselines keep their
 //    closed windows, but any partial window is discarded and the restore is
 //    flagged.
@@ -25,6 +28,7 @@
 
 #include <array>
 #include <cstdint>
+#include <initializer_list>
 #include <deque>
 #include <map>
 #include <optional>
@@ -57,7 +61,9 @@ struct BaselineLimits {
 
 struct BaselineWindow {
     uint32_t version = 1;
-    bool excluded = false;             // closed while frozen: not used for statistics
+    bool excluded = false;             // closed while frozen or held: not used for statistics
+    bool held = false;                 // a rule hold was active at any capture in this window
+    std::string exclusion_reason;      // "", "user_freeze", "rule_hold" or "user_freeze+rule_hold"
     int64_t first_host_ns = 0, last_host_ns = 0;
     double analysed_s = 0;
     uint64_t captures = 0;
@@ -76,8 +82,9 @@ struct BaselineSummary {
     std::optional<double> gain_db;
     uint32_t version = 1;
     bool frozen = false, restored = false;
-    uint64_t windows_closed = 0, windows_excluded = 0, captures_excluded = 0;
+    uint64_t windows_closed = 0, windows_excluded = 0, captures_excluded = 0, windows_held = 0;
     size_t windows_retained = 0, windows_included = 0;
+    std::vector<std::string> holders;  // active rule holds on this key
     double learned_analysed_s = 0, current_analysed_s = 0;
     std::array<RateStats, kBaselineMetrics> rates{};
 };
@@ -87,9 +94,21 @@ public:
     explicit BaselineStore(BaselineLimits limits = {}) : limits_(limits) {}
     // Accepted frame from capture (run, seq); counted when its capture record arrives.
     void note_frame(const FrameEvent& e, const MacFrame& f);
-    void note_capture(const CaptureRecord& c);
+    void note_capture(const CaptureRecord& c, bool usable = true);
+    void invalidate_pending();
     void set_frozen(const std::string& key, bool frozen);  // key "" = all
-    void reset(const std::string& key);                    // key "" = all
+    void reset(const std::string& key);                    // key "" = all; holds are kept
+    // Rule-driven learning hold on one key. Works for keys whose baseline does
+    // not exist yet, survives eviction and reset(), and is independent of the
+    // operator freeze: set_frozen never touches holds, set_hold never touches
+    // the freeze.
+    bool set_hold(const std::string& key, const std::string& holder, bool on);
+    const std::set<std::string>* holders(const std::string& key) const;
+    const BaselineSummary* summary(const std::string& key) const;
+    // Distribution over included windows (same filter as the per-metric
+    // rates) of the SUMMED per-window rate of several metrics, e.g. deauth +
+    // disassoc. Per-metric percentiles cannot be added; this sums first.
+    RateStats combined_rate(const std::string& key, std::initializer_list<BaselineMetric> metrics) const;
     std::vector<BaselineSummary> summaries() const;
     const std::deque<BaselineWindow>* windows(const std::string& key) const;
     uint64_t pending_dropped() const { return pending_dropped_; }
@@ -119,6 +138,7 @@ private:
     std::deque<std::pair<std::string, uint64_t>> pending_order_;
     uint64_t pending_dropped_ = 0;
     bool freeze_new_ = false;  // a global freeze also applies to baselines created later
+    std::map<std::string, std::set<std::string>> holds_;  // key -> holders (outside Baseline on purpose)
 };
 
 }  // namespace rfmon::wifi_security

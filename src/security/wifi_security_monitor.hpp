@@ -44,6 +44,7 @@ struct MonitorConfig {
     // persist_interval_s and on stop.
     std::string state_path;
     double persist_interval_s = 60.0;
+    uint64_t state_max_bytes = uint64_t(64) << 20;
 };
 
 struct QueueStats {

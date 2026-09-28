@@ -96,11 +96,12 @@ BaselineStore::Baseline& BaselineStore::baseline_for(const CaptureRecord& c) {
     b.meta.antenna = c.antenna;
     b.meta.device = c.device;
     b.meta.frozen = freeze_new_;
+    if (auto h = holds_.find(key); h != holds_.end()) b.meta.holders.assign(h->second.begin(), h->second.end());
     b.current.version = b.meta.version;
     return b;
 }
 
-void BaselineStore::note_capture(const CaptureRecord& c) {
+void BaselineStore::note_capture(const CaptureRecord& c, bool usable) {
     const auto pkey = std::make_pair(c.run_id, c.capture_seq);
     Pending pend;
     if (auto it = pending_.find(pkey); it != pending_.end()) {
@@ -109,10 +110,16 @@ void BaselineStore::note_capture(const CaptureRecord& c) {
         pending_order_.erase(std::remove(pending_order_.begin(), pending_order_.end(), pkey), pending_order_.end());
     }
     Baseline& b = baseline_for(c);
-    if (!c.processed || !c.contiguous() || c.analysed_seconds() <= 0) {
+    // A hold marks the enclosing window, even for captures that end up
+    // excluded as degraded: flood air must never be learned as normal.
+    if (auto h = holds_.find(b.meta.key); h != holds_.end() && !h->second.empty()) b.current.held = true;
+    if (!usable || !c.security_usable() || (c.events_submitted && pend.counts[size_t(BaselineMetric::Frames)] != c.events_submitted)) {
         ++b.meta.captures_excluded;
+        b.current.excluded = true;
+        b.current.exclusion_reason = "input_loss";
         return;  // degraded capture: its frames are not learned from
     }
+    if (b.meta.frozen) { b.current.excluded = true; b.current.exclusion_reason = "user_freeze"; }
     BaselineWindow& w = b.current;
     if (!w.captures) w.first_host_ns = c.host_before_ns;
     w.last_host_ns = c.host_before_ns;
@@ -130,9 +137,14 @@ void BaselineStore::note_capture(const CaptureRecord& c) {
 void BaselineStore::close_window(Baseline& b) {
     BaselineWindow w = b.current;
     w.version = b.meta.version;
-    w.excluded = b.meta.frozen;
+    w.excluded = w.excluded || b.meta.frozen || w.held;
+    w.exclusion_reason = !w.exclusion_reason.empty() ? w.exclusion_reason : b.meta.frozen && w.held ? "user_freeze+rule_hold"
+                         : b.meta.frozen         ? "user_freeze"
+                         : w.held                ? "rule_hold"
+                                                 : "";
     ++b.meta.windows_closed;
     if (w.excluded) ++b.meta.windows_excluded;
+    if (w.held) ++b.meta.windows_held;
     b.windows.push_back(w);
     while (b.windows.size() > limits_.max_windows) b.windows.pop_front();
     b.current = BaselineWindow{};
@@ -181,7 +193,13 @@ void BaselineStore::recompute(Baseline& b) {
 void BaselineStore::set_frozen(const std::string& key, bool frozen) {
     if (key.empty()) freeze_new_ = frozen;
     for (auto& [k, b] : baselines_)
-        if (key.empty() || k == key) b.meta.frozen = frozen;
+        if (key.empty() || k == key) {
+            b.meta.frozen = frozen;
+            if (frozen && b.current.captures) {
+                b.current.excluded = true;
+                b.current.exclusion_reason = "user_freeze";
+            }
+        }
 }
 
 void BaselineStore::reset(const std::string& key) {
@@ -193,9 +211,74 @@ void BaselineStore::reset(const std::string& key) {
         b.current.version = b.meta.version;
         b.current_transmitters.clear();
         b.meta.current_analysed_s = 0;
-        b.meta.windows_closed = b.meta.windows_excluded = b.meta.captures_excluded = 0;
+        b.meta.windows_closed = b.meta.windows_excluded = b.meta.captures_excluded = b.meta.windows_held = 0;
         recompute(b);
     }
+}
+
+void BaselineStore::invalidate_pending() {
+    pending_dropped_ += pending_.size();
+    pending_.clear(); pending_order_.clear();
+    for (auto& [key, b] : baselines_) {
+        b.current.excluded = true;
+        b.current.exclusion_reason = "input_loss";
+    }
+}
+
+bool BaselineStore::set_hold(const std::string& key, const std::string& holder, bool on) {
+    if (on) {
+        if (key.size() > 512 || holder.size() > 128 ||
+            (!holds_.count(key) && holds_.size() >= limits_.max_baselines) ||
+            (holds_.count(key) && !holds_[key].count(holder) && holds_[key].size() >= 8)) return false;
+        holds_[key].insert(holder);
+    }
+    else if (auto it = holds_.find(key); it != holds_.end()) {
+        it->second.erase(holder);
+        if (it->second.empty()) holds_.erase(it);
+    }
+    if (auto b = baselines_.find(key); b != baselines_.end()) {
+        if (on) b->second.current.held = true;
+        b->second.meta.holders.clear();
+        if (auto h = holds_.find(key); h != holds_.end()) b->second.meta.holders.assign(h->second.begin(), h->second.end());
+    }
+    return true;
+}
+
+const std::set<std::string>* BaselineStore::holders(const std::string& key) const {
+    auto it = holds_.find(key);
+    return it == holds_.end() ? nullptr : &it->second;
+}
+
+const BaselineSummary* BaselineStore::summary(const std::string& key) const {
+    auto it = baselines_.find(key);
+    return it == baselines_.end() ? nullptr : &it->second.meta;
+}
+
+RateStats BaselineStore::combined_rate(const std::string& key, std::initializer_list<BaselineMetric> metrics) const {
+    RateStats s;
+    auto it = baselines_.find(key);
+    if (it == baselines_.end()) return s;
+    const Baseline& b = it->second;
+    std::vector<double> v;
+    for (const auto& w : b.windows) {
+        if (w.excluded || w.version != b.meta.version || w.analysed_s <= 0) continue;  // recompute()'s filter
+        uint64_t n = 0;
+        for (auto m : metrics) n += w.counts[size_t(m)];
+        v.push_back(double(n) / w.analysed_s);
+    }
+    if (v.empty()) return s;
+    std::sort(v.begin(), v.end());
+    double sum = 0;
+    for (double x : v) sum += x;
+    auto rank = [&](double q) {
+        size_t idx = size_t(std::ceil(q * double(v.size())));
+        return v[std::min(v.size() - 1, idx ? idx - 1 : 0)];
+    };
+    s.mean = sum / double(v.size());
+    s.p50 = rank(0.5);
+    s.p95 = rank(0.95);
+    s.max = v.back();
+    return s;
 }
 
 std::vector<BaselineSummary> BaselineStore::summaries() const {
@@ -216,7 +299,8 @@ json BaselineStore::export_json() const {
         for (const auto& w : b.windows) {
             json counts = json::object();
             for (size_t i = 0; i < kBaselineMetrics; ++i) counts[baseline_metric_name(BaselineMetric(i))] = w.counts[i];
-            ws.push_back({{"version", w.version}, {"excluded", w.excluded}, {"first_host_ns", w.first_host_ns},
+            ws.push_back({{"version", w.version}, {"excluded", w.excluded}, {"held", w.held},
+                          {"exclusion_reason", w.exclusion_reason}, {"first_host_ns", w.first_host_ns},
                           {"last_host_ns", w.last_host_ns}, {"analysed_s", w.analysed_s}, {"captures", w.captures},
                           {"counts", counts}});
         }
@@ -224,15 +308,20 @@ json BaselineStore::export_json() const {
                   {"sample_rate_hz", b.meta.sample_rate_hz}, {"antenna", b.meta.antenna}, {"device", b.meta.device},
                   {"version", b.meta.version}, {"frozen", b.meta.frozen}, {"windows_closed", b.meta.windows_closed},
                   {"windows_excluded", b.meta.windows_excluded}, {"captures_excluded", b.meta.captures_excluded},
-                  {"windows", ws}};
+                  {"windows_held", b.meta.windows_held}, {"windows", ws}};
         if (b.meta.gain_db) o["gain_db"] = *b.meta.gain_db;
         arr.push_back(o);
     }
-    return {{"schema", 1}, {"window_analysed_s", limits_.window_analysed_s}, {"baselines", arr}};
+    json holds = json::object();
+    for (const auto& [k, hs] : holds_) holds[k] = std::vector<std::string>(hs.begin(), hs.end());
+    return {{"schema", 1}, {"window_analysed_s", limits_.window_analysed_s}, {"baselines", arr}, {"holds", holds}};
 }
 
 size_t BaselineStore::import_json(const json& j) {
     size_t restored = 0;
+    if (auto h = j.find("holds"); h != j.end() && h->is_object())
+        for (auto it = h->begin(); it != h->end(); ++it)
+            for (const auto& holder : it.value()) set_hold(it.key(), holder.get<std::string>(), true);
     if (!j.contains("baselines") || !j.at("baselines").is_array()) return 0;
     for (const auto& o : j.at("baselines")) {
         Baseline b;
@@ -248,11 +337,16 @@ size_t BaselineStore::import_json(const json& j) {
         b.meta.windows_closed = o.value("windows_closed", uint64_t(0));
         b.meta.windows_excluded = o.value("windows_excluded", uint64_t(0));
         b.meta.captures_excluded = o.value("captures_excluded", uint64_t(0));
+        b.meta.windows_held = o.value("windows_held", uint64_t(0));
         b.meta.restored = true;
+        if (auto h = holds_.find(b.meta.key); h != holds_.end()) b.meta.holders.assign(h->second.begin(), h->second.end());
         for (const auto& wj : o.value("windows", json::array())) {
             BaselineWindow w;
             w.version = wj.value("version", 1u);
             w.excluded = wj.value("excluded", false);
+            w.held = wj.value("held", false);
+            w.excluded = w.excluded || w.held;
+            w.exclusion_reason = wj.value("exclusion_reason", std::string(w.excluded ? "user_freeze" : ""));
             w.first_host_ns = wj.value("first_host_ns", int64_t(0));
             w.last_host_ns = wj.value("last_host_ns", int64_t(0));
             w.analysed_s = wj.value("analysed_s", 0.0);

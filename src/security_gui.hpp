@@ -1,8 +1,8 @@
 // GUI for the passive Wi-Fi security monitor (package A step 4 output).
 //
-// Shows observations and coverage only. No detector rules exist yet, so
-// nothing here is an alert, and the wording avoids implying one: a deauth
-// in the list is a received frame, not an attack.
+// Shows observations, coverage and suspected management-frame flood incidents;
+// raw frames remain observations; a suspected incident does not establish
+// authenticated sender identity or successful service disruption.
 #pragma once
 
 #include <functional>

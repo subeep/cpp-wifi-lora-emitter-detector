@@ -142,3 +142,53 @@ Begin with **Package A** as the first reviewable implementation task. Complete i
 1. [Cisco: 802.11w Protected Management Frames](https://www.cisco.com/c/en/us/td/docs/wireless/controller/technotes/5700/software/release/ios_xe_33/11rkw_DeploymentGuide/b_802point11rkw_deployment_guide_cisco_ios_xe_release33_chapter_0100.pdf) — distinguishes unicast protection and broadcast/multicast integrity/replay protection.
 2. [Wireshark: IEEE 802.11 field reference](https://www.wireshark.org/docs/dfref/w/wlan.html) — independent field names/layout cross-checks; implementation should also use the applicable IEEE 802.11 specification for normative semantics.
 3. [Suricata: thresholding](https://docs.suricata.io/en/latest/rules/thresholding.html) — useful precedent for keeping detection thresholds and alert-output limits distinct, not a Wi-Fi detector supplied by this project.
+
+## Implementation update — 2026-09-25
+
+The parser/event/baseline/GUI foundation and capture-processing lane are now in
+place. The first management-frame flood rule has been added with coverage-aware
+learning, incident lifecycle hardening and evidence inspection. The executable
+behavior and provisional defaults are documented in
+[WIFI_SECURITY_FLOOD.md](WIFI_SECURITY_FLOOD.md).
+Replay/TSF detection, live threshold calibration and independent impact
+corroboration remain future work; the original roadmap above is historical.
+
+## Implementation update — 2026-09-28
+
+The first replay milestone is implemented: bounded historical-beacon matching
+with an intervening newer TSF, coverage/device-time gating, inspectable three-frame
+evidence, live/offline integration, GUI diagnostics and persisted incidents.
+See [WIFI_SECURITY_BEACON_REPLAY.md](WIFI_SECURITY_BEACON_REPLAY.md) for executable
+semantics, limits, test commands and the hardware acceptance protocol.
+
+Progress and next gates:
+
+1. Implemented: parser/event/baseline foundation and management disconnect flood.
+2. Implemented: conservative historical-beacon replay rule and offline regression
+   tests. A backward TSF alone is reacquisition, not an attack verdict.
+3. Next: USRP receive-only reception/coverage campaign, then isolated labelled
+   historical-beacon tests with independent RF reference and captured IQ.
+4. Before deployment calibration: held-out positive/negative sessions, per-PHY
+   reception and detection recall, false alerts per observed hour, classification
+   confusion, resource limits and multi-day benign soak.
+5. Later: disconnect replay correlation, calibrated TSF anomaly rules and
+   encrypted-counter context. These are not covered by the new beacon rule.
+
+The 2026-09-25 statement that all replay detection is future work is superseded
+by this scoped milestone. No claim of exhaustive security classification or
+hardware validation is made. LoRa remains outside this work.
+
+## Hardware progress — 2026-09-28
+
+Completed the first receive-only X310 campaign: 73,256 FCS-valid frames across
+channels 36 and 11; 2,429 channel 11 beacons evaluated (1,702 DSSS, 727 OFDM).
+No recorded overflow, queue rejection or incidents; live/offline snapshots agree.
+Ten offline derived real-packet cases passed. These results do not constitute an
+over-the-air attack test or a calibrated false-positive/recall measurement.
+
+A short IQ fixture decoded successfully, but its manifest lacks device-time
+anchors and is ineligible for replay timing. Next tooling gate is device-time-
+aware IQ capture, followed by isolated ESP32/reference-receiver validation and a
+longer held-out campaign. User has an ESP32-S3 Heltec-style V3 but no shield box.
+Details, limitations, artifacts and commands:
+[hardware validation report](WIFI_SECURITY_HARDWARE_VALIDATION_2026-09-28.md).

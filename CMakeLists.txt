@@ -313,7 +313,7 @@ if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
   add_executable(test_wifi_gui tests/test_wifi_gui.cpp src/wifi_gui.cpp src/wifi_frame.cpp src/security_gui.cpp
       src/security/wifi_mac_frame.cpp src/security/wifi_frame_event.cpp src/security/wifi_security_io.cpp
       src/security/wifi_security_state.cpp src/security/wifi_security_monitor.cpp
-      src/security/wifi_security_baseline.cpp src/security/wifi_security_incidents.cpp
+      src/security/wifi_security_baseline.cpp src/security/wifi_security_incidents.cpp src/security/wifi_security_flood.cpp src/security/wifi_security_beacon_replay.cpp
       ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp
       ${IMGUI_DIR}/imgui_widgets.cpp ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
   target_include_directories(test_wifi_gui PRIVATE ${CMAKE_SOURCE_DIR}/src ${IMGUI_DIR} ${WIFI_EGL_INCLUDE_DIR}
@@ -512,6 +512,7 @@ set(WIFI_SECURITY_MONITOR_SOURCES
   src/security/wifi_security_state.cpp
   src/security/wifi_security_baseline.cpp
   src/security/wifi_security_incidents.cpp
+  src/security/wifi_security_flood.cpp src/security/wifi_security_beacon_replay.cpp
   src/security/wifi_security_monitor.cpp)
 foreach(target rf_monitor_gui band_smoke_test wifi_scan_smoke)
   target_sources(${target} PRIVATE ${WIFI_SECURITY_MONITOR_SOURCES})
@@ -557,3 +558,13 @@ foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
   endif()
 endforeach()
 add_test(NAME scanner_wifi_lane COMMAND test_scanner_wifi_lane)
+
+add_executable(test_wifi_security_flood tests/test_wifi_security_flood.cpp ${WIFI_SECURITY_OFFLINE_SOURCES})
+target_include_directories(test_wifi_security_flood PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+target_link_libraries(test_wifi_security_flood PRIVATE PkgConfig::KISSFFT Threads::Threads)
+add_test(NAME wifi_security_flood COMMAND test_wifi_security_flood)
+
+add_executable(test_wifi_security_beacon_replay tests/test_wifi_security_beacon_replay.cpp ${WIFI_SECURITY_OFFLINE_SOURCES})
+target_include_directories(test_wifi_security_beacon_replay PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+target_link_libraries(test_wifi_security_beacon_replay PRIVATE PkgConfig::KISSFFT Threads::Threads)
+add_test(NAME wifi_security_beacon_replay COMMAND test_wifi_security_beacon_replay)

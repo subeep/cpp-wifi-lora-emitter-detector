@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -96,6 +97,11 @@ struct CaptureRecord {
         if (sample_rate_hz <= 0) return 0.0;
         if (analysed_samples > 0) return double(std::min(analysed_samples, samples_received)) / sample_rate_hz;
         return burst_cap_reached ? 0.0 : observed_seconds();
+    }
+    // Complete detector input is required for learning and declaring quiet.
+    bool security_usable() const {
+        return processed && contiguous() && !burst_cap_reached && events_rejected_by_queue == 0 &&
+               std::isfinite(sample_rate_hz) && sample_rate_hz > 0 && analysed_seconds() > 0;
     }
     bool contiguous() const { return overflows.empty() && !timed_out && !exception && samples_received > 0; }
 };

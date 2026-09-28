@@ -7,7 +7,12 @@ namespace rfmon::wifi_security {
 using nlohmann::json;
 
 SecurityState::SecurityState(StateLimits limits)
-    : limits_(limits), baselines_(limits.baseline), incidents_(limits.incidents) {}
+    : limits_(limits), baselines_(limits.baseline), incidents_(limits.incidents), flood_(limits.flood), beacon_replay_(limits.beacon_replay) {
+    snap_.beacon_replay_enabled = limits.beacon_replay.enabled;
+    snap_.beacon_replay_config = beacon_replay_.config_version();
+    snap_.flood_enabled = limits.flood.enabled;
+    snap_.flood_config = flood_.config_version();
+}
 
 void SecurityState::refresh_baselines() {
     snap_.baselines = baselines_.summaries();
@@ -92,10 +97,19 @@ void SecurityState::ingest(const CaptureRecord& c) {
     cov.events_rejected_by_queue += c.events_rejected_by_queue;
     cov.bursts_beyond_identity_limit += c.bursts_beyond_identity_limit;
     note_timeline(c, cov);
-    baselines_.note_capture(c);
+    auto outcome = flood_.finish_capture(c, baselines_, incidents_);
+    snap_.flood_evaluations = flood_.evaluations();
+    snap_.flood_excluded_captures = flood_.excluded();
+    auto replay = beacon_replay_.finish_capture(c, incidents_);
+    snap_.beacon_replay_evaluated = beacon_replay_.evaluated();
+    snap_.beacon_replay_excluded = beacon_replay_.excluded();
+    snap_.beacon_replay_forgotten = beacon_replay_.forgotten();
+    outcome.observed_incidents.insert(replay.observed_incidents.begin(), replay.observed_incidents.end());
+    baselines_.note_capture(c, outcome.usable && replay.observed_incidents.empty());
+    refresh_incidents();
     refresh_baselines();
-    if (c.processed && incidents_.open_count()) {
-        incidents_.note_analysed(c.band, c.channel, c.analysed_seconds());
+    if (outcome.usable && replay.usable && incidents_.open_count()) {
+        incidents_.note_analysed(c.band, c.channel, c.analysed_seconds(), &outcome.observed_incidents, BaselineStore::key_for(c));
         refresh_incidents();
     }
 }
@@ -123,6 +137,8 @@ json SecurityState::export_persistent() const {
 }
 
 void SecurityState::import_persistent(const json& j) {
+    flood_.interrupt();
+    beacon_replay_.interrupt();
     if (j.contains("baselines")) snap_.baselines_restored = baselines_.import_json(j.at("baselines"));
     if (j.contains("incidents")) snap_.incidents_restored = incidents_.import_json(j.at("incidents"));
     if (j.value("baselines_frozen", false)) {
@@ -176,6 +192,8 @@ bool SecurityState::ingest(const FrameEvent& e) {
     if (e.security_decode_only) ++snap_.frames_security_only;
     ++coverage_for(e.band, e.channel).frames_accepted;
     baselines_.note_frame(e, pf.frame);
+    flood_.note_frame(e, pf.frame);
+    beacon_replay_.note_frame(e, pf.frame);
 
     // Same bytes (Retry bit aside) at a different ingest key: a separate
     // transmission. Kept, and linked to where the bytes were first seen.
@@ -200,6 +218,7 @@ bool SecurityState::ingest(const FrameEvent& e) {
 }
 
 void SecurityState::ingest(const LossNotice& l) {
+    if (l.events_dropped || l.captures_dropped) { flood_.interrupt(); beacon_replay_.interrupt(); baselines_.invalidate_pending(); }
     snap_.queue_events_dropped += l.events_dropped;
     snap_.queue_captures_dropped += l.captures_dropped;
     snap_.losses.push_back(l);
@@ -249,12 +268,17 @@ json snapshot_json(const SecuritySnapshot& s, bool include_recent) {
             rates[baseline_metric_name(BaselineMetric(i))] = {{"mean", r.mean}, {"p50", r.p50}, {"p95", r.p95}, {"max", r.max}};
         }
         bl.push_back({{"key", b.key}, {"band", b.band}, {"channel", b.channel}, {"version", b.version},
-                      {"frozen", b.frozen}, {"restored", b.restored}, {"windows_closed", b.windows_closed},
+                      {"frozen", b.frozen}, {"holders", b.holders}, {"windows_held", b.windows_held}, {"restored", b.restored}, {"windows_closed", b.windows_closed},
                       {"windows_excluded", b.windows_excluded}, {"windows_included", b.windows_included},
                       {"captures_excluded", b.captures_excluded}, {"learned_analysed_s", b.learned_analysed_s},
                       {"current_analysed_s", b.current_analysed_s}, {"rates", rates}});
     }
     j["baselines"] = bl;
+    j["flood"] = {{"enabled",s.flood_enabled},{"evaluations",s.flood_evaluations},{"excluded_captures",s.flood_excluded_captures},{"config",s.flood_config}};
+    j["beacon_replay"] = {{"enabled",s.beacon_replay_enabled},{"evaluated",s.beacon_replay_evaluated},{"excluded_captures",s.beacon_replay_excluded},{"forgotten",s.beacon_replay_forgotten},{"config",s.beacon_replay_config}};
+    json incidents = json::array();
+    for (const auto& incident : s.incidents) incidents.push_back(incident_json(incident));
+    j["incidents"] = incidents;
     j["baselines_frozen"] = s.baselines_frozen;
     j["baseline_pending_dropped"] = s.baseline_pending_dropped;
     j["commands_applied"] = s.commands_applied;

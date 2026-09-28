@@ -138,11 +138,25 @@ int main(int argc, char** argv) {
         obs.rule = "fixture_rule"; obs.rule_version = "0"; obs.config_version = "gui-test";
         obs.severity = IncidentSeverity::Low; obs.confidence = IncidentConfidence::Low;
         obs.band = "wifi_2g4"; obs.channel = 6; obs.claimed_source = "00:11:22:33:44:55";
-        obs.target = "ff:ff:ff:ff:ff:ff"; obs.numerator = 12; obs.denominator_analysed_s = 30;
+        obs.target = "ff:ff:ff:ff:ff:ff"; obs.numerator = 24; obs.denominator_analysed_s = 2;
         obs.coverage_note = "test fixture, not a detection"; obs.benign_alternatives = {"AP reboot", "roaming"};
         obs.host_ns = int64_t(std::time(nullptr)) * 1000000000LL;
         st.observe(obs);
-        const SecuritySnapshot& snap = st.snapshot();
+        SecuritySnapshot snap = st.snapshot();
+        auto& incident = snap.incidents.front();
+        incident.claimed_bssid = "00:11:22:33:44:55"; incident.mode = "observation";
+        incident.measures["threshold"] = 10; incident.confidence_basis = {"GUI test fixture only"};
+        if (!snap.baselines.empty()) {
+            incident.baseline_key = snap.baselines.front().key;
+            snap.baselines.front().holders = {"management_disconnect_flood/v1"};
+        }
+        IncidentEvidence evidence; evidence.frame = {"gui-test",1,1000,"OFDM"};
+        evidence.summary = "Deauthentication; reason 7"; evidence.note = "FCS-valid fixture, not live traffic";
+        from_hex("c0003a01ffffffffffff00112233445500112233445530120700713d26fa",evidence.mpdu);
+        incident.first_evidence.push_back(evidence);
+        IncidentPoint point; point.capture_seq_first=1;point.capture_seq_last=2;point.analysed_s=2;
+        point.units=24;point.raw=28;point.rate=12;point.threshold=10;point.governing_term="provisional floor";
+        incident.timeline.push_back(point);
         if (snap.frames_accepted < 25) { std::cerr << "security fixture snapshot too small\n"; ++failures; }
         bool deauth_info = false;
         for (const auto& p : snap.recent)
@@ -189,22 +203,48 @@ int main(int argc, char** argv) {
             if (i == 13) save("-security-details.ppm");
             if (glGetError() != GL_NO_ERROR) ++failures;
         }
-        // Baselines and Incidents tabs.
+        // Render both flood-style and replay-specific evidence through the real popup.
+        for (int scenario = 0; scenario < 2; ++scenario) {
+        if (scenario == 1) {
+            auto& r = snap.incidents.front(); r.rule = "historical_beacon_replay";
+            r.numerator = r.denominator_analysed_s = 0; r.timeline.clear();
+            r.measures = {{"replay_age_s",1.2},{"minimum_age_s",0.5}};
+            r.context = {{"original_tsf_us","1000000"},{"newer_tsf_us","1600000"},{"repeated_tsf_us","1000000"}};
+            r.first_evidence.clear();
+            for (auto role : {"original_beacon","intervening_newer_beacon","repeated_beacon"}) {
+                auto e = evidence; e.role = role; e.summary = "Beacon fixture";
+                e.note = "Device receive time and TSF retained; synthetic GUI fixture";
+                r.first_evidence.push_back(e);
+            }
+        }
+        // Baselines, incidents, and the production evidence popup.
         ImGui::CloseCurrentPopup();
-        for (int i = 0; i < 10; ++i) {
+        for (int i = 0; i < 16; ++i) {
             ImGui_ImplOpenGL3_NewFrame(); ImGui::NewFrame();
             ImGui::SetNextWindowPos(ImVec2(0,0)); ImGui::SetNextWindowSize(io.DisplaySize);
             ImGui::Begin("Wi-Fi security GUI verification",nullptr,ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove);
             draw_wifi_security_panel(snap, q, "gui-test", "", 900, i < 2 ? "Baselines" : (i >= 7 ? "Incidents" : nullptr),
                                      on_command);
+            if (i == 10) {
+                for (auto* w : ImGui::GetCurrentContext()->Windows)
+                    if (std::string(w->Name).find("wifi_security_incidents") != std::string::npos) {
+                        io.AddMousePosEvent(w->Pos.x+20,w->Pos.y+32); io.AddMouseButtonEvent(0,true); break;
+                    }
+            }
+            if (i == 11) io.AddMouseButtonEvent(0,false);
+            if (i == 14 && (!ImGui::FindWindowByName("Wi-Fi incident evidence") || !ImGui::FindWindowByName("Wi-Fi incident evidence")->Active)) {
+                std::cerr << "Incident evidence popup did not open\n"; ++failures;
+            }
             ImGui::End(); ImGui::Render();
             if (ImGui::GetDrawData()->TotalVtxCount <= 0) ++failures;
             glViewport(0,0,1600,1000); glClearColor(.1f,.1f,.1f,1); glClear(GL_COLOR_BUFFER_BIT);
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData()); glFinish();
             if (i == 5) save("-security-baselines.ppm");
             if (i == 9) save("-security-incidents.ppm");
+            if (i == 14) save(scenario ? "-security-replay-evidence.ppm" : "-security-incident-evidence.ppm");
             if (glGetError() != GL_NO_ERROR) ++failures;
         }
+    }
     }
     ImGui_ImplOpenGL3_Shutdown(); ImGui::DestroyContext();
     eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);

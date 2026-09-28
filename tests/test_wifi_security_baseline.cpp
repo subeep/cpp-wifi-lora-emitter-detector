@@ -222,6 +222,7 @@ int main() {
     {
         StateLimits lim;
         lim.incidents.max_evidence = 3;
+        lim.incidents.max_first_evidence = 1;  // first evidence kept once, then the newest 3
         lim.incidents.close_after_quiet_analysed_s = 5.0;
         lim.incidents.max_incidents = 2;
         SecurityState st(lim);
@@ -239,7 +240,10 @@ int main() {
         }
         auto inc = st.snapshot().incidents;
         check(inc.size() == 1 && inc[0].observations == 5 && inc[0].open, "observations_coalesce");
-        check(inc[0].evidence.size() == 3 && inc[0].evidence_dropped == 2, "evidence_bounded");
+        check(inc[0].first_evidence.size() == 1 && std::get<1>(inc[0].first_evidence[0].frame) == 0 &&
+                  inc[0].evidence.size() == 3 && inc[0].evidence_dropped == 1 &&
+                  std::get<1>(inc[0].evidence.back().frame) == 4,
+              "evidence_bounded_first_kept_latest_rolling");
         check(inc[0].severity == IncidentSeverity::High, "severity_keeps_maximum");
         check(inc[0].first_host_ns == 1000 && inc[0].last_host_ns == 1004, "first_last_observation");
 

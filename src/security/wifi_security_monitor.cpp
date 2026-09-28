@@ -27,6 +27,8 @@ void WifiSecurityMonitor::start() {
         std::ifstream in(cfg_.state_path);
         if (in) {
             try {
+                if (std::filesystem::file_size(cfg_.state_path) > cfg_.state_max_bytes)
+                    throw std::runtime_error("saved state exceeds byte limit");
                 nlohmann::json j;
                 in >> j;
                 state_.import_persistent(j);
@@ -95,9 +97,11 @@ void WifiSecurityMonitor::save_state() {
     const fs::path path(cfg_.state_path);
     if (path.has_parent_path()) fs::create_directories(path.parent_path(), ec);
     const std::string tmp = cfg_.state_path + ".tmp";
+    const std::string serialized = state_.export_persistent().dump();
+    if (serialized.size() + 1 > cfg_.state_max_bytes) { persist_error_ = "saved state exceeds byte limit"; return; }
     {
         std::ofstream out(tmp, std::ios::out | std::ios::trunc);
-        out << state_.export_persistent().dump() << "\n";
+        out << serialized << "\n";
         out.flush();
         if (!out) { persist_error_ = "could not write saved state: " + tmp; return; }
     }
@@ -156,6 +160,13 @@ void WifiSecurityMonitor::publish() {
     const SecuritySnapshot& cur = state_.snapshot();
     // Copy everything except the bulk of the recent-frame buffer.
     s->schema = cur.schema;
+    s->beacon_replay_enabled = cur.beacon_replay_enabled;
+    s->beacon_replay_config = cur.beacon_replay_config;
+    s->beacon_replay_evaluated = cur.beacon_replay_evaluated;
+    s->beacon_replay_excluded = cur.beacon_replay_excluded;
+    s->beacon_replay_forgotten = cur.beacon_replay_forgotten;
+    s->flood_enabled = cur.flood_enabled; s->flood_config = cur.flood_config;
+    s->flood_evaluations = cur.flood_evaluations; s->flood_excluded_captures = cur.flood_excluded_captures;
     s->captures_ingested = cur.captures_ingested; s->captures_duplicate = cur.captures_duplicate;
     s->frames_ingested = cur.frames_ingested; s->frames_accepted = cur.frames_accepted;
     s->frames_duplicate = cur.frames_duplicate; s->frames_rejected_fcs = cur.frames_rejected_fcs;

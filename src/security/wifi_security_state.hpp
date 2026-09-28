@@ -4,8 +4,7 @@
 // Pure and single-threaded. The live monitor drives it from its one
 // consumer thread; the offline runner and tests drive it directly, so a
 // recording replayed through it yields the same snapshot as the live run
-// did. No detector rules yet - those are package C and will read the
-// frames and coverage kept here.
+// did. Management flood detection runs when capture coverage is finalized.
 //
 // Guarantees (plan package A acceptance):
 //  - Only an FCS-valid MPDU with a complete MAC header becomes an accepted
@@ -34,10 +33,14 @@
 #include "security/wifi_security_baseline.hpp"
 #include "security/wifi_security_incidents.hpp"
 #include "security/wifi_security_io.hpp"
+#include "security/wifi_security_flood.hpp"
+#include "security/wifi_security_beacon_replay.hpp"
 
 namespace rfmon::wifi_security {
 
 struct StateLimits {
+    FloodConfig flood;
+    BeaconReplayConfig beacon_replay;
     BaselineLimits baseline;
     IncidentLimits incidents;
     size_t published_incidents = 200;  // newest incidents mirrored into the snapshot
@@ -83,6 +86,12 @@ struct TimelineSummary {
 };
 
 struct SecuritySnapshot {
+    bool beacon_replay_enabled = true;
+    uint64_t beacon_replay_evaluated = 0, beacon_replay_excluded = 0, beacon_replay_forgotten = 0;
+    std::string beacon_replay_config;
+    bool flood_enabled = true;
+    uint64_t flood_evaluations = 0, flood_excluded_captures = 0;
+    std::string flood_config;
     int schema = kEventSchema;
     uint64_t captures_ingested = 0, captures_duplicate = 0;
     uint64_t frames_ingested = 0;       // every frame event offered
@@ -125,7 +134,7 @@ public:
     bool ingest(const FrameEvent& e);
     void ingest(const LossNotice& l);
     void ingest(const ControlCommand& c);
-    // Detector rules (package C) report here; none exist in package B.
+    // External observations/tests may report here; the flood rule runs on finalized captures.
     uint64_t observe(const IncidentObservation& o);
     void note_input_rejected() { ++snap_.input_lines_rejected; }
     const BaselineStore& baselines() const { return baselines_; }
@@ -146,6 +155,8 @@ private:
     SecuritySnapshot snap_;
     BaselineStore baselines_;
     IncidentStore incidents_;
+    ManagementFloodRule flood_;
+    BeaconReplayRule beacon_replay_;
     struct SessionClock { bool end_known = false; int64_t end_ns = 0; };
     std::map<std::pair<std::string, uint64_t>, SessionClock> sessions_;  // (run, radio session)
     // Dedupe: capture -> sample/PHY keys seen, evicted oldest-capture-first.

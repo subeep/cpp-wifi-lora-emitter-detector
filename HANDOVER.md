@@ -934,3 +934,83 @@ capability IEs can still be read from legacy OFDM beacons.
 Implementation limits, capture locations, reproducible commands and next steps:
 [docs/WIFI_OFDM.md](docs/WIFI_OFDM.md). The next useful task is controlled decode-yield
 and RF calibration, to be chosen by the user after this milestone.
+
+## 12. First passive Wi-Fi management flood detector (2026-09-25)
+
+Built on the user's security foundation and uncommitted baseline/incident work.
+Added `src/security/wifi_security_flood.*`, connected through `SecurityState` so
+live reception and offline replay share the same rule. The first rule groups
+FCS-valid deauth/disassociation observations by claimed BSSID/target, requires
+baseline maturity and sustained usable exposure, suppresses retry-equivalent
+count inflation, and reports medium-confidence suspected activity. It does not
+claim authenticated attribution, successful DoS, jamming, or replay detection.
+
+- Exclude queue-loss, overflow, capped, incomplete and locally overloaded inputs
+  from clean learning and quiet-time decisions. Missing/out-of-order observations
+  cannot close an incident as quiet. Holds activate before triggering data is
+  learned and remain separate from operator freeze.
+- Enforce evidence/timeline/text/MPDU limits on live and restored incidents; reset
+  restored quiet timers and bound saved-state size. Preserve the user's first/
+  recent evidence, combined baseline rate, hold and timeline APIs.
+- Show rule status and baseline holds in the security GUI. Click an incident
+  number for rate/threshold/exposure, baseline version, confidence explanations,
+  timeline and packet evidence. Offline JSON includes retained incidents.
+- Added `test_wifi_security_flood` and incident-popup interaction coverage.
+  Validation uses offline fixtures and the actual consumer thread; no USRP
+  attack transmission or live detector calibration was performed.
+- Defaults are provisional: 30 clean analysed seconds / 3 baseline windows,
+  2-second detection windows, at least 20 distinct units in at least 2 active
+  captures, threshold max(10 units/s, 4 times combined channel p95).
+- LoRa files, scanner capture policy, radio settings, PHY algorithms and RF
+  fingerprint acceptance gates were left unchanged by this task.
+
+Commands, exact semantics, limitations and next measurement milestone:
+[docs/WIFI_SECURITY_FLOOD.md](docs/WIFI_SECURITY_FLOOD.md).
+
+## 13. Historical beacon replay milestone — 2026-09-28
+
+- Added `BeaconReplayRule` alongside the existing disconnect-flood rule. It
+  requires a byte-matching historical beacon, an intervening newer beacon TSF,
+  and ordered device time. FCS and Retry are excluded from byte comparison;
+  matching uses full retained bytes rather than a hash alone.
+- Bounded per-context history, expiry, coverage checks, restart/gap reacquisition
+  and input-loss handling prevent unsupported cross-session comparisons.
+  A TSF regression alone does not create an attack alert.
+- Incidents include original, intervening and repeated beacon evidence, exact
+  TSFs/device times, observed replay age, rule config and benign alternatives.
+  GUI and published/offline snapshots expose rule diagnostics. Existing incident
+  persistence is reused; matching history is reset after restart.
+- Added replay regression and threaded/offline equivalence tests; extended GUI
+  coverage to replay evidence. Validation results are recorded below when run.
+- No USRP access/transmissions or LoRa/PHY/radio configuration changes. Next is
+  hardware reception and isolated replay validation, not deployment confidence.
+- Detailed semantics and acceptance plan:
+  [docs/WIFI_SECURITY_BEACON_REPLAY.md](docs/WIFI_SECURITY_BEACON_REPLAY.md).
+
+Offline validation: all seven targeted security/capture-lane CTest suites passed;
+35 new replay assertions passed; production GUI/offline runner built; offscreen
+GUI interaction and visual replay-evidence inspection passed. Hardware and
+recorded-IQ validation remain pending USRP access.
+
+AddressSanitizer and UndefinedBehaviorSanitizer: all 35 replay assertions passed; no sanitizer diagnostics.
+
+## 14. Receive-only Wi-Fi security hardware validation — 2026-09-28
+
+- X310 326CF02 at 192.168.10.2 connected successfully. Fixed-channel production
+  scans used isolated data roots and did not modify the normal identity store.
+- Channel 36: 72 analysed seconds, 68,224 OFDM frames, no decoded beacons.
+  Channel 11: 56 analysed seconds, 5,032 frames; 2,429 eligible beacons comprising
+  1,702 DSSS and 727 OFDM. Both runs had about 95.6% duty, no recorded overflow,
+  burst cap or queue rejection, and zero incidents during this short observation.
+- Complete live recordings replay identically offline for shared snapshot fields.
+  Ten synthetic-timing event cases using real decoded packet bytes passed; this
+  does not claim an over-the-air replay attack was detected.
+- Added bounded fixed-channel/new-output-directory mode to `wifi_scan_smoke`.
+  Supported-channel and duration validation happen before radio initialization.
+- Saved a short IQ fixture: two FCS-valid OFDM beacons. Existing IQ manifests lack
+  device timestamps, so replay timing is correctly excluded. This is the next
+  tooling gap before an IQ-to-detector timing validation campaign.
+- User's ESP32 is an S3 Heltec-style V3; no RF shield box. No ESP32 flashing or
+  transmissions were performed. No LoRa source/settings or OS buffer changes.
+- Full results, artifact paths and remaining hardware gates:
+  [docs/WIFI_SECURITY_HARDWARE_VALIDATION_2026-09-28.md](docs/WIFI_SECURITY_HARDWARE_VALIDATION_2026-09-28.md).

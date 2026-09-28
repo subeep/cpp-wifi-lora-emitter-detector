@@ -359,7 +359,12 @@ void baselines_tab(const SecuritySnapshot& s, float height, const SecurityComman
         ImGui::TableNextColumn(); ImGui::Text("v%u", b.version);
         ImGui::TableNextColumn();
         if (b.frozen) ImGui::TextColored(kWarn, "frozen");
+        else if (!b.holders.empty()) ImGui::TextColored(kWarn, "rule hold");
         else ImGui::TextColored(kOk, "learning");
+        if (ImGui::IsItemHovered() && !b.holders.empty()) {
+            std::string holders; for (const auto& h : b.holders) holders += h + "\n";
+            ImGui::SetTooltip("Learning held by:\n%s", holders.c_str());
+        }
         if (b.restored) { ImGui::SameLine(); ImGui::TextDisabled("restored"); }
         ImGui::TableNextColumn();
         ImGui::Text("%zu / %llu", b.windows_included, static_cast<unsigned long long>(b.windows_closed));
@@ -392,10 +397,13 @@ void incidents_tab(const SecuritySnapshot& s, float height) {
     }
     if (s.incidents.empty()) {
         ImGui::Spacing();
-        ImGui::TextColored(kDim, "No detector rules are enabled yet (security plan package C). Nothing is being "
-                                 "assessed, so an empty list does not mean \"no attack\".");
+        ImGui::TextColored(kDim, "%s", s.flood_enabled
+            ? "No incidents recorded. Missing history, baseline warm-up and incomplete coverage can suppress detection."
+            : "Flood detection disabled. An empty list does not establish absence of attacks.");
         return;
     }
+    static uint64_t selected = 0;
+    bool open_details = false;
     const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
                        ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX;
     if (!ImGui::BeginTable("wifi_security_incidents", 12, flags, ImVec2(0, height - 2 * ImGui::GetFrameHeightWithSpacing())))
@@ -409,7 +417,8 @@ void incidents_tab(const SecuritySnapshot& s, float height) {
     for (size_t k = s.incidents.size(); k-- > 0;) {
         const Incident& i = s.incidents[k];
         ImGui::TableNextRow();
-        ImGui::TableNextColumn(); ImGui::Text("%llu", static_cast<unsigned long long>(i.id));
+        ImGui::TableNextColumn();
+        if (ImGui::Selectable(std::to_string(i.id).c_str(), selected == i.id)) { selected = i.id; open_details = true; }
         ImGui::TableNextColumn(); ImGui::Text("%s v%s", i.rule.c_str(), i.rule_version.c_str());
         ImGui::TableNextColumn();
         if (i.open) ImGui::TextColored(kWarn, "open%s", i.restored ? " (restored)" : "");
@@ -430,6 +439,61 @@ void incidents_tab(const SecuritySnapshot& s, float height) {
         ImGui::TextUnformatted(alt.empty() ? "--" : alt.c_str());
     }
     ImGui::EndTable();
+    if (open_details) ImGui::OpenPopup("Wi-Fi incident evidence");
+    ImGui::SetNextWindowSize(ImVec2(920,650), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("Wi-Fi incident evidence", nullptr, ImGuiWindowFlags_None)) {
+        auto it = std::find_if(s.incidents.begin(),s.incidents.end(),[&](const auto& i){ return i.id == selected; });
+        if (it == s.incidents.end()) ImGui::TextDisabled("Incident no longer retained.");
+        else {
+            const auto& i = *it;
+            ImGui::TextWrapped("%s - suspected activity, service impact unverified", i.rule.c_str());
+            ImGui::Text("Claimed BSSID: %s | target: %s", i.claimed_bssid.c_str(),i.target.c_str());
+            ImGui::Text("Mode: %s | confidence: %s | severity: %s", i.mode.c_str(),confidence_name(i.confidence),severity_name(i.severity));
+            if (i.denominator_analysed_s > 0) ImGui::Text("Latest triggering rate: %.2f /s (%.0f units / %.2f observed s)",
+                i.denominator_analysed_s > 0 ? i.numerator/i.denominator_analysed_s : 0, i.numerator,i.denominator_analysed_s);
+            if (auto t = i.measures.find("threshold"); t != i.measures.end()) ImGui::Text("Threshold: %.2f /s (provisional configuration)",t->second);
+            if (i.rule == "historical_beacon_replay") {
+                for (const auto& m : i.measures) ImGui::Text("%s: %.3f", m.first.c_str(), m.second);
+                for (const auto& c : i.context) ImGui::TextWrapped("%s: %s", c.first.c_str(), c.second.c_str());
+                ImGui::TextDisabled("Historical match rule; no learned flood baseline required.");
+            } else ImGui::TextWrapped("Baseline: %s v%u",i.baseline_key.c_str(),i.baseline_version);
+            for (const auto& b : s.baselines) if (b.key == i.baseline_key)
+                ImGui::Text("Learning: %s | rule holders: %zu | held windows: %llu", b.frozen ? "operator frozen" : b.holders.empty() ? "enabled" : "rule held",b.holders.size(),(unsigned long long)b.windows_held);
+            ImGui::TextWrapped("Coverage: %s",i.coverage_note.c_str());
+            for (const auto& basis : i.confidence_basis) ImGui::BulletText("%s",basis.c_str());
+            if (ImGui::CollapsingHeader("Benign alternatives"))
+                for (const auto& a : i.benign_alternatives) ImGui::BulletText("%s",a.c_str());
+            if (!i.timeline.empty() && ImGui::CollapsingHeader("Rate timeline", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::BeginTable("incident_timeline",5,ImGuiTableFlags_Borders|ImGuiTableFlags_ScrollY,ImVec2(0,140))) {
+                    for (auto label : {"Capture range","Observed s","Units / raw","Rate / threshold","Threshold basis"}) ImGui::TableSetupColumn(label);
+                    ImGui::TableHeadersRow();
+                    for (const auto& t : i.timeline) {
+                        ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::Text("%llu-%llu",(unsigned long long)t.capture_seq_first,(unsigned long long)t.capture_seq_last);
+                        ImGui::TableNextColumn(); ImGui::Text("%.2f",t.analysed_s);
+                        ImGui::TableNextColumn(); ImGui::Text("%.0f / %.0f",t.units,t.raw);
+                        ImGui::TableNextColumn(); ImGui::Text("%.2f / %.2f",t.rate,t.threshold);
+                        ImGui::TableNextColumn(); ImGui::TextUnformatted(t.governing_term.c_str());
+                    }
+                    ImGui::EndTable();
+                }
+            }
+            if (ImGui::CollapsingHeader("First and latest evidence", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::BeginChild("incident_evidence",ImVec2(0,140),true);
+                auto evidence = [&](const IncidentEvidence& e) {
+                    ImGui::TextWrapped("Role: %s",e.role.empty() ? "frame" : e.role.c_str());
+                    ImGui::TextWrapped("%s | capture %llu sample %zu | %s",std::get<0>(e.frame).c_str(),(unsigned long long)std::get<1>(e.frame),std::get<2>(e.frame),e.summary.c_str());
+                    ImGui::TextWrapped("%s",e.note.c_str());
+                    ImGui::TextWrapped("MPDU prefix (%zu bytes): %s",e.mpdu.size(),to_hex(e.mpdu).c_str());
+                    ImGui::Separator();
+                };
+                for (const auto& e : i.first_evidence) evidence(e);
+                for (const auto& e : i.evidence) evidence(e);
+                ImGui::EndChild();
+            }
+        }
+        if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 }
 
 }  // namespace
@@ -487,7 +551,7 @@ std::string wifi_security_header_label(const SecuritySnapshot& s) {
     for (const auto& [k, c] : s.coverage) { capped += c.burst_cap_captures; captures += c.captures; }
     char b[320];
     std::snprintf(b, sizeof(b),
-                  "Wi-Fi security monitor - %llu frames, %llu captures, duty %.0f%%%s%s%s (no detector rules yet)"
+                  "Wi-Fi security monitor - %llu frames, %llu captures, duty %.0f%%%s%s%s (passive security)"
                   "###wifi_security_monitor",
                   static_cast<unsigned long long>(s.frames_accepted), static_cast<unsigned long long>(captures),
                   100.0 * s.timeline.duty(),
@@ -500,8 +564,14 @@ std::string wifi_security_header_label(const SecuritySnapshot& s) {
 void draw_wifi_security_panel(const SecuritySnapshot& s, const QueueStats& q, const std::string& run_id,
                               const std::string& recording, float height, const char* select_tab,
                               const SecurityCommandFn& command) {
-    ImGui::TextDisabled("Passive observations from FCS-valid frames and per-capture coverage. No detector rules yet: "
-                        "nothing here is an alert, and every address is a claimed address.");
+    ImGui::TextDisabled("Passive disconnect-flood and historical-beacon replay detection. Sender and impact unverified.");
+    ImGui::Text("Flood rule: %s | evaluated windows %llu | excluded captures %llu", s.flood_enabled ? "enabled (baseline required)" : "disabled", (unsigned long long)s.flood_evaluations,(unsigned long long)s.flood_excluded_captures);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Provisional configuration: %s",s.flood_config.c_str());
+    ImGui::Text("Beacon replay: %s | evaluated %llu | excluded captures %llu | history evictions %llu",
+        s.beacon_replay_enabled ? "enabled (device time required)" : "disabled",
+        (unsigned long long)s.beacon_replay_evaluated, (unsigned long long)s.beacon_replay_excluded,
+        (unsigned long long)s.beacon_replay_forgotten);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Provisional configuration: %s", s.beacon_replay_config.c_str());
     // Summary strip.
     ImGui::Text("Frames accepted %llu of %llu offered", static_cast<unsigned long long>(s.frames_accepted),
                 static_cast<unsigned long long>(s.frames_ingested));
