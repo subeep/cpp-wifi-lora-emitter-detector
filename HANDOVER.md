@@ -1014,3 +1014,85 @@ AddressSanitizer and UndefinedBehaviorSanitizer: all 35 replay assertions passed
   transmissions were performed. No LoRa source/settings or OS buffer changes.
 - Full results, artifact paths and remaining hardware gates:
   [docs/WIFI_SECURITY_HARDWARE_VALIDATION_2026-09-28.md](docs/WIFI_SECURITY_HARDWARE_VALIDATION_2026-09-28.md).
+
+## 15. ESP32 Wi-Fi test preparation — 2026-09-29
+
+User authorized repurposing the Heltec V3 board. Factory backup found and hashed;
+current LoRa flash separately saved and verified against the device before upload.
+Added `tools/esp32_wifi_lab/`: idle-on-boot own-AP fixture, one associated client,
+manual normal disconnect, ten-second cooldown, no raw injection/flood/LoRa API.
+Build/flash hashes passed and serial confirmed AP startup. Waiting for test client
+and USRP frame correlation; no live flood detection is claimed.
+Recovery and session details: [docs/ESP32_WIFI_RECEPTION_CHECK.md](docs/ESP32_WIFI_RECEPTION_CHECK.md).
+
+## 16. ESP32 flood transmitter feasibility — 2026-09-29
+
+A single owned-AP disconnect is supported by the ESP32-S3 API; a sustained
+positive deauth/disassoc flood from the board is not established. The official
+raw TX API omits those management subtypes, and the supplied simulator increments
+attempt counters even on TX failure. No flood transmission was attempted.
+Assessment and detector acceptance gates:
+[docs/ESP32_FLOOD_FEASIBILITY_2026-09-29.md](docs/ESP32_FLOOD_FEASIBILITY_2026-09-29.md).
+
+### Step 1 and 3 result — 2026-09-29
+
+After the user changed the ESP32 firmware, its **new** complete 8 MB flash was
+saved and device-verified at
+`data/esp32_wifi_validation/2026-09-29/pre-reflash/current_8MB.bin`
+(SHA-256 `85fe89b670f6da9db2ee3e49872002ce6b0b1611262ca17b98020bba42e72417`).
+The owned-AP Wi-Fi fixture was reflashed once; upload hash and idle serial boot
+passed, AP off. No disconnect or flood was sent. Static/API feasibility remains:
+normal own-client disconnect is supported, sustained distinct-frame flood from
+this ESP32 is unproven. See the updated feasibility report for the recovery command.
+
+
+### Step 2 and 4 result — 2026-09-29
+
+With the user's phone associated to the ESP32 test AP, one disconnect_once
+command at 11:59:45.040 UTC returned ESP_OK. The X310 fixed-channel receive
+recording captured 17 FCS-valid disconnect transmissions from that AP to the
+phone between 11:59:45.047 and 11:59:45.641 UTC: 12 DSSS disassociation and
+five deauthentication frames (three OFDM, two DSSS). They collapse to three
+distinct retry-normalized contents, all in one capture. Thus ordinary
+disconnect reception and decoding are verified; this is not a flood-positive
+stimulus. The 164-second scan accepted 8,412 frames with zero overflow/queue
+loss and zero incidents. Offline replay agreed on coverage, counts, rule
+diagnostics and zero incidents. The AP was stopped after capture.
+
+The sustained-flood positive gate remains open. This board's supported
+own-client operation did not meet the rule's 20-distinct-unit and two-capture
+requirements; with no RF shield box, no sustained over-the-air flood was run.
+See [reception check](docs/ESP32_WIFI_RECEPTION_CHECK.md) and
+[flood feasibility](docs/ESP32_FLOOD_FEASIBILITY_2026-09-29.md). Recording:
+data/esp32_wifi_validation/2026-09-29/live-single-disconnect/.
+
+## 17. ESP32 shield-box flood attempt paused at RF containment gate — 2026-09-29
+
+The user reported a shield box containing their phone, ESP32-S3 and X310, and
+authorized a positive live deauthentication-flood test. Built/flashed a separate
+idle-on-boot, one-client, own-AP-only test fixture with one raw-frame probe and
+a separately bounded burst command. Upload verification and idle serial status
+passed. No LoRa source or API was touched.
+
+A 104-capture, receive-only channel 11 scan after the user reported the box
+closed still decoded 451 FCS-valid `Airtel_Zerotouch` beacons from an unrelated
+BSSID, including 38 after the ESP32 AP was stopped. Thus RF containment is
+unverified. No deauthentication probe or burst command was sent; ESP32 status
+showed zero attempts, and its AP was stopped. The user was asked to inspect
+the box seal and antenna/feedthrough paths. Next: verify isolation with a fresh
+passive scan; only then test one raw frame and, if actually received, the
+bounded burst against the production incident rule. Vendor documentation does
+not list deauthentication as a supported raw-transmit frame subtype, so positive
+RF yield remains unproven. Details: [shield-box report](docs/ESP32_SHIELD_BOX_TEST_2026-09-29.md).
+
+### Follow-up one-frame transmitter probe — 2026-09-29
+
+After the user requested a narrower addressed test and reconfirmed the box was
+closed, the phone joined the ESP32 test AP. One `probe_once` raw deauth
+attempt at 12:17:42.979 UTC was rejected by the ESP32 driver
+(`unsupport frame type: 0c0`, `ESP_ERR_INVALID_ARG`). The X310 decoded 107
+other frames around the attempt and no disconnect frame. The AP was stopped;
+the burst command was never sent and its counters remained zero. This is a
+measured ESP32 transmitter limitation, not a negative test of the flood
+detector. The previous supported own-client disconnect result remains valid.
+See [shield-box report](docs/ESP32_SHIELD_BOX_TEST_2026-09-29.md).

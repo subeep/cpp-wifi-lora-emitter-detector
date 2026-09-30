@@ -192,3 +192,34 @@ aware IQ capture, followed by isolated ESP32/reference-receiver validation and a
 longer held-out campaign. User has an ESP32-S3 Heltec-style V3 but no shield box.
 Details, limitations, artifacts and commands:
 [hardware validation report](WIFI_SECURITY_HARDWARE_VALIDATION_2026-09-28.md).
+
+## ESP32 preparation — 2026-09-29
+
+Identified the user's Heltec V3, saved and device-verified its current 8 MB flash,
+and preserved the distinct factory image. Built/flashed an owned-AP-only fixture
+for one normal client disconnect, with idle boot and no raw injection or LoRa API.
+AP startup confirmed. Client association and USRP disconnect-frame correlation
+are the next acceptance gate, not a sustained-flood detection claim.
+See [ESP32_WIFI_RECEPTION_CHECK.md](ESP32_WIFI_RECEPTION_CHECK.md) for recovery,
+fixture scope and artifacts.
+
+## Flood transmitter feasibility — 2026-09-29
+
+The Heltec ESP32-S3's supported SoftAP API provides own-station disconnects,
+but a source of sustained distinct deauth/disassoc frames is not established.
+The vendor raw transmit API does not list those subtypes, and the supplied
+simulator counts attempted sends even after TX errors. No live flood was sent.
+See [ESP32_FLOOD_FEASIBILITY_2026-09-29.md](ESP32_FLOOD_FEASIBILITY_2026-09-29.md).
+
+
+## Live ordinary-disconnect acceptance — 2026-09-29
+
+The Heltec SoftAP's single supported own-client disconnect was observed over RF
+by the X310 on channel 11: 17 FCS-valid disconnect transmissions, reduced to
+three distinct retry-normalized contents in one capture. The production security
+monitor reported zero incidents, and offline replay matched the live result.
+This completes the receive/parse/normal-classification acceptance gate. The
+positive sustained-flood hardware gate remains open: the measured operation did
+not supply the required 20 distinct units across two captures, and there is no
+RF shield box for a controlled flood campaign. Details and artifacts are in
+[ESP32_WIFI_RECEPTION_CHECK.md](ESP32_WIFI_RECEPTION_CHECK.md).

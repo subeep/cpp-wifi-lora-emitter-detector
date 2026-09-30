@@ -3,6 +3,8 @@ build/
 bin/
 lib/
 out/
+.pio/
+.pioenvs/
 
 # CMake artifacts
 CMakeCache.txt
