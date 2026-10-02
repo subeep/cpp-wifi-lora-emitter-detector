@@ -161,7 +161,8 @@ int main(int argc, char** argv) {
                      "Capturing %.2fs at %.6f MHz, requested %.3f ksps ... (transmit now)\n",
                      duration_s, freq_hz / 1e6, rate_hz / 1e3);
 
-        auto [iq, actual_rate, overflow] = sdr->capture(freq_hz, rate_hz, duration_s);
+        auto result = sdr->capture_detailed(freq_hz, rate_hz, duration_s);
+        auto& iq=result.samples;const double actual_rate=result.sample_rate_hz;const bool overflow=result.overflow;
 
         std::fprintf(stderr, "Capture done: %zu samples, actual_rate=%.3f ksps, overflow=%s\n",
                      iq.size(), actual_rate / 1e3, overflow ? "YES" : "no");
@@ -182,6 +183,8 @@ int main(int argc, char** argv) {
         cap.device_args = profile.device_args;
         cap.antenna = profile.antenna;
         cap.source = "live";
+        cap.run_id="lora-iq:"+std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+        cap.radio_session=1;cap.capture_seq=1;cap.timing=result.timing;
 
         std::string dir = save_lora_capture(out_dir, cap);
         std::printf("%s\n", dir.c_str());

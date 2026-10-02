@@ -81,6 +81,9 @@ uint64_t IncidentStore::observe(const IncidentObservation& o) {
     auto it = std::find_if(incidents_.begin(), incidents_.end(), [&](const Incident& i) {
         if (!i.open || i.rule != o.rule || i.band != o.band || i.channel != o.channel || i.target != o.target)
             return false;
+        // Receiver-specific baselines must not coalesce across gain/rate/device
+        // profiles; otherwise one profile could keep another incident alive.
+        if (i.baseline_key != o.baseline_key) return false;
         if (!o.claimed_bssid.empty()) return i.claimed_bssid == o.claimed_bssid;
         return i.claimed_bssid.empty() && i.claimed_source == o.claimed_source;
     });

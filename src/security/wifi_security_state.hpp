@@ -136,7 +136,7 @@ public:
     void ingest(const ControlCommand& c);
     // External observations/tests may report here; the flood rule runs on finalized captures.
     uint64_t observe(const IncidentObservation& o);
-    void note_input_rejected() { ++snap_.input_lines_rejected; }
+    void note_input_rejected(); // unknown missing input invalidates pending comparisons
     const BaselineStore& baselines() const { return baselines_; }
     const IncidentStore& incidents() const { return incidents_; }
     // Persisted across restarts: closed baseline windows and incidents.

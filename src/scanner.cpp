@@ -111,6 +111,7 @@ Scanner::Scanner(const std::string& data_root)
     // Baselines and incidents survive restarts (bounded; see wifi_security_baseline.hpp).
     security_config_.state_path = data_root + "/wifi_security/state.json";
     security_ = std::make_unique<wifi_security::WifiSecurityMonitor>(security_config_);
+    lora_security_=std::make_unique<lora_security::Monitor>(data_root+"/lora_security/events.ndjson");
 }
 
 Scanner::~Scanner() { stop(); }
@@ -118,6 +119,7 @@ Scanner::~Scanner() { stop(); }
 void Scanner::start() {
     stop_flag_ = false;
     security_->start();
+    lora_security_->start();
     running_ = true;
     thread_ = std::thread(&Scanner::run, this);
 }
@@ -127,6 +129,7 @@ void Scanner::stop() {
     if (thread_.joinable()) thread_.join();
     // After the scan thread: everything it submitted is drained and recorded.
     security_->stop();
+    lora_security_->stop();
     running_ = false;
     std::lock_guard<std::mutex> lock(capture_mutex_);
     if (capture_pending_) {
@@ -197,6 +200,14 @@ bool Scanner::set_wifi_security_recording(const std::string& path, uint64_t max_
     security_config_.record_max_bytes = max_bytes;
     security_ = std::make_unique<wifi_security::WifiSecurityMonitor>(security_config_);
     return true;
+}
+
+std::shared_ptr<const lora_security::Snapshot> Scanner::lora_security_snapshot() const {
+    return lora_security_->snapshot();
+}
+bool Scanner::set_lora_security_recording(const std::string& path) {
+    if(running_)return false;
+    lora_security_=std::make_unique<lora_security::Monitor>(path);return true;
 }
 
 void Scanner::request_lora_capture_save(const std::string& directory) {
@@ -418,8 +429,17 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
         std::chrono::system_clock::now().time_since_epoch()).count();
     const auto capture_gain = gain();
     const double capture_seconds = std::min(lora_capture_seconds(), 32000000.0 / profile.lora_listen_capture_rate_hz);
-    auto [iq_raw, actual_rate, overflow] = sdr_->capture(
-        freq_hz, profile.lora_listen_capture_rate_hz, capture_seconds);
+    auto received = sdr_->capture_detailed(freq_hz, profile.lora_listen_capture_rate_hz, capture_seconds);
+    auto& iq_raw=received.samples;const double actual_rate=received.sample_rate_hz;const bool overflow=received.overflow;
+    LoraCapture provenance;
+    provenance.sample_rate_hz=actual_rate;provenance.requested_sample_rate_hz=profile.lora_listen_capture_rate_hz;
+    provenance.requested_center_hz=freq_hz;provenance.requested_duration_s=capture_seconds;
+    provenance.host_start_unix_s=host_start;provenance.requested_gain_db=capture_gain;
+    provenance.device_args=profile.device_args;provenance.antenna=profile.antenna;provenance.overflow=overflow;
+    provenance.run_id=security_run_id_;provenance.radio_session=radio_session_;
+    provenance.capture_seq=++lora_security_capture_seq_;provenance.timing=received.timing;
+    const bool skip_sync_check=lora_laboratory_mode();
+    std::vector<LoraPacketRow> security_rows;
     note_capture_health(!iq_raw.empty());
     std::string save_directory;
     {
@@ -429,17 +449,8 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
     if (!save_directory.empty()) {
         std::string message;
         try {
-            LoraCapture capture;
-            capture.iq = iq_raw;
-            capture.sample_rate_hz = actual_rate;
-            capture.requested_sample_rate_hz = profile.lora_listen_capture_rate_hz;
-            capture.requested_center_hz = freq_hz;
-            capture.requested_duration_s = capture_seconds;
-            capture.host_start_unix_s = host_start;
-            capture.requested_gain_db = capture_gain;
-            capture.device_args = profile.device_args;
-            capture.antenna = profile.antenna;
-            capture.overflow = overflow;
+            LoraCapture capture=provenance;
+            capture.iq=iq_raw;
             message = "Saved: " + save_lora_capture(save_directory, capture);
             if (overflow) message += " (overflow: discontinuous IQ)";
         } catch (const std::exception& e) { message = std::string("Capture save failed: ") + e.what(); }
@@ -451,7 +462,9 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
         std::lock_guard<std::mutex> lock(status_mutex_);
         status_.last_overflow = overflow;
     }
-    if (iq_raw.empty()) return;
+    if (iq_raw.empty()) {
+        lora_security_->submit(lora_security::make_batch(provenance,0,{},skip_sync_check));return;
+    }
 
     // Feed the Active emitters table from this same capture rather
     // than requiring a separate wideband one - this is the only
@@ -478,7 +491,6 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
     }
 
     std::string ts = current_time_hhmmss();
-    bool skip_sync_check = lora_laboratory_mode();
 
     auto push_row = [&](LoraPacketRow row) {
         std::lock_guard<std::mutex> lock(lora_log_mutex_);
@@ -498,6 +510,8 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
         for (int sf : LORA_LISTEN_SF_LIST) {
             auto observations = analyze_lora_packets(iq, sf, bw_hz, skip_sync_check);
             if (observations.empty()) continue;
+            for(auto& row:observations)row.bandwidth_khz=bw_khz;
+            security_rows.insert(security_rows.end(),observations.begin(),observations.end());
             const bool decoded_present = observations.front().header_valid;
             for (auto& decoded : observations) {
                 if (!decoded.header_valid) continue;
@@ -576,6 +590,7 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
             }
         }
     }
+    lora_security_->submit(lora_security::make_batch(provenance,iq_raw.size(),security_rows,skip_sync_check));
 }
 
 // One step's processing, moved verbatim out of run() (security plan package B,

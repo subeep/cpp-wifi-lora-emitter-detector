@@ -427,7 +427,8 @@ void incidents_tab(const SecuritySnapshot& s, float height) {
         ImGui::TableNextColumn(); ImGui::TextUnformatted(confidence_name(i.confidence));
         ImGui::TableNextColumn(); ImGui::Text("%d", i.channel);
         ImGui::TableNextColumn(); ImGui::TextUnformatted(i.claimed_source.empty() ? "--" : i.claimed_source.c_str());
-        ImGui::TableNextColumn(); ImGui::TextUnformatted(i.target.empty() ? "--" : i.target.c_str());
+        ImGui::TableNextColumn(); ImGui::TextUnformatted(i.target.empty() ?
+            (i.path.rfind("ap_wide_",0)==0 ? "AP-wide" : "--") : i.target.c_str());
         ImGui::TableNextColumn(); ImGui::Text("%llu", static_cast<unsigned long long>(i.observations));
         ImGui::TableNextColumn();
         if (i.denominator_analysed_s > 0) ImGui::Text("%.2f (%.0f / %.1f s)", i.numerator / i.denominator_analysed_s, i.numerator, i.denominator_analysed_s);
@@ -447,7 +448,16 @@ void incidents_tab(const SecuritySnapshot& s, float height) {
         else {
             const auto& i = *it;
             ImGui::TextWrapped("%s - suspected activity, service impact unverified", i.rule.c_str());
-            ImGui::Text("Claimed BSSID: %s | target: %s", i.claimed_bssid.c_str(),i.target.c_str());
+            ImGui::Text("Claimed BSSID: %s | target: %s", i.claimed_bssid.c_str(),
+                i.target.empty() ? (i.path.rfind("ap_wide_",0)==0 ? "AP-wide" : "--") : i.target.c_str());
+            if (i.rule == "management_disconnect_flood") {
+                const bool ap = i.path.rfind("ap_wide_",0)==0;
+                const bool repeated = i.path.find("repeated")!=std::string::npos;
+                ImGui::Text("Detection: %s disconnect frames | scope: %s",
+                    repeated ? "repeated-content" : "distinct",ap ? "multiple targets under one claimed BSSID" : "one target");
+                for (const char* label : {"raw_frames","distinct_units","independent_units","targets","active_captures"})
+                    if (auto m=i.measures.find(label);m!=i.measures.end()) ImGui::Text("%s: %.0f",label,m->second);
+            }
             ImGui::Text("Mode: %s | confidence: %s | severity: %s", i.mode.c_str(),confidence_name(i.confidence),severity_name(i.severity));
             if (i.denominator_analysed_s > 0) ImGui::Text("Latest triggering rate: %.2f /s (%.0f units / %.2f observed s)",
                 i.denominator_analysed_s > 0 ? i.numerator/i.denominator_analysed_s : 0, i.numerator,i.denominator_analysed_s);

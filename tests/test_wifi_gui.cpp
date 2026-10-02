@@ -246,6 +246,48 @@ int main(int argc, char** argv) {
         }
     }
     }
+    // Optional actual hardware recording: render its detector state and select
+    // the AP-wide incident through the production table, without opening a radio.
+    if (argc>2) {
+        using namespace rfmon::wifi_security;
+        SecurityState replay;std::ifstream recording(argv[2]);std::string line;
+        if(!recording) {std::cerr<<"Cannot open hardware recording\n";return 1;}
+        while(std::getline(recording,line)) {
+            auto j=nlohmann::json::parse(line);auto kind=j.value("kind","");
+            if(kind=="frame")replay.ingest(frame_from_json(j));
+            else if(kind=="capture")replay.ingest(capture_from_json(j));
+            else if(kind=="loss")replay.ingest(loss_from_json(j));
+            else if(kind=="command")replay.ingest(command_from_json(j));
+            else if(kind=="input_rejected")replay.note_input_rejected();
+        }
+        auto hardware=replay.snapshot();
+        if(hardware.incidents.empty() || hardware.input_lines_rejected) {std::cerr<<"No valid recorded incidents\n";return 1;}
+        // Clear the fixture's modal state; this view contains recorded evidence.
+        ImGui_ImplOpenGL3_Shutdown();ImGui::DestroyContext();ImGui::CreateContext();ImGui::StyleColorsDark();
+        auto& hio=ImGui::GetIO();hio.IniFilename=nullptr;hio.DisplaySize=ImVec2(1600,1000);hio.DeltaTime=1.0f/60;
+        ImGui_ImplOpenGL3_Init("#version 130");
+        for(int i=0;i<10;++i) {
+            ImGui_ImplOpenGL3_NewFrame();ImGui::NewFrame();
+            ImGui::SetNextWindowPos(ImVec2(0,0));ImGui::SetNextWindowSize(hio.DisplaySize);
+            ImGui::Begin("Recorded HackRF/X310 security evidence",nullptr,ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove);
+            ImGui::TextUnformatted("Replay of recorded conducted RF test; hardware capture finished.");
+            draw_wifi_security_panel(hardware,{},"recorded-hardware",argv[2],900,i<2?"Incidents":nullptr);
+            if(i==2)for(auto* w:ImGui::GetCurrentContext()->Windows)
+                if(std::string(w->Name).find("wifi_security_incidents")!=std::string::npos) {
+                    hio.AddMousePosEvent(w->Pos.x+20,w->Pos.y+32);hio.AddMouseButtonEvent(0,true);break;
+                }
+            if(i==3)hio.AddMouseButtonEvent(0,false);
+            if(i==7 && (!ImGui::FindWindowByName("Wi-Fi incident evidence") || !ImGui::FindWindowByName("Wi-Fi incident evidence")->Active)) {
+                std::cerr<<"Recorded incident evidence did not open\n";++failures;
+            }
+            ImGui::End();ImGui::Render();
+            if(ImGui::GetDrawData()->TotalVtxCount<=0)++failures;
+            glViewport(0,0,1600,1000);glClearColor(.1f,.1f,.1f,1);glClear(GL_COLOR_BUFFER_BIT);
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());glFinish();
+            if(i==1)save("-hardware-incidents.ppm");if(i==7)save("-hardware-evidence.ppm");
+            if(glGetError()!=GL_NO_ERROR)++failures;
+        }
+    }
     ImGui_ImplOpenGL3_Shutdown(); ImGui::DestroyContext();
     eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);
     eglDestroyContext(display,context); eglDestroySurface(display,surface); eglTerminate(display);

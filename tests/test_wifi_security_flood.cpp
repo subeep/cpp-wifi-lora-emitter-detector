@@ -42,6 +42,27 @@ void feed(SecurityState& s, CaptureRecord c,int count=0,bool retries=false) {
     c.events_submitted=count; if(recording)recording->push_back(to_json(c)); s.ingest(c);
 }
 void warm(SecurityState& s) { for(int i=1;i<=6;++i)feed(s,capture(i)); }
+// Separate transmissions, with optional repeated bytes or distributed clients.
+void transmissions(SecurityState& s,CaptureRecord c,int count,bool repeat=false,
+                   bool retry=false,int targets=1,size_t spacing=1000000,bool reverse=false,
+                   bool client_origin=false,bool split_bssid=false) {
+    for(int k=0;k<count;++k) {
+        int n=reverse?count-1-k:k;
+        auto bytes=frame(repeat?7:int(c.capture_seq)*20+n,retry);
+        if(targets>1) bytes[4]=uint8_t((n%targets+1)*2);
+        if(client_origin) {
+            for(int j=0;j<6;++j)bytes[4+j]=bytes[16+j];
+            bytes[10]=uint8_t((n%targets+1)*2);
+        }
+        if(split_bssid) { bytes[15]=uint8_t(n%targets);bytes[21]=uint8_t(n%targets); }
+        auto crc=wifi::fcs32(bytes.data(),bytes.size()-4);
+        for(int j=0;j<4;++j)bytes[bytes.size()-4+j]=uint8_t(crc>>(8*j));
+        auto e=make_frame_event(c,1000+size_t(n)*spacing,400,"OFDM",6,false,bytes,true);
+        if(recording)recording->push_back(to_json(e));
+        s.ingest(e);
+    }
+    c.events_submitted=count;if(recording)recording->push_back(to_json(c));s.ingest(c);
+}
 int main() {
     {
         SecurityState s(limits()); warm(s);
@@ -52,7 +73,7 @@ int main() {
         check(!i.first_evidence.empty()&&!i.timeline.empty()&&i.measures.at("threshold")==4,"evidence and threshold timeline");
         check(s.snapshot().baselines.at(0).learned_analysed_s==3&&!s.snapshot().baselines.at(0).holders.empty(),"triggering window excluded before learning");
         feed(s,capture(9),4);feed(s,capture(10),4);
-        check(s.snapshot().incidents_total==1&&s.snapshot().incidents.at(0).observations==2,"coalesces sustained flood");
+        check(s.snapshot().incidents_total==1&&s.snapshot().incidents.at(0).observations==3,"rolling observations coalesce sustained flood");
         auto bad=capture(11);bad.overflows.push_back({10,std::nullopt});feed(s,bad);
         bad=capture(12);bad.events_rejected_by_queue=20;feed(s,bad);
         check(s.snapshot().incidents_open==1,"overflow and queue loss cannot establish quiet");
@@ -192,7 +213,10 @@ int main() {
             }
             c.events_submitted=4;s.ingest(c);
         }
-        check(s.snapshot().incidents_total==0,"different targets are not combined into a target flood");
+        auto snap=s.snapshot();
+        check(snap.incidents_total==1&&snap.incidents[0].target.empty()&&
+              snap.incidents[0].path=="ap_wide_distinct_management_frames"&&snap.incidents[0].measures.at("targets")==4,
+              "distributed targets create one AP-wide incident with explicit scope");
     }
     {
         SecurityState s;
@@ -201,6 +225,201 @@ int main() {
         check(s.snapshot().incidents_open==1&&s.snapshot().incidents.at(0).numerator==40&&
               s.snapshot().incidents.at(0).denominator_analysed_s==2,
               "production defaults detect sustained activity after 30 usable baseline seconds");
+    }
+    {
+        SecurityState s(limits());warm(s);feed(s,capture(7),4);
+        s.note_input_rejected();feed(s,capture(8),4);feed(s,capture(9));
+        check(s.snapshot().incidents_total==0&&s.snapshot().input_lines_rejected==1,
+              "malformed recording input breaks sustained flood evidence");
+    }
+    {
+        SecurityState s(limits());warm(s);
+        transmissions(s,capture(7),4,true);transmissions(s,capture(8),4,true);
+        auto snap=s.snapshot();
+        check(snap.incidents_total==1&&snap.incidents[0].path=="repeated_management_frames"&&
+              snap.incidents[0].numerator==8&&snap.incidents[0].measures.at("distinct_units")==1,
+              "separated identical non-retry copies trigger repeated-content path");
+        check(snap.baselines[0].learned_analysed_s==3&&snap.incidents[0].rule_version=="2",
+              "repeated-content candidates cannot train the baseline and carry rule version");
+    }
+    {
+        SecurityState s(limits());warm(s);
+        transmissions(s,capture(7),30,true,false,1,1000);
+        transmissions(s,capture(8),30,true,false,1,1000);
+        check(s.snapshot().incidents_total==0,"short identical copies without Retry still collapse under guard");
+        transmissions(s,capture(9),4,true,true);transmissions(s,capture(10),4,true,true);
+        check(s.snapshot().incidents_total==0,"long Retry-marked repeats do not claim independent attempts");
+    }
+    {
+        SecurityState s(limits());warm(s);
+        feed(s,capture(7));feed(s,capture(8),4);feed(s,capture(9),4);
+        check(s.snapshot().incidents_total==1&&s.snapshot().incidents[0].timeline[0].capture_seq_first==8,
+              "flood across former fixed-window boundary is detected");
+        feed(s,capture(10));
+        check(s.snapshot().incidents[0].observations==1&&s.snapshot().incidents[0].quiet_analysed_s==.5,
+              "rolling historic activity alone cannot reset quiet or emit a new observation");
+    }
+    {
+        // Shift the same event campaign through each capture phase of a 2 s window.
+        for(int phase=0;phase<4;++phase) {
+            auto l=limits();l.flood.window_s=2;SecurityState s(l);warm(s);
+            int seq=7;for(int n=0;n<phase;++n)feed(s,capture(seq++));
+            for(int n=0;n<4;++n)feed(s,capture(seq++),4);
+            check(s.snapshot().incidents_total==1,"rolling detection survives capture-window phase shift");
+        }
+    }
+    {
+        auto l=limits();l.flood.min_units=5;SecurityState s(l);warm(s);
+        transmissions(s,capture(7),4,true,false,4);transmissions(s,capture(8),4,true,false,4);
+        auto snap=s.snapshot();
+        check(snap.incidents_total==1&&snap.incidents[0].target.empty()&&
+              snap.incidents[0].path=="ap_wide_repeated_management_frames"&&snap.incidents[0].numerator==8,
+              "repeated per-client contents aggregate into AP-wide path");
+        SecurityState separate(limits());warm(separate);
+        transmissions(separate,capture(7),4,false,false,4,1000000,false,false,true);
+        transmissions(separate,capture(8),4,false,false,4,1000000,false,false,true);
+        check(separate.snapshot().incidents_total==0,"different claimed BSSIDs never combine into AP-wide flood");
+    }
+    {
+        SecurityState s(limits());warm(s);
+        transmissions(s,capture(7),4,false,false,4,1000000,false,true);
+        transmissions(s,capture(8),4,false,false,4,1000000,false,true);
+        check(s.snapshot().incidents_total==1&&s.snapshot().incidents[0].target.empty()&&
+              s.snapshot().incidents[0].measures.at("targets")==4,
+              "client-originated disconnects aggregate affected clients at claimed AP");
+        SecurityState burst(limits());warm(burst);
+        transmissions(burst,capture(7),8,false,false,4);feed(burst,capture(8));
+        check(burst.snapshot().incidents_total==0,"single-capture multi-client reconnect burst stays negative");
+    }
+    {
+        SecurityState s(limits());warm(s);
+        for(int seq=7;seq<=8;++seq) {
+            auto c=capture(seq);c.clock=ClockDomain::HostOnly;
+            transmissions(s,c,4,true);
+        }
+        check(s.snapshot().incidents_total==0,"host-only timing cannot establish separated repeated-content units");
+        SecurityState ordered(limits());warm(ordered);
+        transmissions(ordered,capture(7),4,true,false,1,1000000,true);
+        transmissions(ordered,capture(8),4,true,false,1,1000000,true);
+        check(ordered.snapshot().incidents_total==1&&ordered.snapshot().incidents[0].numerator==8,
+              "sample ordering makes reversed event delivery deterministic");
+    }
+    {
+        for(int kind=0;kind<5;++kind) {
+            SecurityState s(limits());warm(s);transmissions(s,capture(7),4,true);
+            auto c=capture(8);
+            if(kind==0)s.ingest(LossNotice{1,0,0,0});
+            if(kind==1)s.note_input_rejected();
+            if(kind==2)c.burst_cap_reached=true;
+            if(kind==3)c.overflows.push_back({10,std::nullopt});
+            if(kind==4)c.radio_session=2;
+            transmissions(s,c,4,true);feed(s,capture(9));
+            check(s.snapshot().incidents_total==0,"repeated-content evidence cannot bridge loss, bad input, caps, overflow or session reset");
+        }
+    }
+    {
+        auto l=limits();l.flood.max_units=3;SecurityState s(l);warm(s);
+        transmissions(s,capture(7),4,true);
+        check(s.snapshot().flood_excluded_captures==1&&s.snapshot().incidents_total==0,
+              "repeated raw observations obey bounded window capacity");
+        l=limits();l.flood.max_window_captures=1;SecurityState captures(l);warm(captures);
+        check(captures.snapshot().flood_excluded_captures>0,"tiny-capture window capacity excludes incomplete comparisons");
+        l=limits();l.flood.max_groups=1;SecurityState groups(l);warm(groups);
+        transmissions(groups,capture(7),4);
+        check(groups.snapshot().flood_excluded_captures==1,"AP and target group capacity fails conservatively");
+    }
+    {
+        auto l=limits();l.flood.min_units=5;
+        std::vector<nlohmann::json> log;recording=&log;
+        SecurityState direct(l);warm(direct);
+        transmissions(direct,capture(7),4,true);transmissions(direct,capture(8),4,true);
+        for(int seq=9;seq<=14;++seq)feed(direct,capture(seq));
+        transmissions(direct,capture(15),4,true,false,4);transmissions(direct,capture(16),4,true,false,4);
+        recording=nullptr;
+        SecurityState replay(l);MonitorConfig cfg;cfg.limits=l;
+        WifiSecurityMonitor live(cfg);live.start();
+        bool queued=true;
+        for(const auto& j:log) {
+            if(j.at("kind")=="frame") {auto e=frame_from_json(j);replay.ingest(e);queued=live.submit(e)&&queued;}
+            else {auto c=capture_from_json(j);replay.ingest(c);queued=live.submit(c)&&queued;}
+        }
+        check(queued,"expanded campaign queues without loss");
+        live.stop();
+        check(direct.snapshot().incidents_total==2&&direct.snapshot().incidents[0].path=="repeated_management_frames"&&
+              direct.snapshot().incidents[1].path=="ap_wide_repeated_management_frames",
+              "expanded campaign contains target and AP-wide repeated-content positives");
+        check(snapshot_json(direct.snapshot())==snapshot_json(replay.snapshot()),"expanded paths preserve offline serialization decisions and evidence");
+        check(snapshot_json(direct.snapshot())==snapshot_json(*live.snapshot()),"expanded paths produce identical threaded and offline incidents");
+    }
+    {
+        SecurityState s(limits());
+        for(int seq=1;seq<=6;++seq)feed(s,capture(seq),1);
+        feed(s,capture(7),3);feed(s,capture(8),3);
+        check(s.snapshot().incidents_total==0,"learned channel management rate raises threshold above provisional floor");
+        check(!s.snapshot().baselines[0].holders.empty(),"sub-threshold candidates still protect reference learning");
+    }
+    {
+        IncidentStore store;IncidentObservation o;o.rule="management_disconnect_flood";
+        o.band="wifi_2g4";o.channel=6;o.claimed_bssid="00:11:22:33:44:55";o.target="";
+        o.baseline_key="gain20";auto first=store.observe(o);
+        o.baseline_key="gain30";auto second=store.observe(o);
+        check(first!=second&&store.open_count()==2,"receiver profiles never coalesce AP-wide incidents");
+        store.note_analysed(o.band,o.channel,1,nullptr,"gain20");
+        check(store.incidents()[0].quiet_analysed_s==1&&store.incidents()[1].quiet_analysed_s==0,
+              "quiet exposure stays within matching receiver profile");
+    }
+    {
+        SecurityState s(limits());warm(s);
+        for(int seq=7;seq<=8;++seq) {
+            auto c=capture(seq);
+            for(int n=0;n<4;++n) {
+                auto e=make_frame_event(c,1000+size_t(n)*1000000,400,"OFDM",6,false,frame(7),true);
+                e.device_time_ns=*e.device_time_ns+100000000;
+                s.ingest(e);
+            }
+            c.events_submitted=4;s.ingest(c);
+        }
+        check(s.snapshot().incidents_total==0,"disagreeing event/device anchor cannot prove repeat separation");
+        auto c=capture(9);auto e=make_frame_event(c,c.samples_received+1,400,"OFDM",6,false,frame(7),true);
+        s.ingest(e);c.events_submitted=1;s.ingest(c);
+        check(s.snapshot().flood_excluded_captures==1,"out-of-capture evidence is explicitly excluded");
+    }
+    {
+        auto l=limits();l.flood.repeat_guard_s=0;bool rejected=false;
+        try {SecurityState invalid(l);}catch(const std::invalid_argument&){rejected=true;}
+        check(rejected,"invalid repeated-content guard is rejected");
+    }
+    {
+        SecurityState s(limits());warm(s);
+        auto a=capture(7);a.samples_received=a.analysed_samples=30000000;
+        auto b=capture(8);b.samples_received=b.analysed_samples=30000000;
+        b.device_time_ns=6000000000;b.host_before_ns=1700000006000000000LL;
+        transmissions(s,a,8);transmissions(s,b,8);
+        check(s.snapshot().incidents_total==1&&s.snapshot().incidents[0].numerator==16&&
+              s.snapshot().incidents[0].denominator_analysed_s==3,
+              "long captures retain multiple-capture evidence and their full exposure denominator");
+    }
+    {
+        const char* paths[]={"distinct_management_frames","repeated_management_frames",
+                             "ap_wide_distinct_management_frames","ap_wide_repeated_management_frames"};
+        for(int mode=0;mode<4;++mode) {
+            auto l=limits();l.flood.min_units=5;
+            std::vector<nlohmann::json> log;recording=&log;
+            SecurityState direct(l);warm(direct);
+            transmissions(direct,capture(7),4,mode%2,false,mode>=2?4:1);
+            transmissions(direct,capture(8),4,mode%2,false,mode>=2?4:1);
+            recording=nullptr;MonitorConfig cfg;cfg.limits=l;
+            WifiSecurityMonitor live(cfg);live.start();SecurityState replay(l);bool queued=true;
+            for(const auto& j:log) {
+                if(j.at("kind")=="frame") {auto e=frame_from_json(j);replay.ingest(e);queued=live.submit(e)&&queued;}
+                else {auto c=capture_from_json(j);replay.ingest(c);queued=live.submit(c)&&queued;}
+            }
+            live.stop();
+            check(queued&&direct.snapshot().incidents_total==1&&direct.snapshot().incidents[0].path==paths[mode]&&
+                  snapshot_json(direct.snapshot())==snapshot_json(replay.snapshot())&&
+                  snapshot_json(direct.snapshot())==snapshot_json(*live.snapshot()),
+                  "every detection path matches full threaded, direct and serialized offline evidence");
+        }
     }
     std::cout<<failures<<" failures\n";return failures?1:0;
 }

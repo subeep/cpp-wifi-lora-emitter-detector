@@ -441,11 +441,11 @@ add_executable(lora_capture_crop tools/lora_capture_crop.cpp src/lora_capture.cp
 target_include_directories(lora_capture_crop PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
 
 # Receive-only Wi-Fi IQ fixture collection; independent of LoRa capture tools.
-add_executable(wifi_capture_cli tools/wifi_capture_cli.cpp src/sdr_capture.cpp)
+add_executable(wifi_capture_cli tools/wifi_capture_cli.cpp src/sdr_capture.cpp src/wifi_iq_capture.cpp)
 target_include_directories(wifi_capture_cli PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR} ${UHD_INCLUDE_DIRS})
 target_link_libraries(wifi_capture_cli PRIVATE Threads::Threads dl ${UHD_LIBRARIES})
 
-add_executable(wifi_ofdm_replay tools/wifi_ofdm_replay.cpp src/wifi_ofdm_rx.cpp src/wifi_phy.cpp src/wifi_frame.cpp)
+add_executable(wifi_ofdm_replay tools/wifi_ofdm_replay.cpp src/wifi_ofdm_rx.cpp src/wifi_phy.cpp src/wifi_frame.cpp src/wifi_iq_capture.cpp)
 target_include_directories(wifi_ofdm_replay PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
 target_link_libraries(wifi_ofdm_replay PRIVATE PkgConfig::KISSFFT)
 
@@ -524,7 +524,7 @@ target_sources(test_wifi_dsss_rx PRIVATE src/security/wifi_mac_frame.cpp)
 # receive-only IQ manifests through the same pipeline/state, no radio.
 set(WIFI_SECURITY_OFFLINE_SOURCES ${WIFI_SECURITY_MONITOR_SOURCES}
   src/wifi_frame.cpp src/wifi_phy.cpp src/wifi_dsss_rx.cpp src/wifi_ofdm_rx.cpp)
-add_executable(wifi_security_replay tools/wifi_security_replay.cpp ${WIFI_SECURITY_OFFLINE_SOURCES})
+add_executable(wifi_security_replay tools/wifi_security_replay.cpp src/wifi_iq_capture.cpp ${WIFI_SECURITY_OFFLINE_SOURCES})
 add_executable(test_wifi_security_events tests/test_wifi_security_events.cpp ${WIFI_SECURITY_OFFLINE_SOURCES})
 foreach(target wifi_security_replay test_wifi_security_events)
   target_include_directories(${target} PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
@@ -568,3 +568,48 @@ add_executable(test_wifi_security_beacon_replay tests/test_wifi_security_beacon_
 target_include_directories(test_wifi_security_beacon_replay PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
 target_link_libraries(test_wifi_security_beacon_replay PRIVATE PkgConfig::KISSFFT Threads::Threads)
 add_test(NAME wifi_security_beacon_replay COMMAND test_wifi_security_beacon_replay)
+
+# Shared radio-free capture provenance and LoRa security evidence foundation.
+foreach(target rf_monitor_gui band_smoke_test wifi_scan_smoke test_scanner_wifi_lane)
+  target_sources(${target} PRIVATE src/security/lora_security.cpp)
+endforeach()
+if(TARGET test_lora_gui)
+  target_sources(test_lora_gui PRIVATE src/security/lora_security.cpp)
+endif()
+add_executable(lora_security_replay tools/lora_security_replay.cpp src/security/lora_security.cpp
+    src/lora_capture.cpp src/lora_observation.cpp src/lora_receiver.cpp src/lora_phy.cpp src/lora_phy_std.cpp)
+target_include_directories(lora_security_replay PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+target_link_libraries(lora_security_replay PRIVATE PkgConfig::KISSFFT Threads::Threads)
+add_executable(test_capture_provenance tests/test_capture_provenance.cpp src/wifi_iq_capture.cpp
+    src/lora_capture.cpp src/security/wifi_frame_event.cpp)
+target_include_directories(test_capture_provenance PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+add_test(NAME capture_provenance COMMAND test_capture_provenance)
+add_executable(test_lora_security tests/test_lora_security.cpp src/security/lora_security.cpp src/lora_capture.cpp
+    src/lora_observation.cpp src/lora_receiver.cpp src/lora_phy.cpp src/lora_phy_std.cpp)
+target_include_directories(test_lora_security PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+target_compile_definitions(test_lora_security PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
+target_link_libraries(test_lora_security PRIVATE PkgConfig::KISSFFT Threads::Threads)
+add_test(NAME lora_security COMMAND test_lora_security)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME security_replay_cli COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/tests/test_security_replay_cli.py ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR})
+endif()
+get_target_property(LORA_SCANNER_TEST_SOURCES test_scanner_wifi_lane SOURCES)
+list(REMOVE_ITEM LORA_SCANNER_TEST_SOURCES tests/test_scanner_wifi_lane.cpp)
+add_executable(test_scanner_lora_security tests/test_scanner_lora_security.cpp ${LORA_SCANNER_TEST_SOURCES})
+foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
+  get_target_property(value test_scanner_wifi_lane ${property})
+  if(value)
+    set_target_properties(test_scanner_lora_security PROPERTIES ${property} "${value}")
+  endif()
+endforeach()
+add_test(NAME scanner_lora_security COMMAND test_scanner_lora_security)
+# Finite hardware check of the LoRa lane with isolated identity/evidence stores.
+add_executable(lora_scan_smoke tools/lora_scan_smoke.cpp ${LORA_SCANNER_TEST_SOURCES})
+foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
+  get_target_property(value test_scanner_wifi_lane ${property})
+  if(value)
+    set_target_properties(lora_scan_smoke PROPERTIES ${property} "${value}")
+  endif()
+endforeach()

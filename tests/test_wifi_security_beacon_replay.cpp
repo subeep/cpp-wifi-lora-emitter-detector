@@ -140,5 +140,28 @@ int main() {
         check(snapshot_json(direct.snapshot())==snapshot_json(offline.snapshot()),"serialized replay equals direct state including evidence");
         check(snapshot_json(direct.snapshot())==snapshot_json(*live.snapshot()),"threaded monitor equals offline replay");
     }
+    {
+        SecurityState s;start(s);s.note_input_rejected();feed(s,cap(3),1000000);
+        check(s.snapshot().incidents_total==0&&s.snapshot().input_lines_rejected==1,
+              "malformed recording line breaks historical replay comparison");
+    }
+    for(int variant=0;variant<4;++variant) {
+        SecurityState s;start(s);auto c=cap(3);auto e=event(c,1000000);
+        if(variant==0)e.mpdu[38]='Y'; // different SSID, same TSF/sequence
+        if(variant==1)e.mpdu[22]^=0x10; // different sequence, same TSF
+        if(variant==2)e.phy="DSSS",e.rate_mbps=1;
+        if(variant==3)e.mpdu[10]^=2; // different claimed transmitter
+        auto crc=wifi::fcs32(e.mpdu.data(),e.mpdu.size()-4);
+        for(int n=0;n<4;++n)e.mpdu[e.mpdu.size()-4+n]=uint8_t(crc>>(8*n));
+        s.ingest(e);c.events_submitted=1;s.ingest(c);
+        check(s.snapshot().incidents_total==0,"TSF/sequence alone or a different PHY/source cannot establish full-frame replay");
+    }
+    {
+        SecurityState s;start(s);auto c=cap(3);auto earlier=event(c,1000000);auto later=event(c,2200000,12);
+        later.sample_start+=1000;later.device_time_ns=*later.device_time_ns+50000;
+        s.ingest(later);s.ingest(earlier);c.events_submitted=2;s.ingest(c);
+        check(s.snapshot().incidents_total==0&&s.snapshot().beacon_replay_excluded==1,
+              "out-of-order frames invalidate the entire capture before an incident can be emitted");
+    }
     return failures?1:0;
 }

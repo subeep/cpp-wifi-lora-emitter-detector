@@ -559,6 +559,7 @@ int main() {
                 auto message = scanner.lora_capture_message();
                 if (!message.empty()) ImGui::TextWrapped("%s", message.c_str());
             }
+            draw_lora_security_panel(*scanner.lora_security_snapshot());
             draw_lora_replay_panel();
         }
 

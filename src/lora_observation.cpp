@@ -88,7 +88,8 @@ std::vector<LoraPacketRow> analyze_lora_packets(const std::vector<std::complex<f
     }
     std::vector<LoraPacketRow> rows;
     lora::receiver::Diagnostics diagnostics;
-    for (const auto& p : lora::receiver::demodulate(iq, sf, bandwidth, {}, &diagnostics)) {
+    const auto packets=lora::receiver::demodulate(iq, sf, bandwidth, {}, &diagnostics);
+    for (const auto& p : packets) {
         LoraPacketRow row;
         row.decoder = "LoRa explicit PHY";
         row.inverted_iq = p.inverted_iq;
@@ -97,6 +98,11 @@ std::vector<LoraPacketRow> analyze_lora_packets(const std::vector<std::complex<f
         row.cfo_hz = p.cfo_bins * bandwidth / (1 << sf);
         row.drift_hz_per_symbol = p.drift_bins_per_symbol * bandwidth / (1 << sf);
         row.capture_offset_s = p.start_sample / bandwidth;
+        if (p.start_sample>=0 && p.end_sample>p.start_sample) {
+            row.decoder_sample_start=size_t(p.start_sample);row.decoder_sample_end=size_t(p.end_sample);
+            row.start_uncertainty_samples=size_t(1)<<sf;
+        }
+        row.analysis_limited=packets.size()>=32; // conservative: per-polarity cap is 32
         row.fec_disagreements = p.fec_disagreements;
         row.sf = sf; row.cr = p.cr; row.payload_len = p.declared_payload_len;
         row.cfo_bins = int(std::lround(p.cfo_bins)); row.ldro = p.ldro;

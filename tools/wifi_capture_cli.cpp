@@ -1,5 +1,6 @@
 // Dedicated receive-only X310 fixture collection. Never instantiates a TX streamer.
 #include "sdr_capture.hpp"
+#include "wifi_iq_capture.hpp"
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <fstream>
@@ -20,25 +21,21 @@ int main(int argc,char** argv) {
         auto profile=rfmon::device_profile(rfmon::SdrDeviceType::X310);
         rfmon::UsrpCapture radio(profile.antenna,20.0,0,profile.device_args);
         bool incomplete=false;
+        const std::string run_id="wifi-iq:"+std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
         for(size_t i=0;i<channels.size();++i) {
             double channel=channels[i];
             auto start=std::chrono::system_clock::now().time_since_epoch();
-            auto [iq,rate,overflow]=radio.capture(channel+offset,20e6,seconds);
-            incomplete=incomplete||iq.empty()||overflow;
+            auto captured=radio.capture_detailed(channel+offset,20e6,seconds);
+            const auto& iq=captured.samples;const double rate=captured.sample_rate_hz;const bool overflow=captured.overflow;
+            incomplete=incomplete||iq.empty()||overflow||captured.timing.timed_out||captured.timing.exception;
+            if(iq.empty()) {std::cerr<<"Dropped empty capture for "<<channel<<" Hz\n";continue;}
             std::string stem=std::to_string(i)+"-"+std::to_string(int(channel/1e6));
-            std::ofstream data(dir/(stem+".cf32"),std::ios::binary);
-            uint64_t checksum=14695981039346656037ull;
-            for(auto v:iq) for(float f:{v.real(),v.imag()}) {
-                uint32_t u; std::memcpy(&u,&f,4);
-                for(int b=0;b<4;++b) { unsigned char c=(u>>(8*b))&255;data.put(char(c));checksum=(checksum^c)*1099511628211ull; }
-            }
-            data.close();if(!data) throw std::runtime_error("IQ write failed");
             json meta={{"schema",1},{"format","cf32_le"},{"iq_file",stem+".cf32"},{"samples",iq.size()},
                 {"sample_rate_hz",rate},{"requested_rate_hz",20e6},{"channel_hz",channel},{"capture_center_hz",channel+offset},
                 {"center_semantics","requested tuning frequency"},{"requested_gain_db",20},{"rx_channel",0},{"antenna","RX2"},
                 {"device_args",profile.device_args},{"overflow",overflow},{"host_start_ns",std::chrono::duration_cast<std::chrono::nanoseconds>(start).count()},
-                {"requested_duration_s",seconds},{"fnv1a64",std::to_string(checksum)}};
-            std::ofstream manifest(dir/(stem+".json"));manifest<<meta.dump(2)<<'\n';manifest.close();if(!manifest)throw std::runtime_error("Manifest write failed");
+                {"requested_duration_s",seconds},{"run_id",run_id},{"radio_session",1},{"capture_seq",i+1}};
+            rfmon::save_wifi_iq_capture((dir/(stem+".json")).string(),meta,iq,captured.timing);
             std::cout<<stem<<": "<<iq.size()<<" samples, "<<rate<<" Hz, overflow="<<overflow<<std::endl;
         }
         return incomplete ? 1 : 0;

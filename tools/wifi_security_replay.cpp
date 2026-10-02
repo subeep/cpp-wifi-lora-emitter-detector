@@ -24,6 +24,7 @@
 #include "security/wifi_security_io.hpp"
 #include "security/wifi_security_state.hpp"
 #include "wifi_burst_pipeline.hpp"
+#include "security/wifi_iq_input.hpp"
 
 using nlohmann::json;
 using namespace rfmon;
@@ -69,72 +70,33 @@ void replay_recording(const std::filesystem::path& path, SecurityState& state, S
                 CaptureRecord c = capture_from_json(j);
                 if (sinks.record.is_open()) sinks.record << to_json(c).dump() << "\n";
                 state.ingest(c);
-            } else if (kind == "loss") state.ingest(loss_from_json(j));
+            } else if (kind == "loss") {
+                state.ingest(loss_from_json(j));
+                if (sinks.record.is_open()) sinks.record << j.dump() << "\n";
+            } else if (kind == "input_rejected") {
+                state.note_input_rejected();
+                if (sinks.record.is_open()) sinks.record << j.dump() << "\n";
+            }
             else if (kind == "command") {
                 ControlCommand c = command_from_json(j);
                 if (sinks.record.is_open()) sinks.record << to_json(c).dump() << "\n";
                 state.ingest(c);
             }
-            else if (kind != "header") state.note_input_rejected();
+            else if (kind != "header") throw std::runtime_error("unknown record kind");
         } catch (const std::exception&) {
             state.note_input_rejected();
+            if (sinks.record.is_open()) sinks.record << "{\"kind\":\"input_rejected\"}\n";
         }
     }
-}
-
-int wifi_channel_number(double hz) {
-    const double mhz = hz / 1e6;
-    return int(std::lround(mhz < 3000 ? (mhz - 2407.0) / 5.0 : (mhz - 5000.0) / 5.0));
 }
 
 void replay_iq(const std::filesystem::path& manifest, uint64_t seq, SecurityState& state, Sinks& sinks,
                const Options& opt) {
-    json j;
-    std::ifstream(manifest) >> j;
-    if (j.value("format", "") != "cf32_le") throw std::runtime_error(manifest.string() + ": not a cf32_le manifest");
-    const size_t n = j.at("samples");
-    const double rate = j.at("sample_rate_hz"), center = j.at("capture_center_hz"), channel = j.at("channel_hz");
-    std::filesystem::path iq_file = j.at("iq_file").get<std::string>();
-    if (iq_file.has_parent_path()) throw std::runtime_error("IQ filename must be local to its manifest");
-    iq_file = manifest.parent_path() / iq_file;
-    if (std::filesystem::file_size(iq_file) != n * 8) throw std::runtime_error(iq_file.string() + ": length mismatch");
-    std::vector<std::complex<float>> iq(n);
-    {
-        std::ifstream raw(iq_file, std::ios::binary);
-        std::vector<char> bytes(n * 8);
-        raw.read(bytes.data(), std::streamsize(bytes.size()));
-        for (size_t i = 0; i < n; ++i) {
-            float v[2];
-            for (int c = 0; c < 2; ++c) {
-                uint32_t u = 0;
-                for (int b = 0; b < 4; ++b) u |= uint32_t(uint8_t(bytes[i * 8 + size_t(c) * 4 + size_t(b)])) << (8 * b);
-                std::memcpy(&v[c], &u, 4);
-            }
-            iq[i] = {v[0], v[1]};
-        }
-    }
-
-    CaptureRecord rec;
-    rec.run_id = "offline:" + j.value("fnv1a64", manifest.filename().string());
-    rec.capture_seq = seq;
-    rec.source = "offline:" + manifest.filename().string();
-    rec.band = channel < 3e9 ? BAND_WIFI_2G4 : BAND_WIFI_5G;
-    rec.channel = wifi_channel_number(channel);
-    rec.channel_hz = channel;
-    rec.capture_center_hz = center;
-    rec.requested_rate_hz = j.value("requested_rate_hz", rate);
-    rec.sample_rate_hz = rate;
-    rec.requested_duration_s = j.value("requested_duration_s", 0.0);
-    if (j.contains("requested_gain_db")) rec.gain_db = j.at("requested_gain_db").get<double>();
-    rec.antenna = j.value("antenna", "");
-    rec.device = j.value("device_args", "");
-    rec.samples_requested = n;
-    rec.samples_received = n;
-    // Manifests carry only a host timestamp taken before tuning, not a
-    // bracket around the first sample: no receive time is claimed.
-    rec.clock = ClockDomain::Unknown;
-    rec.host_before_ns = j.value("host_start_ns", int64_t(0));
-    if (j.value("overflow", false)) rec.overflows.push_back({0, std::nullopt});  // gap position unknown
+    auto input=load_wifi_iq_capture(manifest.string());
+    const auto& iq=input.iq;
+    const size_t n=iq.size();
+    CaptureRecord rec=wifi_iq_record(input,manifest.filename().string(),seq);
+    const double rate=rec.sample_rate_hz,center=rec.capture_center_hz,channel=rec.channel_hz;
 
     const auto t0 = std::chrono::steady_clock::now();
     const bool try_dsss = rec.band == BAND_WIFI_2G4;

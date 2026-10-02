@@ -1,4 +1,5 @@
 #include "lora_capture.hpp"
+#include "capture_timing_json.hpp"
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <fstream>
@@ -33,6 +34,11 @@ void validate(const LoraCapture& c, size_t n) {
     require(std::isfinite(c.requested_duration_s) && c.requested_duration_s > 0, "Invalid requested duration");
     require(std::isfinite(c.host_start_unix_s) && c.host_start_unix_s >= 0, "Invalid timestamp");
     require(!c.requested_gain_db || std::isfinite(*c.requested_gain_db), "Invalid gain");
+    if (c.timing) {
+        validate_capture_timing(*c.timing, n, c.sample_rate_hz);
+        require(c.overflow == !c.timing->overflows.empty(), "Overflow flag disagrees with timing");
+        require(!c.run_id.empty() && c.run_id.size() <= 256, "Missing/invalid capture run identity");
+    }
     bool compatible = false;
     for (double bw : {125000., 250000., 500000.}) {
         double r = c.sample_rate_hz / bw;
@@ -76,13 +82,15 @@ std::string save_lora_capture(const std::string& parent, const LoraCapture& c) {
             iq.write(reinterpret_cast<char*>(bytes), 8);
         }
         iq.close();
-        json j{{"schema", "rfmon-lora-iq"}, {"version", 1}, {"format", "cf32_le"},
+        json j{{"schema", "rfmon-lora-iq"}, {"version", 2}, {"format", "cf32_le"},
                {"sample_count", c.iq.size()}, {"sample_rate_hz", c.sample_rate_hz},
                {"requested_sample_rate_hz", c.requested_sample_rate_hz},
                {"requested_center_hz", c.requested_center_hz}, {"requested_duration_s", c.requested_duration_s},
                {"host_start_unix_s", c.host_start_unix_s}, {"overflow", c.overflow},
                {"device_args", c.device_args}, {"antenna", c.antenna}, {"source", c.source},
                {"iq_fnv1a64", std::to_string(hash)}, {"decoder_revision", "lora-observation-v1"}};
+        j["run_id"]=c.run_id;j["capture_seq"]=c.capture_seq;j["radio_session"]=c.radio_session;
+        j["timing"]=c.timing ? capture_timing_json(*c.timing) : json(nullptr);
         j["requested_gain_db"] = c.requested_gain_db ? json(*c.requested_gain_db) : json(nullptr);
         std::ofstream manifest(dir / "manifest.tmp");
         manifest.exceptions(std::ios::failbit | std::ios::badbit);
@@ -94,11 +102,38 @@ std::string save_lora_capture(const std::string& parent, const LoraCapture& c) {
     }
     return fs::absolute(dir).string();
 }
+LoraCapture crop_lora_capture(const LoraCapture& source, size_t begin, size_t end) {
+    require(begin < end && end <= source.iq.size(), "Invalid LoRa crop range");
+    LoraCapture out;
+    out.sample_rate_hz=source.sample_rate_hz;out.requested_sample_rate_hz=source.requested_sample_rate_hz;
+    out.requested_center_hz=source.requested_center_hz;out.requested_duration_s=double(end-begin)/source.sample_rate_hz;
+    out.host_start_unix_s=source.host_start_unix_s; // legacy call timestamp is NOT a sample anchor
+    out.requested_gain_db=source.requested_gain_db;out.overflow=source.overflow;
+    out.device_args=source.device_args;out.antenna=source.antenna;out.source="cropped:"+source.source;
+    // A crop is a new evidence object, never the original capture's ingest identity.
+    out.run_id=source.run_id+":crop:"+std::to_string(begin)+":"+std::to_string(end);
+    out.capture_seq=source.capture_seq;out.radio_session=source.radio_session;
+    out.iq.assign(source.iq.begin()+begin,source.iq.begin()+end);
+    if (source.timing) {
+        out.timing=*source.timing;auto& t=*out.timing;t.requested_samples=end-begin;
+        auto anchor=capture_sample_time(*source.timing,source.sample_rate_hz,source.iq.size(),begin);
+        t.device_time_valid=anchor.has_value();t.device_time_ns=anchor.value_or(0);
+        // Keep crops of discontinuous input explicitly excluded, even if the
+        // selected region itself looks quiet. Resume anchors are not guessed.
+        t.overflows.clear();
+        if (source.overflow) {t.device_time_valid=false;t.overflows.push_back({0,false,0});t.host_before_ns=t.host_after_ns=0;}
+        else if (t.host_before_ns && t.host_after_ns >= t.host_before_ns) {
+            const int64_t shift=int64_t(std::llround(double(begin)/source.sample_rate_hz*1e9));
+            t.host_before_ns+=shift;t.host_after_ns+=shift;
+        }
+    }
+    return out;
+}
 LoraCapture load_lora_capture(const std::string& directory) {
     fs::path dir(directory);
     require(fs::file_size(dir / "manifest.json") <= 65536, "Manifest too large");
     std::ifstream manifest(dir / "manifest.json"); json j; manifest >> j;
-    require(j.at("schema") == "rfmon-lora-iq" && j.at("version") == 1 && j.at("format") == "cf32_le",
+    require(j.at("schema") == "rfmon-lora-iq" && (j.at("version") == 1 || j.at("version") == 2) && j.at("format") == "cf32_le",
             "Unsupported capture schema/version/format");
     LoraCapture c;
     c.sample_rate_hz = j.at("sample_rate_hz"); c.requested_sample_rate_hz = j.at("requested_sample_rate_hz");
@@ -109,6 +144,11 @@ LoraCapture load_lora_capture(const std::string& directory) {
     require(j.at("sample_count").is_number_unsigned(), "Invalid sample count");
     auto count = j.at("sample_count").get<uint64_t>();
     require(count <= max_samples, "IQ sample count too large");
+    if (j.at("version") == 2) {
+        c.run_id=j.at("run_id");c.capture_seq=capture_sample_count(j.at("capture_seq"));
+        c.radio_session=capture_sample_count(j.at("radio_session"));
+        if (!j.at("timing").is_null()) c.timing=capture_timing_from_json(j.at("timing"),size_t(count),c.sample_rate_hz);
+    }
     validate(c, size_t(count));
     require(fs::file_size(dir / "iq.cf32_le") == count * 8, "IQ length differs from manifest");
     c.iq.resize(size_t(count));

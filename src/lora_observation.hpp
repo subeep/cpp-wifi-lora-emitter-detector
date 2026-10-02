@@ -35,6 +35,9 @@ struct LoraPacketRow {
     std::optional<double> preamble_peak_ratio, sfd_peak_ratio;
     std::optional<double> cfo_hz, drift_hz_per_symbol, capture_offset_s;
     std::optional<int> fec_disagreements;
+    std::optional<size_t> decoder_sample_start, decoder_sample_end;
+    size_t start_uncertainty_samples = 0; // coarse preamble search; not exact packet arrival
+    bool analysis_limited = false; // hypothesis output may have reached receiver cap
     int cfo_bins = 0;
     std::optional<std::string> payload_repr;
 

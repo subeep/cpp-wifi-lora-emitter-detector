@@ -22,6 +22,7 @@
 #include "registry.hpp"
 #include "sdr_capture.hpp"
 #include "security/wifi_security_monitor.hpp"
+#include "security/lora_security.hpp"
 #include "serial_lane.hpp"
 #include "wifi_master.hpp"
 
@@ -157,6 +158,8 @@ public:
     // Only populated while BAND_SUB_GHZ is active - see run()'s LoRa
     // PHY listen sub-loop, which runs alongside the usual energy scan.
     std::vector<LoraPacketRow> lora_packets() const;
+    std::shared_ptr<const lora_security::Snapshot> lora_security_snapshot() const;
+    bool set_lora_security_recording(const std::string& path); // before start only
 
     // Persistent, cross-run LoRa "master emitter" list (see
     // lora_master.hpp) - a separate identity system from registry_lora_
@@ -295,6 +298,8 @@ private:
     wifi_security::MonitorConfig security_config_;
     std::unique_ptr<wifi_security::WifiSecurityMonitor> security_;
     uint64_t security_capture_seq_ = 0;
+    uint64_t lora_security_capture_seq_ = 0;
+    std::unique_ptr<lora_security::Monitor> lora_security_;
     uint64_t radio_session_ = 0;
     bool running_ = false;
 

@@ -223,3 +223,59 @@ positive sustained-flood hardware gate remains open: the measured operation did
 not supply the required 20 distinct units across two captures, and there is no
 RF shield box for a controlled flood campaign. Details and artifacts are in
 [ESP32_WIFI_RECEPTION_CHECK.md](ESP32_WIFI_RECEPTION_CHECK.md).
+
+## 2026-10-02 hardening progress
+
+The first Wi-Fi/LoRa software foundation milestone is implemented. Wi-Fi IQ
+schema 2 now retains hardware time, continuity and run/session identities;
+legacy schema 1 remains timing-limited. Saved IQ is checksum/size/range checked
+before security replay. Malformed recording input interrupts pending detector
+history/baseline learning, and loss/rejected-input boundaries survive re-export.
+Additional existing-rule regression cases were added. The subsequent version-2
+disconnect-flood work below implements aggregation and repeated-content paths;
+thresholds are unchanged and remain provisional. Other classifiers remain pending.
+
+LoRa now has a separate bounded capture-event/coverage monitor, NDJSON evidence
+and a GUI coverage panel. It explicitly has no attack rules yet. LoRa PHY/MIC
+integrity and session limits are not relaxed. Work order, commands, validation
+and the next receive-only X310 gate are maintained in
+[WIFI_LORA_SECURITY_HARDENING.md](WIFI_LORA_SECURITY_HARDENING.md).
+
+The receive-only X310 gate subsequently passed: fresh IQ and live scanner
+captures preserve device timing, and offline replay matches live semantics.
+One burst-limited Wi-Fi capture was explicitly excluded. Known-source LoRa
+reception and positive attack validation remain pending. See
+[SECURITY_RECEIVE_CHECK_2026-10-02.md](SECURITY_RECEIVE_CHECK_2026-10-02.md).
+
+### Disconnect flood coverage expansion — 2026-10-02
+
+Completed the first two follow-up steps: repeated-content and AP-wide
+deauth/disassociation paths, plus adversarial software and threaded/offline
+equivalence tests. Rule version 2 evaluates rolling whole-capture windows to
+reduce fixed-boundary misses. Identical extra copies require agreeing device
+timing, Retry clear and a provisional 10 ms separation guard; short trains and
+Retry-marked repeats do not inflate the numerator. AP-wide scope combines
+multiple targets under one claimed BSSID and is explicit in GUI evidence.
+
+Candidate holds protect learning; incomplete input and resource caps remain
+excluded. Receiver profiles now coalesce incidents separately. Default rate and
+maturity thresholds remain provisional. All four paths are medium-confidence
+suspected activity, not proof of disruption, spoofing or PMF acceptance.
+At this software milestone, LoRa rules and positive RF campaigns remained
+pending. Full limits, testing and
+next steps: [WIFI_LORA_SECURITY_HARDENING.md](WIFI_LORA_SECURITY_HARDENING.md).
+
+### Conducted positive RF gate — 2026-10-02
+
+Subsequently completed a HackRF → 30 dB attenuator → X310 RX2 campaign at
+6 Mbps OFDM, channel 11. The native monitor automatically flagged historical
+beacon replay and all four disconnect-flood paths. Baseline/retry controls
+produced no new or renewed incidents. All 1,114 accepted frames matched lab
+references; 104 captures were clean and device-timed. Live/offline state matched.
+Three coalesced incidents preserve five paths in their timelines. This does
+not complete multi-PHY/rate, PMF, receiver-recall or false-positive calibration.
+The production GUI replay rendered these recorded incidents and passed the
+evidence-dialog interaction check. All 13 CTest suites, 88 regenerated OFDM
+fixture checks and 63 quantized packet preflight checks passed.
+Initial incomplete trials and scope are recorded in
+[HACKRF_WIFI_VALIDATION_2026-10-02.md](HACKRF_WIFI_VALIDATION_2026-10-02.md).

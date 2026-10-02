@@ -6,6 +6,37 @@
 #include <chrono>
 
 namespace rfmon {
+void draw_lora_security_panel(const lora_security::Snapshot& s) {
+    if(!ImGui::CollapsingHeader("LoRa security monitoring"))return;
+    ImGui::TextWrapped("Capture evidence only. LoRa replay/flood attack rules are not implemented. Supported decode: explicit PHY SF7-12, BW125/250/500 kHz when the capture rate permits.");
+    ImGui::TextWrapped("Latest capture: %s",s.health.c_str());
+    ImGui::Text("Captures: %llu | Excluded: %llu | Device-timed: %llu",(unsigned long long)s.captures,
+        (unsigned long long)s.excluded,(unsigned long long)s.device_timed);
+    ImGui::Text("Sampled: %.3f s | Analysed: %.3f s | Usable supported-PHY exposure: %.3f s",s.sampled_s,s.analysed_s,s.usable_s);
+    ImGui::Text("Events: %llu | Eligible protocol inputs: %llu | Failed: %llu | CRC absent: %llu | Partial: %llu",
+        (unsigned long long)s.events,(unsigned long long)s.eligible,(unsigned long long)s.crc_failed,
+        (unsigned long long)s.crc_absent,(unsigned long long)s.partial);
+    ImGui::Text("Duplicate hypotheses: %llu | Lost capture batches: %llu | Rejected inputs: %llu",
+        (unsigned long long)s.hypotheses_deduplicated,(unsigned long long)s.input_loss,(unsigned long long)s.rejected_inputs);
+    ImGui::TextWrapped("Capture coverage applies to supported decoder hypotheses; it does not establish packet recall. Sample-start indices have coarse preamble uncertainty. CRC-valid bytes do not authenticate LoRaWAN MICs or identify a physical device.");
+    ImGui::Text("Unsampled device time: %.3f s | Unknown gaps: %llu | Time regressions: %llu",s.dead_s,
+        (unsigned long long)s.unknown_gaps,(unsigned long long)s.time_regressions);
+    if(!s.coverage.empty()&&ImGui::BeginTable("lora_security_coverage",5,ImGuiTableFlags_Borders|ImGuiTableFlags_RowBg)) {
+        for(const char* label:{"Frequency MHz","Rate ksps","Gain dB","Sampled s","Usable s"})ImGui::TableSetupColumn(label);
+        ImGui::TableHeadersRow();
+        for(const auto& [key,c]:s.coverage) {
+            ImGui::TableNextRow();ImGui::TableSetColumnIndex(0);ImGui::Text("%.3f",c.center_hz/1e6);
+            ImGui::TableSetColumnIndex(1);ImGui::Text("%.1f",c.rate_hz/1e3);
+            ImGui::TableSetColumnIndex(2);if(c.gain_db)ImGui::Text("%.1f",*c.gain_db);else ImGui::TextUnformatted("AGC/unknown");
+            ImGui::TableSetColumnIndex(3);ImGui::Text("%.3f",c.sampled_s);ImGui::TableSetColumnIndex(4);ImGui::Text("%.3f",c.usable_s);
+        }
+        ImGui::EndTable();
+    }
+    if(!s.recording_error.empty())ImGui::TextWrapped("Recording error: %s",s.recording_error.c_str());
+    if(s.captures)ImGui::Text("Last capture: #%llu | %.3f MHz | %.1f ksps | session %llu",
+        (unsigned long long)s.latest.capture_seq,s.latest.center_hz/1e6,s.latest.rate_hz/1e3,(unsigned long long)s.latest.radio_session);
+}
+
 void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float height) {
     if (packets.empty()) {
         ImGui::TextDisabled("No LoRa packets observed yet.");

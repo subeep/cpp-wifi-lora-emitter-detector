@@ -1096,3 +1096,139 @@ the burst command was never sent and its counters remained zero. This is a
 measured ESP32 transmitter limitation, not a negative test of the flood
 detector. The previous supported own-client disconnect result remains valid.
 See [shield-box report](docs/ESP32_SHIELD_BOX_TEST_2026-09-29.md).
+
+## 18. Wi-Fi and LoRa security evidence foundation — 2026-10-02
+
+User cancelled Bluetooth and reopened both Wi-Fi and LoRa security work. The
+first software milestone is implemented; the complete detection/calibration
+programme remains in progress.
+
+- Extracted radio-free capture timing metadata. Wi-Fi IQ schema 2 and LoRa IQ
+  manifest v2 preserve first-sample device anchors, host brackets, overflow
+  positions/resume anchors, receiver context and run/session/capture identities.
+  Legacy files remain readable without fabricated hardware timing. Wi-Fi IQ
+  replay now verifies checksums, bounded sizes, finite samples and clock ranges.
+- Malformed Wi-Fi recording lines invalidate pending flood/replay comparisons
+  and baseline learning. Loss/rejected-input markers persist after re-export.
+  Added replay false-positive and flood input-gap regression cases. Existing
+  rule thresholds/aggregation paths are unchanged; broader flood coverage is
+  still pending.
+- Added a separate LoRa evidence monitor with atomic bounded capture batches,
+  NDJSON recording, integrity eligibility, same-sample hypothesis deduplication,
+  receiver-profile coverage, clock-regression exclusions and sample-start
+  uncertainty. The LoRa GUI explicitly says attack rules are not implemented.
+  Physical CRC is not MIC verification; raw repeated telemetry is not labelled
+  replay. PHY decoding algorithms and RF fingerprint acceptance gates are
+  unchanged.
+- Added provenance, LoRa-state, CLI IQ/event equivalence and fake-radio scanner
+  integration tests using previously recorded SX1262/Wi-Fi samples. Synthetic
+  timestamp anchors in tests are not historic hardware measurements. GUI tested
+  offscreen. No radio connected, firmware flashed or RF transmitted this session.
+- Next hardware gate: receive-only X310 timing/replay validation. A transmitter
+  is unnecessary for that check; SX1262/Heltec is needed later for controlled
+  LoRa reception. Positive Wi-Fi flood/replay and real LoRaWAN session tests
+  remain unverified.
+
+Full progress, limits, commands, test results and remaining milestones:
+[docs/WIFI_LORA_SECURITY_HARDENING.md](docs/WIFI_LORA_SECURITY_HARDENING.md).
+
+Validation for this milestone: production GUI and affected tools built; all 13
+registered CTest suites passed. Four focused AddressSanitizer/UndefinedBehaviorSanitizer
+suites passed with no reported errors (leak checking unavailable under ptrace).
+LoRa security/coverage widgets rendered and were visually inspected offscreen.
+
+## 19. Connected X310 receive-only validation — 2026-10-02
+
+X310 `192.168.10.2`, serial `326CF02`, and both UBX receiver boards were
+recognised. Fresh Wi-Fi IQ captures returned full samples without overflow and
+decoded 23 FCS-valid frames with device timestamps; IQ/event replay snapshots
+matched exactly. A production channel-11 run decoded 2,550 valid frames
+(1,893 OFDM, 657 DSSS), with no receive failure or queue loss. Offline state
+matched live semantics and its recent tail. One burst-cap capture was correctly
+excluded from baseline learning and replay/flood continuity.
+
+LoRa standalone IQ and four production captures at 866.9 MHz also passed
+timestamp/coverage checks. Eight production seconds were usable; full event
+replay and first saved IQ/live-batch replay matched exactly. No LoRa packets
+were heard, so known-source reception remains pending. Added an isolated,
+finite receive-only `lora_scan_smoke` tool. No RF transmitted or firmware flashed;
+these checks do not validate positive attack detection or add LoRa attack rules.
+
+Artifacts and remaining gates:
+[docs/SECURITY_RECEIVE_CHECK_2026-10-02.md](docs/SECURITY_RECEIVE_CHECK_2026-10-02.md).
+
+## 20. Wi-Fi disconnect-flood coverage expansion — 2026-10-02
+
+Completed the authorised software steps 1 and 2. Disconnect-flood rule version 2
+adds repeated-content and AP-wide aggregation paths alongside distinct-target
+counts. Repeated copies need matching device/sample timing, Retry clear and
+10 ms guard separation. Short copy trains and Retry-marked duplicates do not
+inflate counts; host-only input cannot establish repeated-copy separation.
+Client-to-AP disconnects aggregate affected clients, and separate claimed BSSIDs
+never combine. Qualifying target incidents suppress overlapping AP-wide
+emission within the same evaluation. GUI target labels/details expose AP-wide
+scope and the distinct/repeated path.
+
+Rolling whole-capture windows evaluate at each usable capture end, retaining
+full analysed exposure and multiple-capture evidence even for long captures.
+History alone cannot advance an incident. Baseline holds precede learning;
+loss, caps, bad input, out-of-order timing and context changes invalidate
+comparisons. Frame-count completeness includes zero-count records, and
+out-of-capture disconnect inputs are excluded. Bounded raw units, groups and
+capture counts prevent repeated content bypassing resource limits. Receiver
+profiles cannot coalesce incidents together. Baseline test fixtures now report
+accurate submitted-frame counts.
+
+Independent fixture tests cover all four paths, retries/reconnects, baseline
+thresholds, boundary phases, timing/coverage failures, resource caps and full
+threaded/serialized-offline equality. The production CLI also tests default
+repeated/AP-wide positives, shifted boundaries, retry/loss negatives and export
+equality. Today's benign 2,550-frame X310 recording remains incident-free with
+one burst-limited capture explicitly excluded. No RF transmitted, new hardware
+capture made or firmware flashed for this milestone. Positive RF tests,
+calibration and LoRa attack rules remain pending; thresholds stay provisional.
+
+Validation: production GUI/tools built and all 13 CTest suites passed. Focused
+flood, beacon-replay and event suites passed ASan/UBSan with no reported errors
+(leak detection disabled under the environment's ptrace wrapper). GUI text
+changes were compiled, without a new visual render check.
+
+Details: [docs/WIFI_LORA_SECURITY_HARDENING.md](docs/WIFI_LORA_SECURITY_HARDENING.md).
+
+## 21. Conducted HackRF Wi-Fi classification validation — 2026-10-02
+
+The user connected a HackRF One and confirmed HackRF SMA → 30 dB, 5 W
+attenuator → X310 RF A RX2, without antennas. Used only fixed synthetic lab
+identities, channel 11, 6 Mbps OFDM at 20 Msps, finite sample counts and disabled
+RF amplifier/antenna power. No real client, LoRa operation or firmware flash.
+
+The production monitor automatically flagged historical beacon replay and
+all four disconnect-flood paths (distinct/repeated target and AP-wide). Clean
+baseline and retry-only controls created no new/renewed incident. Final native
+and offline semantic snapshots/recent tail matched. Three coalesced incidents
+retain all five paths in their timelines. Received 1,114 FCS-valid, exact-
+reference frames (303 beacons, 647 non-Retry deauth, 164 Retry deauth), all device-
+timed, across 104 complete clean captures. No overflow, timeout, failure, cap,
+queue loss, input rejection or unknown gap in the successful run.
+
+Added fixed-vector preparation and bounded conducted executor tools, exposed
+the existing software OFDM fixture encoder for import without auto-writing,
+and added known-gain/graceful-stop options to the receive-only scan smoke tool.
+The executor waits for completed capture coverage, preserves startup exclusions,
+and stops on degradation during testing. Earlier minimum-gain, incomplete replay
+and startup-loss attempts remain documented; detector thresholds/logic were not
+adjusted for this campaign. Both radios' test processes have stopped.
+
+Validation also passed all 13 CTest suites, 88 regenerated OFDM fixture checks
+and 63 exact-byte quantized packet preflight checks. The production Wi-Fi
+Security GUI rendered the actual successful recording and passed an automated
+incident/evidence-dialog interaction check; its evidence image was visually
+inspected. This verifies GUI replay of recorded hardware results, rather than
+a desktop live-session observation. Screenshots are retained under
+`campaign-complete/gui-hardware-incidents.png` and
+`campaign-complete/gui-hardware-evidence.png` in the report's evidence root.
+
+This validates one conducted synthetic-management scenario at 6 Mbps, not
+client disruption, PMF acceptance, all-PHY recall or calibration. Known-source
+LoRa reception, broader Wi-Fi negatives/rates and long benign soak remain next.
+Report: [docs/HACKRF_WIFI_VALIDATION_2026-10-02.md](docs/HACKRF_WIFI_VALIDATION_2026-10-02.md).

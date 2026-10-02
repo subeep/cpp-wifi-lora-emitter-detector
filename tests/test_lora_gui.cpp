@@ -57,7 +57,13 @@ int main(int argc, char** argv) {
         ImGui::SetNextWindowPos(ImVec2(0,0)); ImGui::SetNextWindowSize(io.DisplaySize);
         ImGui::Begin("LoRa interpretation - synthetic display fixtures");
         ImGui::TextWrapped("Each row is an SF/BW hypothesis. CRC does not establish protocol identity or real-radio interoperability.");
-        draw_lora_packet_table(rows,260);
+        lora_security::Snapshot security;security.captures=3;security.excluded=1;security.input_loss=2;
+        security.health="Incomplete coverage; security input excluded";security.sampled_s=6;security.analysed_s=4;security.usable_s=2;
+        security.latest.capture_seq=3;security.latest.center_hz=866900000;security.latest.rate_hz=500000;security.latest.radio_session=1;
+        lora_security::ProfileCoverage profile;profile.center_hz=866900000;profile.rate_hz=500000;
+        profile.gain_db=20;profile.sampled_s=6;profile.usable_s=2;security.coverage["synthetic-display"]=profile;
+        ImGui::SetNextItemOpen(true,ImGuiCond_Always);draw_lora_security_panel(security);
+        draw_lora_packet_table(rows,180);
         ImGui::SetNextItemOpen(true,ImGuiCond_Always); draw_lora_replay_panel();
         ImGui::End(); ImGui::Render();
         if (ImGui::GetDrawData()->TotalVtxCount<=0) return 1;
@@ -74,5 +80,5 @@ int main(int argc, char** argv) {
     ImGui_ImplOpenGL3_Shutdown(); ImGui::DestroyContext();
     eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);
     eglDestroyContext(display,context); eglDestroySurface(display,surface); eglTerminate(display);
-    std::cout << "PASS: LoRa integrity table and replay controls rendered offscreen\n";
+    std::cout << "PASS: LoRa security coverage panel, integrity table and replay controls rendered offscreen\n";
 }

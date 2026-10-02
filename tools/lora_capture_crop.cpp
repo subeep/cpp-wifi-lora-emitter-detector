@@ -51,17 +51,7 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        LoraCapture out;
-        out.iq.assign(src.iq.begin() + start_idx, src.iq.begin() + end_idx);
-        out.sample_rate_hz = src.sample_rate_hz;
-        out.requested_sample_rate_hz = src.requested_sample_rate_hz;
-        out.requested_center_hz = src.requested_center_hz;
-        out.requested_duration_s = double(out.iq.size()) / rate;
-        out.host_start_unix_s = src.host_start_unix_s + double(start_idx) / rate;
-        out.requested_gain_db = src.requested_gain_db;
-        out.overflow = src.overflow;
-        out.device_args = src.device_args;
-        out.antenna = src.antenna;
+        LoraCapture out = crop_lora_capture(src, size_t(start_idx), size_t(end_idx));
         out.source = "live-cropped:" + src_dir;
 
         std::string dir = save_lora_capture(out_parent, out);

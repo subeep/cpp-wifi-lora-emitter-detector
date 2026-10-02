@@ -155,6 +155,7 @@ int main() {
                 for (int k = 0; k <= w; ++k)
                     st.ingest(make_frame_event(c, size_t(1000 + k * 5000), 400, "DSSS", 1, false,
                                                V.at("deauth_broadcast_reason7"), true));
+                c.events_submitted = size_t(w+1);
                 st.ingest(c);
             }
         }
@@ -173,6 +174,7 @@ int main() {
         CaptureRecord bad = cap(++seq, 1000);
         bad.overflows.push_back({10, std::nullopt});
         st.ingest(make_frame_event(bad, 5, 5, "DSSS", 1, false, V.at("deauth_broadcast_reason7"), true));
+        bad.events_submitted = 1;
         st.ingest(bad);
         bl = st.snapshot().baselines;
         check(bl[0].captures_excluded == 1 && bl[0].current_analysed_s == 0, "degraded_capture_excluded");
@@ -183,6 +185,7 @@ int main() {
             CaptureRecord c = cap(++seq, 2000 + s * 1.2);
             for (int k = 0; k < 500; ++k)
                 st.ingest(make_frame_event(c, size_t(k * 100), 50, "DSSS", 1, false, V.at("deauth_broadcast_reason7"), true));
+            c.events_submitted = 500;
             st.ingest(c);
         }
         bl = st.snapshot().baselines;
@@ -284,6 +287,7 @@ int main() {
             for (uint64_t s = 1; s <= 10; ++s) {
                 CaptureRecord c = cap(s, double(s) * 1.1, 6, 20.0, "run-M");
                 m.submit(make_frame_event(c, 10, 10, "DSSS", 1, false, V.at("probe_req_wildcard"), true));
+                c.events_submitted = 1;
                 m.submit(c);
                 if (s == 5) m.submit(ControlCommand{"baseline_freeze", "", 1});
             }

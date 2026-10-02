@@ -217,6 +217,13 @@ bool SecurityState::ingest(const FrameEvent& e) {
     return true;
 }
 
+void SecurityState::note_input_rejected() {
+    ++snap_.input_lines_rejected;
+    flood_.interrupt();
+    beacon_replay_.interrupt();
+    baselines_.invalidate_pending();
+}
+
 void SecurityState::ingest(const LossNotice& l) {
     if (l.events_dropped || l.captures_dropped) { flood_.interrupt(); beacon_replay_.interrupt(); baselines_.invalidate_pending(); }
     snap_.queue_events_dropped += l.events_dropped;

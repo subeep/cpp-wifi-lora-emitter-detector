@@ -4,7 +4,7 @@ Usage: python3 tests/generate_wifi_ofdm.py OUTPUT_DIRECTORY
 """
 import numpy as np, pathlib, json, zlib, sys
 from scipy.signal import resample_poly
-out=pathlib.Path(sys.argv[1]);out.mkdir(parents=True, exist_ok=True)
+out=None # Set only by the file-generation entry point below.
 # Standard training sequence in natural subcarrier order, independent Python transmitter.
 L=np.array([1,1,-1,-1,1,1,-1,1,-1,1,1,1,1,1,1,-1,-1,1,1,-1,1,-1,1,1,1,1,0,1,-1,-1,1,1,-1,1,-1,1,-1,-1,-1,-1,-1,1,1,-1,-1,1,-1,1,-1,1,1,1,1])
 bins=np.arange(-26,27)%64
@@ -41,11 +41,7 @@ def ofdm(bits,bpsc,symbol):
   tones[k%64]=(ax(b) if bpsc==1 else ax(b[:bpsc//2])+1j*ax(b[bpsc//2:]))/scale
  tones[np.array(pilots)%64]=np.array([1,1,1,-1])*pol[symbol%127]
  t=np.fft.ifft(tones)*8;return np.r_[t[-16:],t]
-def make(rate,code,bpsc,dbps, name=None, bad_fcs=False, bad_sig=False, sample_rate=20e6, offset=0, multipath=False, truncate=False, long=False):
- mac=bytes.fromhex('80000000ffffffffffff0011223344550011223344551000')+bytes(8)+bytes.fromhex('64001100')+b'\x00\x0aOFDM-fixtu'+b'\x03\x01\x06'
- if long: mac += (b'\xdd\xfa' + bytes(range(250))) * 8
- mac+=zlib.crc32(mac).to_bytes(4,'little')
- if bad_fcs: mac=mac[:-1]+bytes([mac[-1]^128])
+def encode_mpdu(mac, rate=6, code=11, bpsc=1, dbps=24, bad_sig=False):
  bits=np.unpackbits(np.frombuffer(mac,dtype=np.uint8),bitorder='little')
  h=[(code>>i)&1 for i in range(4)]+[0]+[(len(mac)>>i)&1 for i in range(12)];h+=[sum(h)%2]+[0]*6
  if bad_sig: h[17]^=1
@@ -56,6 +52,14 @@ def make(rate,code,bpsc,dbps, name=None, bad_fcs=False, bad_sig=False, sample_ra
  scrambled[16+len(bits):16+len(bits)+6]=[0]*6
  encoded=conv(scrambled);mask=([1,1] if dbps*2==48*bpsc else [1,1,1,0] if rate==48 else [1,1,1,0,0,1]);encoded=encoded[np.resize(mask,len(encoded)).astype(bool)]
  wave=np.concatenate([stf,ltf[-32:],ltf,ltf,ofdm(conv(h),1,0)]+[ofdm(encoded[i*48*bpsc:(i+1)*48*bpsc],bpsc,i+1) for i in range(nsyms)])
+ return wave
+
+def make(rate,code,bpsc,dbps, name=None, bad_fcs=False, bad_sig=False, sample_rate=20e6, offset=0, multipath=False, truncate=False, long=False):
+ mac=bytes.fromhex('80000000ffffffffffff0011223344550011223344551000')+bytes(8)+bytes.fromhex('64001100')+b'\x00\x0aOFDM-fixtu'+b'\x03\x01\x06'
+ if long: mac += (b'\xdd\xfa' + bytes(range(250))) * 8
+ mac+=zlib.crc32(mac).to_bytes(4,'little')
+ if bad_fcs: mac=mac[:-1]+bytes([mac[-1]^128])
+ wave=encode_mpdu(mac,rate,code,bpsc,dbps,bad_sig)
  if multipath: wave=np.convolve(wave, np.r_[1.,0,0,.18+.12j,0,0,-.07j])
  # Keep only 4 us lead-in; match the decoder's burst API.
  wave=np.r_[np.zeros(80), wave, np.zeros(80)]
@@ -68,11 +72,13 @@ def make(rate,code,bpsc,dbps, name=None, bad_fcs=False, bad_sig=False, sample_ra
  stem=name or str(rate);(out/(stem+'.cf32')).write_bytes(raw)
  (out/(stem+'.json')).write_text(json.dumps(dict(schema=1,format='cf32_le',samples=len(wave),sample_rate_hz=sample_rate,channel_hz=2437e6,capture_center_hz=2437e6+offset,overflow=False,iq_file=stem+'.cf32',fnv1a64=str(fnv),expected_rate_mbps=rate,expected_mpdu_hex=mac.hex(),expected_fcs=not(bad_fcs or bad_sig or truncate))))
 
-for args in [(6,11,1,24),(9,15,1,36),(12,10,2,48),(18,14,2,72),(24,9,4,96),(36,13,4,144),(48,8,6,192),(54,12,6,216)]:make(*args)
+if __name__ == '__main__':
+ out=pathlib.Path(sys.argv[1]);out.mkdir(parents=True, exist_ok=True)
+ for args in [(6,11,1,24),(9,15,1,36),(12,10,2,48),(18,14,2,72),(24,9,4,96),(36,13,4,144),(48,8,6,192),(54,12,6,216)]:make(*args)
 
-make(6,11,1,24,name="bad-fcs",bad_fcs=True)
-make(6,11,1,24,name="bad-signal",bad_sig=True)
-make(6,11,1,24,name="truncated",truncate=True)
-make(6,11,1,24,name="offset-56m",sample_rate=56e6,offset=1.5e6,multipath=True)
-make(54,12,6,216,name="multipath-54",multipath=True)
-make(6,11,1,24,name="long-pilot-wrap",long=True)
+ make(6,11,1,24,name="bad-fcs",bad_fcs=True)
+ make(6,11,1,24,name="bad-signal",bad_sig=True)
+ make(6,11,1,24,name="truncated",truncate=True)
+ make(6,11,1,24,name="offset-56m",sample_rate=56e6,offset=1.5e6,multipath=True)
+ make(54,12,6,216,name="multipath-54",multipath=True)
+ make(6,11,1,24,name="long-pilot-wrap",long=True)

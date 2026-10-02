@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include "capture_timing.hpp"
 namespace rfmon {
 struct LoraCapture {
     std::vector<std::complex<float>> iq;
@@ -17,9 +18,14 @@ struct LoraCapture {
     std::string device_args;
     std::string antenna;
     std::string source = "live";
+    std::string run_id;
+    uint64_t capture_seq = 0, radio_session = 0;
+    std::optional<CaptureTiming> timing; // absent in legacy v1 recordings
+
 };
 // Versioned manifest + little-endian float32 IQ. Throws on IO/validation errors.
 // Each save creates a new directory; existing captures are never overwritten.
 std::string save_lora_capture(const std::string& parent, const LoraCapture& capture);
+LoraCapture crop_lora_capture(const LoraCapture& source, size_t begin, size_t end);
 LoraCapture load_lora_capture(const std::string& directory);
 } // namespace rfmon
