@@ -613,3 +613,23 @@ foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
     set_target_properties(lora_scan_smoke PROPERTIES ${property} "${value}")
   endif()
 endforeach()
+
+# Optional cyclostationary components, excluded from the default application.
+option(RFMON_BUILD_CYCLO_OFFLINE "Build standalone cyclostationary IQ tools" OFF)
+option(RFMON_ENABLE_WIFI_CYCLO_SHADOW "Build experimental default-off Wi-Fi DSP sidecar" OFF)
+if(RFMON_BUILD_CYCLO_OFFLINE OR RFMON_ENABLE_WIFI_CYCLO_SHADOW)
+  add_subdirectory(tools/cyclostationary)
+endif()
+if(RFMON_ENABLE_WIFI_CYCLO_SHADOW)
+  foreach(target rf_monitor_gui band_smoke_test wifi_scan_smoke test_scanner_wifi_lane
+                 test_scanner_lora_security lora_scan_smoke)
+    target_compile_definitions(${target} PRIVATE RFMON_ENABLE_WIFI_CYCLO_SHADOW=1)
+    target_link_libraries(${target} PRIVATE rfmon_cyclo_offline)
+  endforeach()
+  target_sources(rf_monitor_gui PRIVATE src/cyclostationary/panel.cpp)
+  add_executable(test_cyclo_panel tests/test_cyclo_panel.cpp src/cyclostationary/panel.cpp
+    ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp ${IMGUI_DIR}/imgui_widgets.cpp)
+  target_include_directories(test_cyclo_panel PRIVATE ${CMAKE_SOURCE_DIR}/src ${IMGUI_DIR})
+  target_link_libraries(test_cyclo_panel PRIVATE rfmon_cyclo_offline)
+  add_test(NAME cyclostationary_panel COMMAND test_cyclo_panel)
+endif()

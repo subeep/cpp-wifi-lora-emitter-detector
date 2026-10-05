@@ -359,9 +359,15 @@ struct RunOutcome {
     ScannerStatus status;
     size_t rows_at_first_subghz = size_t(-1);
     int captures = 0;
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+    cyclo::ShadowStats cyclo_stats;
+#endif
 };
 
-RunOutcome run_end_to_end(bool lane, const fs::path& root) {
+RunOutcome run_end_to_end(bool lane, const fs::path& root, bool cyclo_enabled = false) {
+#ifndef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+    (void)cyclo_enabled;
+#endif
     fs::create_directories(root);
     if (lane) unsetenv("RFMON_WIFI_LANE");
     else setenv("RFMON_WIFI_LANE", "0", 1);
@@ -376,6 +382,9 @@ RunOutcome run_end_to_end(bool lane, const fs::path& root) {
         s.set_active_band(BAND_WIFI_5G);
         s.set_wifi_fixed_channel(36);
         s.set_wifi_security_recording((root / "rec.ndjson").string());
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+        check(s.set_wifi_cyclo_enabled(cyclo_enabled), "cyclo_runtime_switch");
+#endif
         ScannerTestAccess::set_device_factory(s, [&](const DeviceProfile&, std::optional<double>) {
             auto f = std::make_unique<FakeRadio>();
             f->scanner = &s;
@@ -387,7 +396,19 @@ RunOutcome run_end_to_end(bool lane, const fs::path& root) {
         });
         s.start();
         while (!ScannerTestAccess::stop_flag(s)) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+        if (cyclo_enabled) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (s.wifi_cyclo_stats().measured == 0 && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        }
+#endif
         s.stop();  // immediately: the lane may still be draining
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+        o.cyclo_stats = s.wifi_cyclo_stats();
+        check(!s.wifi_cyclo_snapshot(), "cyclo_stop_clears_snapshot");
+#endif
         o.status = s.status();
         nlohmann::json st;
         nlohmann::json rows = nlohmann::json::array();
@@ -438,6 +459,21 @@ void end_to_end_checks(const fs::path& base) {
           "high water " + std::to_string(on.status.wifi_lane_high_water));
     check(on.state["monitor"][2] == 0 && on.state["monitor"][3] == 0 && on.state["monitor"][4] == 0,
           "e2e_no_drops_no_out_of_order");
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+    const auto shadow = run_end_to_end(true, base / "e2e-cyclo", true);
+    check(shadow.cyclo_stats.submitted > 0 && shadow.cyclo_stats.measured > 0 && !shadow.cyclo_stats.enabled,
+          "cyclo_fake_radio_samples_measured_and_stopped");
+    check(shadow.cyclo_stats.high_water <= 8 && shadow.cyclo_stats.failures == 0, "cyclo_pool_bounded_no_errors");
+    check(shadow.cyclo_stats.burst_guided_jobs > 0 && shadow.cyclo_stats.hint_descriptors_examined > 0 &&
+          shadow.cyclo_stats.hint_descriptors_examined <= shadow.cyclo_stats.submitted * cyclo::burst_hint_limit,
+          "cyclo_tail_tap_reuses_bounded_raw_burst_hints");
+    check(shadow.recording == on.recording, "cyclo_security_recording_identical");
+    check(shadow.state == on.state, "cyclo_packets_registries_identities_security_identical");
+    check(shadow.captures == on.captures && shadow.status.cycle_count == on.status.cycle_count &&
+          shadow.rows_at_first_subghz == on.rows_at_first_subghz, "cyclo_capture_schedule_and_cycle_status_identical");
+    check(on.cyclo_stats.submitted == 0 && on.cyclo_stats.worker_launches == 0,
+          "cyclo_runtime_off_submits_nothing_and_starts_no_process");
+#endif
 }
 
 }  // namespace

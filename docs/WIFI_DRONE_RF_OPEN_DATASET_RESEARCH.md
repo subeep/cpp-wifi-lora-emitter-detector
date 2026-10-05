@@ -4,6 +4,8 @@ Research date: 2 October 2026
 Method: Firecrawl searches and live reads of publisher pages, repository documentation and file-list APIs; read-only inspection of the user's local DroneDetect files.  
 Scope: planning and data assessment only. No application code, classifier, converter or transmitter was implemented or run. No new bulk dataset downloads were started.
 
+This describes the original research pass. Subsequent authorised cyclostationary/DSP work is recorded in [the implementation record](/home/sudeep/Documents/newrocktest-cpp/docs/WIFI_CYCLOSTATIONARY_IMPLEMENTATION.md). Model building remains deferred by the user.
+
 ## 1. Recommended starting corpus
 
 Use **the existing local DroneDetect_V2 first**, add the **Tampere Zenodo complex-IQ recordings** for another receiver and 5 GHz examples, and selectively add **RFUAV raw archives** for more recent drones and diverse controllers. Include ordinary Wi-Fi, Bluetooth and Zigbee recordings as negative controls. DroneDetect's interference subsets still contain drone signals; they are not drone-free negative examples.
@@ -59,7 +61,7 @@ Recommended small selection before taking the whole corpus:
 | `Parrot_mambo_video_2G.bin` | 480 MB | Separately labelled video reference |
 | `DJI_phantom_4_pro_plus_5G_1of2.bin` | 400 MB | Initial 5 GHz reference |
 
-This selection is 1.84 GB. File downloads and published checksums are available in the [Zenodo record API](https://zenodo.org/api/records/4264467). The observed local `Pictures/zenodo datasets` folder currently contained only `.crdownload` files; incomplete browser downloads must not enter the corpus manifest. Check for completed existing copies before downloading duplicates.
+This selection is 1.84 GB. File downloads and published checksums are available in the [Zenodo record API](https://zenodo.org/api/records/4264467). At the original inspection the local `Pictures/zenodo datasets` folder contained only `.crdownload` files. By 3 October, six DJI files had completed downloading, totalling 2.64 GB; all six sizes and full-file MD5s were verified against the publisher. The [verified local manifest](/home/sudeep/Documents/newrocktest-cpp/data/wifi_drone_analysis/offline_2026-10-03/zenodo_verified_local_manifest.json) records them. Incomplete browser downloads must not enter the corpus manifest; avoid downloading duplicates.
 
 ### B. RFUAV — best verified breadth candidate
 
@@ -112,6 +114,7 @@ We still need references covering actual mode/firmware/rate variants, non-drone 
 | **M1a — first 2–3 working days of corpus work** | Read-only local manifest; original-loader/packing check; variable-length and missing-folder ledger; source/rate/frequency/licence provenance | Begin M1 using local DroneDetect immediately; do not re-download it |
 | **M1b — following 3–5 working days, dependent on downloads** | Small balanced DroneDetect working subset, four-file Zenodo selection, one or two RFUAV packs, verified ordinary-traffic negatives; sealed source-level split | Complete the initial M1 corpus foundation without waiting for all catalogue hardware |
 | **M2 — offline waveform measurements** | Same cyclic estimator tested on source-native data and passband/tile selections matching live captures; per-source/condition comparisons | Public IQ accelerates initial waveform and attribution experiments; missing W3/W7 references remain explicit collection tasks |
+| **M2b — future small ML verifier, currently deferred** | Future comparison of DSP-only, non-cyclic ML and hybrid baselines after the analysis-only stage; no training now | Reduce false drone assessments only when final recall, unknown rejection and resource budgets remain acceptable; preserve source groups and ordinary-radio negatives |
 | **M3 / M4 — qualified activity and families** | Provisional matches measured across independent datasets, followed by actual unit/session/mode validation | Public sets help select promising families; they do not waive G2/G2A or satisfy independence merely by having many windows |
 | **M5–M7 — integration and HIL** | Conducted replay of suitable derived recordings plus legacy regression/resource/soak checks | Reference waveforms reduce signal-generation work; unchanged non-interference gates still apply |
 | **M8 / M9 — breadth and field release** | Missing-family collection, confusable hardware tests, independent local drone systems and representative sites | Actual hardware/field access remains necessary for release claims |
@@ -128,3 +131,11 @@ The added day ranges are provisional work estimates, not measured completion tim
 6. Use the existing conducted, attenuated setup for future authorized replay. No transmission was performed here. Preserve replay provenance, ignore loop-boundary artifacts and measure receiver/TX distortion. Replay verifies pipeline behavior; it creates no new independent drone unit and does not prove that a real aircraft is present.
 
 Implementation decisions stay subject to the additive architecture and gates in [the integration plan](/home/sudeep/Documents/newrocktest-cpp/docs/WIFI_CYCLOSTATIONARY_DRONE_ADDON_PLAN.md).
+
+## 7. Identification-stage follow-up, 3 October 2026
+
+Firecrawl retrieved the [chirp-symbol research](https://doi.org/10.3390/s25154552) and the referenced [KU Leuven Drone RF Dataset](https://doi.org/10.48804/HZRVNZ). This **2024** dataset is distinct from the 2019 amplitude-CSV DroneRF source. Its publisher describes X310 IQ at 100 Msps centered at 2.44 GHz, saved as MATLAB v7.3 complex arrays. The archive collection is approximately 43.5 GB with CC-BY-NC-4.0 terms. Individual Matrice/Mavic RC/video archives are promising follow-up references; no archive was downloaded, array layout checked or family truth accepted during this stage. These files need loader, units, mode and source-independence verification before use.
+
+Three reported chirp slopes now have bounded DSP measurements, mathematical/null checks and selected-span frequency diagnostics. The complete local replay covers 390 DroneDetect files, six verified Zenodo recordings and three received Wi-Fi confusable crops: **399 recordings / 1,587 sampled windows**, with no errors. Conservative grouping puts all records in development-only scope; mode/unit/session truth is not inferred from filenames. No dataset labels enter the worker and no ML, RID, TX or radio capture was added. Full source-native versus live-passband and independent confusable qualification remain pending.
+
+The user has a DJI Mini 2 but has deferred actual testing. DJI's [support page](https://www.dji.com/mobile/support/product/mini-2) specifies OcuSync 2.0 for image transmission and a separate QuickTransfer Wi-Fi/Bluetooth mode; future captures must distinguish those modes. The [reference validation record](/home/sudeep/Documents/newrocktest-cpp/docs/WIFI_CYCLOSTATIONARY_REFERENCE_VALIDATION.md) records measurements, limitations and the next milestones.

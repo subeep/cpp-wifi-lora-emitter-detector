@@ -127,6 +127,9 @@ void Scanner::start() {
 void Scanner::stop() {
     stop_flag_ = true;
     if (thread_.joinable()) thread_.join();
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+    cyclo_shadow_.set_enabled(false);
+#endif
     // After the scan thread: everything it submitted is drained and recorded.
     security_->stop();
     lora_security_->stop();
@@ -228,6 +231,9 @@ bool Scanner::lora_capture_pending() const {
 
 void Scanner::set_active_band(const std::string& band) {
     std::lock_guard<std::mutex> lock(config_mutex_);
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+    if (active_band_ != band) cyclo_shadow_.invalidate();
+#endif
     active_band_ = band;
 }
 
@@ -279,6 +285,9 @@ std::optional<double> Scanner::lora_lock_freq() const {
 
 void Scanner::set_wifi_fixed_channel(std::optional<int> channel) {
     std::lock_guard<std::mutex> lock(config_mutex_);
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+    if (wifi_fixed_channel_ != channel) cyclo_shadow_.invalidate();
+#endif
     wifi_fixed_channel_ = channel;
 }
 
@@ -604,7 +613,11 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                                     double actual_rate,
                                     const std::vector<std::vector<std::complex<float>>>& captures,
                                     std::vector<wifi_security::CaptureRecord>& capture_records,
-                                    std::vector<Detection>& detections) {
+                                    std::vector<Detection>& detections
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+                                    , const CycloCaptureInputs* cyclo_inputs
+#endif
+                                    ) {
     Spectrum spec = max_hold_spectrum(captures, actual_rate);
     double guard_hz = std::max(actual_rate * DC_GUARD_FRACTION, DC_GUARD_MIN_HZ);
     std::vector<bool> dc_mask = mask_dc_guard(spec.freqs_offset_hz, guard_hz);
@@ -978,6 +991,18 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
             security_->submit(std::move(rec));
             auto srcs = wifi::find_beacon_sources(burst_starts_s, burst_powers_db);
             source_count = std::max(source_count, int(srcs.size()));
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+            // Additive tail call, after existing security/identity work. Use
+            // the raw ranges even when the legacy classifier rejected them.
+            if (cyclo_inputs && ci < cyclo_inputs->size() && cyclo_shadow_.enabled()) {
+                const auto& input = (*cyclo_inputs)[ci];
+                const auto hints = cyclo::collect_burst_hints(bursts.size(), input.prefix,
+                    bursts.size() >= WIFI_SECURITY_MAX_BURSTS_PER_CAPTURE, [&](std::size_t i) {
+                        return cyclo::SampleTile{bursts[i].start, bursts[i].length};
+                    });
+                cyclo_shadow_.try_submit(cap, input.prefix, input.context, hints);
+            }
+#endif
         }
 
         wifi::ModClass best_mod = wifi::ModClass::Unknown;
@@ -1067,7 +1092,11 @@ void Scanner::run_wifi_lane_job(WifiStepJob& job) {
     if (!job.captures.empty()) {
         std::vector<Detection> detections;
         process_step_captures(job.step, job.band, job.threshold, job.actual_rate, job.captures,
-                              job.capture_records, detections);
+                              job.capture_records, detections
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+                              , &job.cyclo_inputs
+#endif
+                              );
     }
 }
 
@@ -1210,8 +1239,14 @@ void Scanner::run() {
             const bool lane_step = wifi_step && wifi_lane.has_value();
             std::vector<wifi_security::CaptureRecord> capture_records;
             std::vector<wifi_security::CaptureRecord> empty_records;  // lane steps: submitted by the lane
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+            CycloCaptureInputs cyclo_inputs{};
+#endif
             double actual_rate = request_rate;
             for (int i = 0; i < SUB_CAPTURES_PER_STEP; ++i) {
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+                const auto cyclo_capture_epoch = cyclo_shadow_.enabled() ? cyclo_shadow_.epoch() : 0;
+#endif
                 // Wi-Fi: consecutive captures on the same frequency skip the
                 // retune and settle delay (the LO has not moved), which was
                 // pure dead time between sub-captures. Sub-GHz/LoRa keep the
@@ -1222,6 +1257,26 @@ void Scanner::run() {
                 any_overflow = any_overflow || cr.overflow;
                 if (wifi_step) {
                     auto rec = new_capture_record(step, profile, request_rate, SUB_CAPTURE_DURATION_S, cr);
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+                    if (!cr.samples.empty() && captures.size() < cyclo_inputs.size() && cyclo_shadow_.enabled()) {
+                        cyclo::CaptureContext context;
+                        context.band_ghz = step.band == BAND_WIFI_2G4 ? 2 : 5;
+                        context.radio_session = rec.radio_session;
+                        context.capture_sequence = rec.capture_seq;
+                        context.submission_epoch = cyclo_capture_epoch;
+                        context.sample_rate_hz = cr.sample_rate_hz;
+                        context.capture_center_hz = step.center_hz;
+                        context.source_samples = cr.samples.size();
+                        context.device_time_valid = cr.timing.device_time_valid;
+                        context.first_device_time_ns = cr.timing.device_time_ns;
+                        context.capture_overflow = cr.overflow;
+                        context.timed_out = cr.timing.timed_out;
+                        // Never phase-concatenate across an overflow. Only the
+                        // known prefix before the first gap can be copied.
+                        const auto prefix = cyclo::continuous_capture_prefix(cr.timing, cr.samples.size(), cr.overflow);
+                        cyclo_inputs[captures.size()] = {context, prefix};
+                    }
+#endif
                     if (cr.samples.empty()) {
                         if (lane_step) empty_records.push_back(std::move(rec));
                         else security_->submit(std::move(rec));
@@ -1245,6 +1300,9 @@ void Scanner::run() {
                 job.captures = std::move(captures);
                 job.capture_records = std::move(capture_records);
                 job.empty_records = std::move(empty_records);
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+                job.cyclo_inputs = cyclo_inputs;
+#endif
                 const double waited = wifi_lane->push(std::move(job), 1);
                 const size_t high_water = wifi_lane->stats().high_water;
                 std::lock_guard<std::mutex> lock(status_mutex_);
@@ -1254,7 +1312,11 @@ void Scanner::run() {
             }
             if (captures.empty()) continue;
 
-            process_step_captures(step, band, threshold, actual_rate, captures, capture_records, detections);
+            process_step_captures(step, band, threshold, actual_rate, captures, capture_records, detections
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+                                  , &cyclo_inputs
+#endif
+                                  );
         }
 
         ++band_cycle_count;

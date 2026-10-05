@@ -31,6 +31,9 @@
 #include "wifi_master.hpp"
 #include "wifi_gui.hpp"
 #include "security_gui.hpp"
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+#include "cyclostationary/panel.hpp"
+#endif
 
 using namespace rfmon;
 
@@ -669,6 +672,19 @@ int main() {
                 }
             }
 
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+            ImGui::Spacing();
+            if (ImGui::CollapsingHeader("Drone / link analysis (experimental cyclostationary DSP)")) {
+                const float analysis_height = std::clamp(ImGui::GetContentRegionAvail().y * 0.5f, 100.0f, 320.0f);
+                ImGui::BeginChild("wifi_cyclo_measurements", ImVec2(0, analysis_height), ImGuiChildFlags_Borders);
+                bool enabled = scanner.wifi_cyclo_stats().enabled;
+                if (ImGui::Checkbox("Enable optional DSP analysis", &enabled)) scanner.set_wifi_cyclo_enabled(enabled);
+                ImGui::TextDisabled("Receive-only sidecar; live performance gates are still pending.");
+                cyclo::draw_shadow_panel(scanner.wifi_cyclo_snapshot(), scanner.wifi_cyclo_stats(),
+                                        active_band == BAND_WIFI_2G4 ? 2 : 5);
+                ImGui::EndChild();
+            }
+#endif
             ImGui::Spacing();
             if (ImGui::CollapsingHeader("Wi-Fi Identities & RF Clusters (persistent)",
                                          ImGuiTreeNodeFlags_DefaultOpen)) {

@@ -21,6 +21,9 @@
 #include "lora_observation.hpp"
 #include "registry.hpp"
 #include "sdr_capture.hpp"
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+#include "cyclostationary/shadow_worker.hpp"
+#endif
 #include "security/wifi_security_monitor.hpp"
 #include "security/lora_security.hpp"
 #include "serial_lane.hpp"
@@ -106,6 +109,11 @@ public:
     // instead of <project>/data (tests use a temporary directory).
     explicit Scanner(const std::string& data_root);
     ~Scanner();
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+    bool set_wifi_cyclo_enabled(bool enable) { return cyclo_shadow_.set_enabled(enable); }
+    cyclo::ShadowStats wifi_cyclo_stats() const { return cyclo_shadow_.stats(); }
+    std::shared_ptr<const cyclo::ShadowResult> wifi_cyclo_snapshot() const { return cyclo_shadow_.snapshot(); }
+#endif
 
     void start();  // spawns the background thread and connects to the SDR
     void stop();   // signals the thread to stop and joins it
@@ -216,6 +224,10 @@ private:
     DeviceRegistry& registry_for(const std::string& band);
     // A Wi-Fi step handed from acquisition to the processing lane, or (with
     // cycle_end set) the end-of-cycle status marker for a Wi-Fi cycle.
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+    struct CycloCaptureInput { cyclo::CaptureContext context; std::size_t prefix = 0; };
+    using CycloCaptureInputs = std::array<CycloCaptureInput, SUB_CAPTURES_PER_STEP>;
+#endif
     struct WifiStepJob {
         ScanStep step{};
         std::string band;
@@ -223,6 +235,9 @@ private:
         std::vector<std::vector<std::complex<float>>> captures;
         std::vector<wifi_security::CaptureRecord> capture_records;  // index-aligned with captures
         std::vector<wifi_security::CaptureRecord> empty_records;    // failed/empty captures, in capture order
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+        CycloCaptureInputs cyclo_inputs{}; // bounded metadata only; no IQ ownership
+#endif
         bool cycle_end = false;
         int cycle_count = 0;
         bool last_overflow = false;
@@ -233,7 +248,11 @@ private:
     void process_step_captures(const ScanStep& step, const std::string& band, double threshold,
                                double actual_rate, const std::vector<std::vector<std::complex<float>>>& captures,
                                std::vector<wifi_security::CaptureRecord>& capture_records,
-                               std::vector<Detection>& detections);
+                               std::vector<Detection>& detections
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+                               , const CycloCaptureInputs* cyclo_inputs = nullptr
+#endif
+                               );
     // Coverage record for one Wi-Fi capture (security monitor input): what
     // was requested, what the radio reported, and how its time is known.
     wifi_security::CaptureRecord new_capture_record(const ScanStep& step, const DeviceProfile& profile,
@@ -252,6 +271,9 @@ private:
     void note_capture_health(bool got_data);
 
     std::unique_ptr<CaptureDevice> sdr_;
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+    cyclo::ShadowWorker cyclo_shadow_;
+#endif
     // Creates the radio in connect_sdr(). Unset in production (a UsrpCapture
     // for the profile's device); tests install a fake radio here.
     std::function<std::unique_ptr<CaptureDevice>(const DeviceProfile&, std::optional<double>)> device_factory_;
