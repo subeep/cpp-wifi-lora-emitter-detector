@@ -1,0 +1,160 @@
+{
+  "schema": "rfmon.link_identification_scope.v1",
+  "status": "development_contract_not_release_qualification",
+  "reviewed_source_files": [
+    {
+      "path": "src/config.hpp",
+      "sha256": "95ea88b3edc92969432e525ba10373e6877c90dc5c88d7857e65a483c67df06a"
+    },
+    {
+      "path": "src/scanner.cpp",
+      "sha256": "03db4c4ec681d369e4523a01cef37eae0a7911a2a9177742d33f7b015dac384e"
+    },
+    {
+      "path": "src/cyclostationary/sample_tiles.hpp",
+      "sha256": "567ac1d700ea0164fb095e3b625f532d5ff754da935434804e30d8adb714ec6a"
+    }
+  ],
+  "receiver_profiles": [
+    {
+      "id": "x310_project_1gige",
+      "requested_rate_cap_hz": 20000000,
+      "actual_rate_source": "capture_metadata_required",
+      "tune_centers_hz": {
+        "wifi_2g4": [
+          2413500000,
+          2418500000,
+          2423500000,
+          2428500000,
+          2433500000,
+          2438500000,
+          2443500000,
+          2448500000,
+          2453500000,
+          2458500000,
+          2463500000,
+          2468500000,
+          2473500000
+        ],
+        "wifi_5g": [
+          5181500000,
+          5201500000,
+          5221500000,
+          5241500000,
+          5746500000,
+          5766500000,
+          5786500000,
+          5806500000,
+          5826500000
+        ]
+      },
+      "usable_analog_bandwidth_hz": null,
+      "receiver_qualified": false,
+      "live_performance_qualified": false,
+      "full_tile_duration_seconds_at_requested_rate": 0.0032768,
+      "full_job_sample_duration_seconds_at_requested_rate": 0.0131072,
+      "result_age_target_seconds": null,
+      "result_age_target_status": "pending_measured_scan_cadence_before_live_acceptance"
+    },
+    {
+      "id": "b210_project_usb",
+      "requested_rate_cap_hz": 56000000,
+      "actual_rate_source": "capture_metadata_required",
+      "tune_centers_hz": {
+        "wifi_2g4": [
+          2413500000,
+          2418500000,
+          2423500000,
+          2428500000,
+          2433500000,
+          2438500000,
+          2443500000,
+          2448500000,
+          2453500000,
+          2458500000,
+          2463500000,
+          2468500000,
+          2473500000
+        ],
+        "wifi_5g": [
+          5181500000,
+          5201500000,
+          5221500000,
+          5241500000,
+          5746500000,
+          5766500000,
+          5786500000,
+          5806500000,
+          5826500000
+        ]
+      },
+      "usable_analog_bandwidth_hz": null,
+      "receiver_qualified": false,
+      "live_performance_qualified": false,
+      "full_tile_duration_seconds_at_requested_rate": 0.0011702857142857142,
+      "full_job_sample_duration_seconds_at_requested_rate": 0.004681142857142857,
+      "result_age_target_seconds": null,
+      "result_age_target_status": "pending_measured_scan_cadence_before_live_acceptance"
+    }
+  ],
+  "analysis_bounds": {
+    "independent_tiles": 4,
+    "samples_per_tile": 65536,
+    "total_samples_per_job": 262144,
+    "selected_burst_samples_per_tile": 16384,
+    "private_candidates_per_tile_offline": 2,
+    "child_address_space_bytes": 134217728,
+    "request_deadline_ms": 2000,
+    "live_candidate_filtering_enabled": false
+  },
+  "catalogue_targets": [
+    {
+      "id": "ordinary_wifi_reference",
+      "purpose": "protocol_confusable",
+      "status": "decoded_fixture_development_only",
+      "drone_attribution": false
+    },
+    {
+      "id": "mini2_link_collection_target",
+      "purpose": "first_drone_link_reference_opportunity",
+      "status": "mode_truth_and_independent_references_missing",
+      "accepted_protocol_name": null,
+      "preferred_capture_when_user_ready": true
+    }
+  ],
+  "policy": {
+    "unknown_is_non_drone": false,
+    "generic_ofdm_is_wifi": false,
+    "code_match_is_drone": false,
+    "dataset_device_label_is_protocol_truth": false,
+    "exposed_sources_can_be_sealed_test": false,
+    "remote_id_required": false,
+    "ml_training_enabled": false
+  },
+  "proposed_release_targets": {
+    "named_family_precision": 0.99,
+    "named_family_precision_lower_confidence_bound": 0.95,
+    "confidence_level": 0.95,
+    "conditional_detection_recall": 0.95,
+    "scan_cycle_median_p95_relative_increase_max": 0.02,
+    "gui_p95_relative_increase_max": 0.05,
+    "endurance_hours": 72,
+    "statistical_plan_status": "independent_collection_grouping_and_interval_method_to_freeze_before_L5",
+    "targets_achieved": false
+  },
+  "release_blockers": [
+    "no_sealed_independent_drone_link_truth",
+    "no_representative_certified_non_drone_background",
+    "usable_receiver_passband_unknown",
+    "candidate_selection_recall_unmeasured",
+    "live_timing_and_update_cadence_unqualified"
+  ],
+  "exclusions": [
+    "model_identity",
+    "new_bands",
+    "scan_schedule_changes",
+    "transmission",
+    "ML_training",
+    "Remote_ID"
+  ]
+}

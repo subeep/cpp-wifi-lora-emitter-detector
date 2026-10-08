@@ -4,13 +4,20 @@
 #include "sample_tiles.hpp"
 #include "roi_measurements.hpp"
 #include "chirp_structure.hpp"
+#include "chirp_discovery.hpp"
 #include "link_evidence.hpp"
+#include "waveform_features.hpp"
+#include "cyclic_background.hpp"
+#include "burst_analysis.hpp"
+#include "clock_refinement.hpp"
+#include "structure_discovery.hpp"
+#include "waveform_review.hpp"
 #include <cstdint>
 #include <stdexcept>
 
 namespace rfmon::cyclo {
 using WireBytes = std::vector<unsigned char>;
-inline constexpr std::uint32_t wire_magic = 0x314c4352, wire_version = 4;
+inline constexpr std::uint32_t wire_magic = 0x314c4352, wire_version = 10;
 inline constexpr std::size_t request_byte_limit = 32 + tile_limit * 12 + capture_sample_budget * 8;
 inline constexpr std::size_t reply_byte_limit = 65536;
 enum class MessageType : std::uint32_t { hello = 1, request = 2, result = 3, error = 4 };
@@ -24,6 +31,15 @@ struct TileMeasurement {
     std::vector<OfdmMeasurement> ofdm;
     RoiMeasurements roi;
     std::vector<ChirpMeasurement> chirps;
+    WaveformFeatures waveform;
+    CyclicBackground cyclic_background;
+    WaveformReview background_review; // independent supervisor metadata diagnostic
+    StructureDiscovery structure;
+    ChirpDiscovery sweeps;
+    WaveformReview sweep_review; // separate supervisor shape review
+    WaveformReview review; // supervisor metadata assessment, not sent by child
+    BurstAnalysis burst;
+    ClockRefinement clock;
     LinkEvidence evidence; // computed by supervisor after strict wire validation; not sent by child
 };
 struct WorkerTile { SampleTile source; std::vector<std::complex<float>> iq; };

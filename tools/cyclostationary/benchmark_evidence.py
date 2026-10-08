@@ -106,10 +106,45 @@ def cases():
     yield 'repeated_symbol', 'periodic_non_ofdm', 'periodic', (symbol*103)[:N], 19e6, 'cf32_le'
 
 
+def fresh_cases():
+    for seed in range(40):
+        yield f'fresh_noise_{seed}', 'fresh_stationary_noise', f'fresh_noise:{seed}', noise(991037+seed), 16e6, 'cf32_le'
+    for seed in range(8):
+        rng = random.Random(819037+seed)
+        f = rng.uniform(-8e6,8e6)
+        x = [cmath.exp(2j*math.pi*f*n/RATE)+.01*z for n,z in enumerate(noise(739037+seed))]
+        yield f'fresh_tone_{seed}', 'fresh_tone', f'fresh_tone:{seed}', x, 16e6, 'cf32_le'
+    for which,(slope,sweep) in enumerate(((135.2e9,9e6),(270.2e9,18e6),(-135.3e9,9e6))):
+        width = 19.5e6 if sweep==18e6 else 16e6
+        seed = 591037+which
+        group = f'fresh_analytic:{which}'
+        def generate(clock=1, carrier=0, factor=1):
+            x = noise(seed,.001)
+            for n in range(1334):
+                t = n/RATE*clock
+                x[1777+n] += cmath.exp(2j*math.pi*((carrier-math.copysign(sweep/2,slope))*t+factor*slope*t*t/2))
+            return x
+        base = generate()
+        for snr in (5,10,15):
+            added = noise(seed+300,math.sqrt(10**(-snr/10)/2))
+            yield f'fresh_{which}_noise_{snr}', 'fresh_added_noise', group, [z+n for z,n in zip(base,added)], width, 'cf32_le'
+        for ppm in (-123.5,217.25):
+            yield f'fresh_{which}_clock_{ppm}', 'fresh_clock', group, generate(clock=1+ppm/1e6), width, 'cf32_le'
+        for delay,amplitude,phase in ((5,.25,1.3),(12,.8,-.8),(31,.9,2.1)):
+            x = [z+(amplitude*cmath.exp(1j*phase)*base[n-delay] if n>=delay else 0) for n,z in enumerate(base)]
+            yield f'fresh_{which}_echo_{delay}', 'fresh_multipath', group, x, width, 'cf32_le'
+        for carrier in (-.2e6,.2e6):
+            yield f'fresh_{which}_cfo_{carrier}', 'fresh_cfo', group, generate(carrier=carrier), width, 'cf32_le'
+        for factor in (.85,1.15):
+            yield f'fresh_{which}_off_slope_{factor}', 'fresh_off_template', group, generate(factor=factor), width, 'cf32_le'
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--tool', required=True, type=Path)
     p.add_argument('--output', required=True, type=Path)
+    p.add_argument('--refine', action='store_true')
+    p.add_argument('--fresh', action='store_true')
     args = p.parse_args()
     output, tool = args.output.resolve(), args.tool.resolve()
     if output.exists():
@@ -121,6 +156,8 @@ def main():
     def run(name, category, group, path, rate, width, fmt, samples, checksum, provenance):
         command = [str(tool), 'analyze', '--input', str(path), '--format', fmt, '--sample-rate', str(rate),
                    '--samples', str(samples), '--frames', '256', '--assess-evidence']
+        if args.refine:
+            command += ['--refine-chirps']
         if width is not None:
             command += ['--usable-bandwidth', str(width)]
         result = json.loads(subprocess.run(command, check=True, capture_output=True, text=True, timeout=10).stdout)
@@ -131,10 +168,12 @@ def main():
                   'sample_rate_hz': rate, 'samples': samples, 'format': fmt, 'sha256_iq': checksum,
                   'classification': result['classification'], 'dsp_evidence': e,
                   'chirp_structure': result['chirp_structure'], 'ofdm_structure': result['ofdm_structure']}
+        if args.refine:
+            record['chirp_refinement'] = result['chirp_refinement']
         records.append(record)
     with tempfile.TemporaryDirectory(prefix='rfmon-evidence-benchmark-') as temp:
         path = Path(temp)/'control.iq'
-        for name, category, group, x, width, fmt in cases():
+        for name, category, group, x, width, fmt in (fresh_cases() if args.fresh else cases()):
             if fmt == 'ci16_le':
                 data = b''.join(struct.pack('<hh', max(-32768, min(32767, round(z.real*32768))),
                     max(-32768, min(32767, round(z.imag*32768)))) for z in x)
@@ -158,10 +197,17 @@ def main():
     summary = {'schema': 'rfmon.cyclo.evidence_benchmark.v1', 'policy_version': POLICY, 'policy_and_generator_sha256': source_hashes,
         'thresholds_frozen_before_run': True, 'thresholds_informed_by_prior_development': True,
         'cases': len(records), 'source_groups': len({r['source_group'] for r in records}),
+        'case_set': 'fresh_controls_and_impairments' if args.fresh else 'prior_development_controls',
         'partition': 'software_development_benchmark_only', 'independent_real_unit_session_test': False,
         'radio_opened': False, 'model_trained': False, 'remote_id_decoded': False,
         'named_family_acceptance_enabled': False, 'family_precision_recall': None,
         'status_counts': dict(status), 'category_pattern_counts': dict(category_counts), 'records': records}
+    if args.refine:
+        summary['refinement_shape_counts'] = dict(Counter(r['category'] for r in records
+            if any(c['shape_consistent'] for c in r['chirp_refinement']['candidates'])))
+        summary['offline_refinement_diagnostic_only'] = True
+        summary['policy_and_generator_sha256']['src/cyclostationary/chirp_refinement.cpp'] = hashlib.sha256(
+            (ROOT/'src/cyclostationary/chirp_refinement.cpp').read_bytes()).hexdigest()
     (output/'summary.json').write_text(json.dumps(summary, indent=2, allow_nan=False)+'\n')
     print(json.dumps({k: v for k, v in summary.items() if k != 'records'}, indent=2))
 

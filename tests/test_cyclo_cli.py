@@ -154,17 +154,64 @@ with tempfile.TemporaryDirectory(prefix="rfmon-cyclo-cli-") as directory:
     assert sampled["selection"]["copied_samples"] == 262144
     assert sampled["selection"]["phase_concatenation"] is False
     assert sampled["worker"]["process_isolated"] is True
-    assert sampled["worker"]["wire_version"] == 4
+    assert sampled["worker"]["wire_version"] == 10
     assert all(not t["dsp_evidence"]["named_family_acceptance_enabled"] for t in sampled["tiles"])
     assert sampled["tiles"][0]["dsp_evidence"]["context"]["usable_bandwidth_hz"] is None
     preview = run("analyze", "--input", iq, "--samples", 4096, "--assess-evidence", "--usable-bandwidth", 16000000, *common)
     assert preview["dsp_evidence"]["policy_version"] == "experimental_dsp_v1"
     assert preview["dsp_evidence"]["context"]["int16_rails_known"] is False
     assert not preview["dsp_evidence"]["thresholds_calibrated"]
+    refined = run("analyze", "--input", iq, "--samples", 4096, "--offset", 111, "--refine-chirps", "--assess-evidence", *common)
+    assert refined["chirp_refinement"]["offline_only"] is True
+    assert not refined["chirp_refinement"]["classification_used"]
+    assert not refined["chirp_refinement"]["live_worker_uses_refinement"]
+    assert len(refined["chirp_refinement"]["candidates"]) == 3
+    assert refined["classification"] == preview["classification"]
+    for c in refined["chirp_refinement"]["candidates"]:
+        if c["status"] == "measured":
+            assert 111 <= c["first_original_source_sample_center"]
+            assert c["last_original_source_sample_center"] < 111 + 4096
+            assert c["spectra_examined"] <= 75
+    run("analyze", "--input", large, "--samples", 65537, "--refine-chirps", *common, success=False)
+    run("shadow-replay", "--input", iq, "--capture-samples", 4096, "--refine-chirps", *common, success=False)
+    short_refined = run("analyze", "--input", iq, "--samples", 16, "--refine-chirps", *common)
+    assert all(c["dechirped_band_power_fraction"] is None for c in short_refined["chirp_refinement"]["candidates"])
+    filtered_refined = run("analyze", "--input", iq, *common, *band_options, "--refine-chirps")
+    assert filtered_refined["chirp_refinement"]["source_sample_step"] == 3
+    for c in filtered_refined["chirp_refinement"]["candidates"]:
+        if c["status"] == "measured":
+            assert c["first_original_source_sample_center"] >= prep["first_output_source_sample"]
+            assert c["last_original_source_sample_center"] < 10000
     run("analyze", "--input", iq, "--remove-source-dc", *common, success=False)
     run("analyze", "--input", iq, "--usable-bandwidth", 61000000, *common, success=False)
     run("analyze", "--input", large, "--samples", 65537, "--assess-evidence", *common, success=False)
     assert len(sampled["tiles"][0]["chirp_structure"]["candidates"]) == 3
+    assert all(t["waveform_features"]["samples_examined"]==t["samples"] for t in sampled["tiles"])
+    expanded=run("analyze","--input",iq,"--offset",111,"--samples",6000,"--expand-waveforms",*common)
+    assert expanded["classification"]==report["classification"]
+    for key in ["features","measurement","ofdm_structure","preprocessing","warnings"]:
+        assert expanded[key]==report[key], key
+    w=expanded["waveform_features"]
+    assert w["classification_used"] is False and w["thresholds_calibrated"] is False
+    assert w["partition_means"]=="separate" and w["fft_calls"]<=8 and w["refinement_evaluations"]<=40
+    assert w["discovery_first_original_sample"]==111
+    assert w["discovery_last_original_sample"]<w["holdout_first_original_sample"]
+    assert w["holdout_last_original_sample"]==6110
+    assert not w["morphology"]["frequency_state_centres_available"]
+    assert w["morphology"]["frequency_low_hz"] is None and w["morphology"]["frequency_high_hz"] is None
+    small=run("analyze","--input",iq,"--samples",16,"--expand-waveforms",*common)["waveform_features"]
+    assert small["morphology"]["amplitude_cv"] is None and small["holdout_first_original_sample"] is None
+    run("analyze","--input",large,"--samples",65537,"--expand-waveforms",*common,success=False)
+    run("shadow-replay","--input",iq,"--capture-samples",4096,"--prepare-candidates",*common,success=False)
+    unknown=run("analyze","--input",iq,"--samples",6000,"--prepare-candidates",*common)
+    assert unknown["candidate_preparation"]["fir_operations"]==0
+    assert all(c["status"]=="passband_unknown" for c in unknown["candidate_preparation"]["candidates"])
+    prepared_candidates=run("analyze","--input",iq,"--samples",6000,"--prepare-candidates","--usable-bandwidth",50000000,*common)
+    assert len(prepared_candidates["candidate_preparation"]["candidates"])<=2
+    assert prepared_candidates["candidate_preparation"]["context_retained"] is True
+    expanded_band=run("analyze","--input",iq,*common,*band_options,"--expand-waveforms")
+    assert expanded_band["waveform_features"]["source_sample_step"]==3
+    assert expanded_band["waveform_features"]["discovery_first_original_sample"]==expanded_band["preprocessing"]["first_output_source_sample"]
     assert all(t["roi_measurements"]["samples_examined"] == t["samples"] for t in sampled["tiles"])
     assert len(sampled["tiles"]) == 4
     assert sampled["tiles"][-1]["file_offset_samples"] + sampled["tiles"][-1]["samples"] == 1000000000
@@ -199,4 +246,118 @@ with tempfile.TemporaryDirectory(prefix="rfmon-cyclo-cli-") as directory:
     run("shadow-replay", "--input", large, "--capture-samples", 2047, *common, success=False)
     run("shadow-replay", "--input", iq, "--capture-samples", 1000000, "--offset", 111, *common)
 
+    reviewed=run("analyze","--input",iq,"--offset",111,"--samples",6000,"--review-waveforms",*common)
+    assert reviewed["waveform_review"]["method"]=="expanded_measurement_review_v2"
+    assert not reviewed["waveform_review"]["classification_used"] and not reviewed["waveform_review"]["thresholds_calibrated"]
+    assert reviewed["structure_discovery"]==expanded["structure_discovery"]
+    assert reviewed["waveform_features"]==expanded["waveform_features"]
+    assert reviewed["classification"]==report["classification"]
+    assert len(reviewed["waveform_review"]["candidates"])<=18
+    assert all("waveform_review" in t for t in sampled["tiles"])
+    assert all(t["waveform_review"]["context"]["usable_bandwidth_hz"] is None for t in sampled["tiles"])
+    run("analyze","--input",large,"--samples",65537,"--review-waveforms",*common,success=False)
+    assert all(t["structure_discovery"]["samples_examined"]==t["samples"] for t in sampled["tiles"])
+    assert expanded["linear_sweep_discovery"]["method"]=="bounded_linear_sweep_discovery_v2"
+    assert expanded["linear_sweep_review"]["method"]=="linear_sweep_review_v1"
+    assert expanded["linear_sweep_discovery"]["classification_used"] is False
+    sweeps=run("analyze","--input",iq,"--offset",111,"--samples",6000,"--discover-sweeps",*common)
+    assert sweeps["linear_sweep_discovery"]==expanded["linear_sweep_discovery"]
+    assert "structure_discovery" not in sweeps
+    assert expanded_band["linear_sweep_discovery"]["source_sample_step"]==3
+    assert all("linear_sweep_discovery" in t and "linear_sweep_review" in t for t in sampled["tiles"])
+    run("analyze","--input",large,"--samples",65537,"--discover-sweeps",*common,success=False)
+    assert expanded["cyclic_background"]["method"]=="local_caf_background_v1"
+    assert expanded["cyclic_background_review"]["method"]=="cyclic_background_review_v1"
+    burst=run("analyze","--input",iq,"--offset",111,"--samples",6000,"--analyze-bursts",*common)
+    assert burst["classification"]["drone_assessment"]=="insufficient_evidence"
+    assert burst["burst_analysis"]["sample_limit_per_tile"]==16384
+    assert not burst["burst_analysis"]["phase_concatenation"]
+    assert burst["burst_analysis"]["max_regions_per_tile"]==1
+    assert "burst_analysis" not in reviewed
+    run("analyze","--input",large,"--samples",65537,"--analyze-bursts",*common,success=False)
+    gated=root/"middle_burst.cf32"
+    gated.write_bytes(b"".join(struct.pack("<ff",math.cos(math.pi*i/128)*(1 if i%7<3 else -1),
+        math.sin(math.pi*i/128)*(1 if i%7<3 else -1)) if 16384<=i<24576 else struct.pack("<ff",0,0) for i in range(65536)))
+    gated_sha=hashlib.sha256(gated.read_bytes()).hexdigest()
+    local=run("analyze","--input",gated,"--analyze-bursts",*common)["burst_analysis"]
+    transported=run("shadow-replay","--input",gated,"--capture-samples",65536,*common)["tiles"][0]["burst_analysis"]
+    for b in (local,transported):
+        assert b["source_first_original_sample"]==16384 and b["source_last_original_sample"]==24575
+        assert b["samples_examined"]==8192 and any(p["background_supported"] for p in b["cyclic_background"]["peaks"])
+    assert local["waveform_features"]==transported["waveform_features"]
+    assert local["cyclic_background"]==transported["cyclic_background"]
+    gap=run("shadow-replay","--input",gated,"--capture-samples",65536,"--continuous-samples",12000,*common)
+    assert all(t["burst_analysis"]["samples_examined"]==0 for t in gap["tiles"])
+    assert hashlib.sha256(gated.read_bytes()).hexdigest()==gated_sha
+    retimed=run("analyze","--input",gated,"--refine-clock",*common)["clock_refinement"]
+    assert retimed["scope"]=="selected_contiguous_burst" and retimed["samples_examined"]==8192
+    assert retimed["input_origin_original_sample"]==16384
+    assert not retimed["holdout_selects_grid_or_phase"] and retimed["grids_tested"]==9
+    transported_clock=run("shadow-replay","--input",gated,"--capture-samples",65536,*common)["tiles"][0]["clock_refinement"]
+    for key in ("cp_candidates","code_candidates","partition_samples","canonical_samples","interpolated_samples"):
+        assert retimed[key]==transported_clock[key]
+    assert "clock_refinement" not in reviewed
+    run("analyze","--input",large,"--samples",65537,"--refine-clock",*common,success=False)
+    short_clock=run("analyze","--input",iq,"--samples",2064,"--refine-clock",*common)["clock_refinement"]
+    assert short_clock["status"]=="insufficient_resampling_support" and short_clock["interpolated_samples"]==0
+    background=run("analyze","--input",iq,"--offset",111,"--samples",6000,"--check-cyclic-background",*common)
+    assert background["cyclic_background"]==expanded["cyclic_background"] and background["waveform_features"]==expanded["waveform_features"]
+    assert "structure_discovery" not in background
+    assert not background["cyclic_background"]["selected_rates_or_lags_refitted"]
+    assert len(background["cyclic_background"]["peaks"])<=8 and background["cyclic_background"]["fft_calls"]<=16
+    assert expanded_band["cyclic_background"]["source_sample_step"]==3
+    assert all("cyclic_background" in t for t in sampled["tiles"])
+    run("analyze","--input",large,"--samples",65537,"--check-cyclic-background",*common,success=False)
+    structure=expanded["structure_discovery"]
+    assert structure["method"]=="bounded_ofdm_barker_discovery_v1"
+    assert not structure["classification_used"] and not structure["thresholds_calibrated"]
+    assert structure["discovery_first_original_sample"]==111
+    assert structure["holdout_last_original_sample"]==6110
+    assert structure["ofdm_fft_calls"]<=6 and structure["timing_hypotheses"]<=32 and structure["spread_hypotheses"]<=32
+    explicit=run("analyze","--input",iq,"--offset",111,"--samples",6000,"--discover-structure",*common)
+    assert explicit["structure_discovery"]==structure and "waveform_features" not in explicit
+    for key,value in report.items():
+        assert explicit[key]==value,key
+    short_structure=run("analyze","--input",iq,"--samples",16,"--discover-structure",*common)["structure_discovery"]
+    assert short_structure["status"]=="insufficient_samples" and short_structure["carrier_estimate_hz"] is None
+    assert expanded_band["structure_discovery"]["source_sample_step"]==3
+    assert expanded_band["structure_discovery"]["discovery_first_original_sample"]==expanded_band["preprocessing"]["first_output_source_sample"]
+    run("analyze","--input",large,"--samples",65537,"--discover-structure",*common,success=False)
+
+    run("analyze","--input",iq,"--qualify-candidates",*common,success=False)
+    assert "candidate_qualification" not in prepared_candidates
+    for options in ([], ["--usable-bandwidth", "48000000"], band_options):
+        base=run("analyze","--input",iq,"--offset",111,"--samples",6000,
+                 "--prepare-candidates",*common,*options)
+        qualified=run("analyze","--input",iq,"--offset",111,"--samples",6000,
+                 "--prepare-candidates","--qualify-candidates",*common,*options)
+        q=qualified.pop("candidate_qualification")
+        assert qualified==base, "qualification changed existing measurements"
+        assert q["proposal_accounting_exact"]
+        assert q["proposals_seen"]==q["returned_proposals"]+q["duplicates_of_returned"]+q["budget_omitted_proposals"]
+        assert not q["receiver_passband_calibrated"] and q["signal_detection_recall"] is None
+        assert q["prepared_region_time_union_samples"]<=q["retained_region_time_union_samples"]<=q["analysis_samples"]
+        assert q["output_center_extent_union_samples"]<=q["filter_input_time_union_samples"]<=q["prepared_region_time_union_samples"]
+        for p,c in zip(q["candidates"],base["candidate_preparation"]["candidates"]):
+            assert "link_signature_unvalidated" in p["blocking_reasons"]
+            if c["status"]=="prepared_declared_passband":
+                half=c["filter_taps"]//2
+                step=c["source_region_original_sample_step"]
+                assert p["first_filter_input_original_sample"]==c["first_original_source_sample_center"]-half*step
+                assert p["last_filter_input_original_sample"]==c["last_original_source_sample_center"]+half*step
+                assert p["first_filter_input_original_sample"]==c["source_region_first_sample"]
+                assert p["last_filter_input_original_sample"]<=c["source_region_last_original_sample"]
+                upstream=base["preprocessing"].get("filter_half_length_source_samples",0)
+                assert p["first_raw_dependency_original_sample"]==p["first_filter_input_original_sample"]-upstream
+                assert p["last_raw_dependency_original_sample"]==p["last_filter_input_original_sample"]+upstream
+                assert 111<=p["first_raw_dependency_original_sample"]<=p["last_raw_dependency_original_sample"]<6111
+                assert p["unconsumed_tail_analysis_samples"]<c["original_source_sample_step"]//step
+                # The narrow tone is filtered successfully but too short for
+                # separate cyclic partitions after decimation.
+                assert not p["cyclic_support_available"]
+    assert hashlib.sha256(iq.read_bytes()).hexdigest()==checksum
+
+
 print("cyclostationary CLI checks passed")
+
+# General sweep options and metadata remain separate from legacy evidence.

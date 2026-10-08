@@ -37,6 +37,15 @@ int main(int argc, char** argv) {
                     r.ofdm = measure_ofdm_structure(input.iq, request.rate_hz, wlan_ofdm_hypotheses(request.rate_hz));
                     r.roi = measure_rois(input.iq, request.rate_hz);
                     r.chirps = measure_chirp_structure(input.iq, request.rate_hz);
+                    r.waveform = measure_waveform_features(input.iq, request.rate_hz);
+                    r.cyclic_background = measure_cyclic_background(input.iq,request.rate_hz,r.waveform);
+                    r.structure = discover_waveform_structure(input.iq, request.rate_hz);
+                    r.sweeps = discover_linear_sweeps(input.iq, request.rate_hz);
+                    r.burst=analyze_burst(input.iq,request.rate_hz,r.roi);
+                    if(r.burst.selection.samples) {
+                        const auto begin=input.iq.begin()+r.burst.selection.offset;
+                        r.clock=refine_structure_clock({begin,begin+r.burst.selection.samples},request.rate_hz,r.burst.structure);
+                    } else r.clock=refine_structure_clock(input.iq,request.rate_hz,r.structure);
                     results.push_back(std::move(r));
                 }
                 write_worker_frame(3, MessageType::result, encode_result(request.job_id, results));

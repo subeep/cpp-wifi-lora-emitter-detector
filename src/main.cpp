@@ -675,7 +675,7 @@ int main() {
 #ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
             ImGui::Spacing();
             if (ImGui::CollapsingHeader("Drone / link analysis (experimental cyclostationary DSP)")) {
-                const float analysis_height = std::clamp(ImGui::GetContentRegionAvail().y * 0.5f, 100.0f, 320.0f);
+                const float analysis_height = std::clamp(ImGui::GetContentRegionAvail().y * 0.5f, 200.0f, 480.0f);
                 ImGui::BeginChild("wifi_cyclo_measurements", ImVec2(0, analysis_height), ImGuiChildFlags_Borders);
                 bool enabled = scanner.wifi_cyclo_stats().enabled;
                 if (ImGui::Checkbox("Enable optional DSP analysis", &enabled)) scanner.set_wifi_cyclo_enabled(enabled);

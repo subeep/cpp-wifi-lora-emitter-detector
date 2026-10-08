@@ -19,6 +19,14 @@ add_library(rfmon_cyclo_core STATIC
   ${CYCLO_ROOT}/src/cyclostationary/analysis_samples.cpp
   ${CYCLO_ROOT}/src/cyclostationary/ofdm_structure.cpp
   ${CYCLO_ROOT}/src/cyclostationary/chirp_structure.cpp
+  ${CYCLO_ROOT}/src/cyclostationary/chirp_discovery.cpp
+  ${CYCLO_ROOT}/src/cyclostationary/chirp_refinement.cpp
+  ${CYCLO_ROOT}/src/cyclostationary/structure_discovery.cpp
+  ${CYCLO_ROOT}/src/cyclostationary/waveform_review.cpp
+  ${CYCLO_ROOT}/src/cyclostationary/waveform_features.cpp
+  ${CYCLO_ROOT}/src/cyclostationary/burst_analysis.cpp
+  ${CYCLO_ROOT}/src/cyclostationary/cyclic_background.cpp
+  ${CYCLO_ROOT}/src/cyclostationary/candidate_bands.cpp
   ${CYCLO_ROOT}/src/cyclostationary/link_evidence.cpp
   ${CYCLO_ROOT}/src/cyclostationary/roi_measurements.cpp
   ${CYCLO_ROOT}/src/cyclostationary/worker_protocol.cpp
@@ -47,12 +55,36 @@ add_test(NAME cyclostationary_math COMMAND test_cyclostationary)
 add_executable(test_cyclo_roi ${CYCLO_ROOT}/tests/test_cyclo_roi.cpp)
 target_link_libraries(test_cyclo_roi PRIVATE rfmon_cyclo_offline)
 add_test(NAME cyclostationary_roi COMMAND test_cyclo_roi)
+add_executable(test_cyclo_sweeps ${CYCLO_ROOT}/tests/test_cyclo_sweeps.cpp)
+target_link_libraries(test_cyclo_sweeps PRIVATE rfmon_cyclo_core)
+add_test(NAME cyclostationary_sweeps COMMAND test_cyclo_sweeps)
 add_executable(test_cyclo_chirp ${CYCLO_ROOT}/tests/test_cyclo_chirp.cpp)
 target_link_libraries(test_cyclo_chirp PRIVATE rfmon_cyclo_core)
 add_test(NAME cyclostationary_chirp COMMAND test_cyclo_chirp)
 add_executable(test_cyclo_evidence ${CYCLO_ROOT}/tests/test_cyclo_evidence.cpp)
 target_link_libraries(test_cyclo_evidence PRIVATE rfmon_cyclo_core)
 add_test(NAME cyclostationary_evidence COMMAND test_cyclo_evidence)
+add_executable(test_cyclo_refinement ${CYCLO_ROOT}/tests/test_cyclo_refinement.cpp)
+target_link_libraries(test_cyclo_refinement PRIVATE rfmon_cyclo_core)
+add_test(NAME cyclostationary_refinement COMMAND test_cyclo_refinement)
+add_executable(test_cyclo_clock ${CYCLO_ROOT}/tests/test_cyclo_clock.cpp)
+target_link_libraries(test_cyclo_clock PRIVATE rfmon_cyclo_core)
+add_test(NAME cyclostationary_clock COMMAND test_cyclo_clock)
+add_executable(test_cyclo_burst ${CYCLO_ROOT}/tests/test_cyclo_burst.cpp)
+target_link_libraries(test_cyclo_burst PRIVATE rfmon_cyclo_core)
+add_test(NAME cyclostationary_burst COMMAND test_cyclo_burst)
+add_executable(test_cyclo_background ${CYCLO_ROOT}/tests/test_cyclo_background.cpp)
+target_link_libraries(test_cyclo_background PRIVATE rfmon_cyclo_core)
+add_test(NAME cyclostationary_background COMMAND test_cyclo_background)
+add_executable(test_cyclo_waveforms ${CYCLO_ROOT}/tests/test_cyclo_waveforms.cpp)
+target_link_libraries(test_cyclo_waveforms PRIVATE rfmon_cyclo_core)
+add_test(NAME cyclostationary_waveforms COMMAND test_cyclo_waveforms)
+add_executable(test_cyclo_structure ${CYCLO_ROOT}/tests/test_cyclo_structure.cpp)
+target_link_libraries(test_cyclo_structure PRIVATE rfmon_cyclo_core)
+add_test(NAME cyclostationary_structure COMMAND test_cyclo_structure)
+add_executable(test_cyclo_review ${CYCLO_ROOT}/tests/test_cyclo_review.cpp)
+target_link_libraries(test_cyclo_review PRIVATE rfmon_cyclo_core)
+add_test(NAME cyclostationary_review COMMAND test_cyclo_review)
 add_executable(test_cyclo_shadow ${CYCLO_ROOT}/tests/test_cyclo_shadow.cpp)
 target_link_libraries(test_cyclo_shadow PRIVATE rfmon_cyclo_offline)
 add_test(NAME cyclostationary_shadow COMMAND test_cyclo_shadow)
@@ -69,6 +101,8 @@ add_test(NAME cyclostationary_process COMMAND test_cyclo_process $<TARGET_FILE:w
   $<TARGET_FILE:cyclo_fault_worker_3> $<TARGET_FILE:cyclo_fault_worker_4>)
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+  add_test(NAME cyclostationary_link_reference_audit COMMAND ${Python3_EXECUTABLE}
+    ${CYCLO_ROOT}/tests/test_link_reference_audit.py)
   add_test(NAME cyclostationary_reference_corpus COMMAND ${Python3_EXECUTABLE}
     ${CYCLO_ROOT}/tests/test_cyclo_reference_corpus.py ${CYCLO_ROOT}/tests/fixtures/wifi_ofdm)
   add_test(NAME cyclostationary_cli COMMAND ${Python3_EXECUTABLE}

@@ -19,6 +19,12 @@ template<class F> void until(F f) {
     while (!f()) { if (std::chrono::steady_clock::now() > end) throw std::runtime_error("process wait timed out"); std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
 }
 std::string read_file(const std::string& name) { std::ifstream f(name); return {std::istreambuf_iterator<char>(f), {}}; }
+void fill_clock(TileMeasurement& t,const std::vector<std::complex<float>>& iq) {
+    if(t.burst.selection.samples) {
+        const auto begin=iq.begin()+t.burst.selection.offset;
+        t.clock=refine_structure_clock({begin,begin+t.burst.selection.samples},20e6,t.burst.structure);
+    } else t.clock=refine_structure_clock(iq,20e6,t.structure);
+}
 void protocol_tests(const std::vector<std::complex<float>>& iq) {
     const auto plan = plan_sample_tiles(iq.size());
     auto input = encode_request(171, 20e6, plan, iq); const auto decoded = decode_request(input);
@@ -33,11 +39,51 @@ void protocol_tests(const std::vector<std::complex<float>>& iq) {
     measured.ofdm = measure_ofdm_structure(iq, 20e6, wlan_ofdm_hypotheses(20e6));
     measured.roi = measure_rois(iq, 20e6);
     measured.chirps = measure_chirp_structure(iq, 20e6);
+    measured.waveform=measure_waveform_features(iq,20e6);
+    measured.cyclic_background=measure_cyclic_background(iq,20e6,measured.waveform);
+    measured.structure=discover_waveform_structure(iq,20e6);
+    measured.sweeps=discover_linear_sweeps(iq,20e6);
+    measured.burst=analyze_burst(iq,20e6,measured.roi);fill_clock(measured,iq);
+    auto bad_sweep=measured;bad_sweep.sweeps.discovery_trials++;
+    rejects([&] { decode_result(encode_result(171,{bad_sweep}),171,20e6,plan); },"invented sweep search coverage accepted");
+    bad_sweep=measured;bad_sweep.sweeps.holdout_partition_offset=0;
+    rejects([&] { decode_result(encode_result(171,{bad_sweep}),171,20e6,plan); },"overlapping sweep partitions accepted");
+    std::vector<std::complex<float>> sweep_iq(iq.size());
+    for(std::size_t i=0;i<sweep_iq.size();++i){const double t=double(i%128)-63.5;
+        sweep_iq[i]=std::polar(1.f,float(2*3.14159265358979323846*.5*(.5/127)*t*t));}
+    auto with_sweep=measured;with_sweep.sweeps=discover_linear_sweeps(sweep_iq,20e6);
+    check(!with_sweep.sweeps.candidates.empty(),"sweep protocol positive fixture absent");
+    const auto sweep_roundtrip=decode_result(encode_result(171,{with_sweep}),171,20e6,plan);
+    check(sweep_roundtrip[0].sweeps.candidates[0].pattern_consistent &&
+        sweep_roundtrip[0].sweep_review.candidates[0].kind=="linear_sweep","sweep protocol or supervisor review missing");
+    bad_sweep=with_sweep;bad_sweep.sweeps.candidates[0].holdout_offset=0;
+    rejects([&] {decode_result(encode_result(171,{bad_sweep}),171,20e6,plan);},"held sweep coordinates escape partition");
+    bad_sweep=with_sweep;bad_sweep.sweeps.candidates[0].slope_hz_per_second=NAN;
+    rejects([&] {decode_result(encode_result(171,{bad_sweep}),171,20e6,plan);},"nonfinite sweep slope accepted");
+    bad_sweep=with_sweep;bad_sweep.sweeps.candidates[0].pattern_consistent=false;
+    rejects([&] {decode_result(encode_result(171,{bad_sweep}),171,20e6,plan);},"inconsistent sweep flag accepted");
+    bad_sweep=with_sweep;bad_sweep.sweeps.candidates[0].span_samples=65;
+    rejects([&] {decode_result(encode_result(171,{bad_sweep}),171,20e6,plan);},"unsearched sweep span accepted");
+    bad_sweep=with_sweep;bad_sweep.sweeps.candidates[0].holdout_trials++;
+    rejects([&] {decode_result(encode_result(171,{bad_sweep}),171,20e6,plan);},"invented held trials accepted");
     const auto bytes = encode_result(171, {measured}); const auto restored = decode_result(bytes, 171, 20e6, plan);
     check(restored[0].spectral.peaks.size() == measured.spectral.peaks.size(), "validated result round trip");
+    check(!restored[0].review.candidates.empty() && restored[0].review.context.usable_bandwidth_hz==0,"supervisor did not populate bounded review with unknown live passband");
     rejects([&] { decode_result(bytes, 172, 20e6, plan); }, "wrong job id accepted");
     auto wrong_plan = plan; ++wrong_plan.tiles[0].source_offset;
     rejects([&] { decode_result(bytes, 171, 20e6, wrong_plan); }, "wrong source coordinates accepted");
+    check(restored[0].cyclic_background.peaks.size()==measured.waveform.peaks.size() &&
+        restored[0].background_review.candidates.size()==measured.waveform.peaks.size(),"background review not populated by supervisor");
+    auto bad_background=measured;bad_background.cyclic_background.fft_calls++;
+    rejects([&]{decode_result(encode_result(171,{bad_background}),171,20e6,plan);},"invented background FFT count accepted");
+    bad_background=measured;bad_background.cyclic_background.peaks[0].holdout.line_to_upper+=1;
+    rejects([&]{decode_result(encode_result(171,{bad_background}),171,20e6,plan);},"inconsistent local background ratio accepted");
+    bad_background=measured;bad_background.cyclic_background.peaks[0].holdout.reference_bins=999;
+    rejects([&]{decode_result(encode_result(171,{bad_background}),171,20e6,plan);},"invented local background coverage accepted");
+    bad_background=measured;bad_background.cyclic_background.peaks[0].discovery.block_phase_coherence_squared=NAN;
+    rejects([&]{decode_result(encode_result(171,{bad_background}),171,20e6,plan);},"nonfinite block phase consistency accepted");
+    bad_background=measured;bad_background.cyclic_background.peaks[0].background_supported=!bad_background.cyclic_background.peaks[0].background_supported;
+    rejects([&]{decode_result(encode_result(171,{bad_background}),171,20e6,plan);},"inconsistent background support flag accepted");
     auto bad = measured; bad.spectral.peaks[0].coherence_squared = 1.01;
     rejects([&] { decode_result(encode_result(171, {bad}), 171, 20e6, plan); }, "out-of-range coherence accepted");
     bad = measured; bad.spectral.mean_i = NAN;
@@ -66,10 +112,50 @@ void protocol_tests(const std::vector<std::complex<float>>& iq) {
     rejects([&] { decode_result(encode_result(171, {bad}), 171, 20e6, plan); }, "non-finite frequency residual accepted");
     bad = measured; bad.chirps[0].frequency_mean_hz = NAN;
     rejects([&] { decode_result(encode_result(171, {bad}), 171, 20e6, plan); }, "non-finite frequency center accepted");
+    bad=measured; bad.waveform.holdout_offset=0;
+    rejects([&] {decode_result(encode_result(171,{bad}),171,20e6,plan);},"overlapping waveform partitions accepted");
+    bad=measured; bad.waveform.amplitude_cv=NAN;
+    rejects([&] {decode_result(encode_result(171,{bad}),171,20e6,plan);},"nonfinite morphology accepted");
+    bad=measured; bad.waveform.two_frequency_pattern=!bad.waveform.two_frequency_pattern;
+    rejects([&] {decode_result(encode_result(171,{bad}),171,20e6,plan);},"invented morphology flag accepted");
+    if(!measured.waveform.peaks.empty()) {
+        bad=measured; bad.waveform.peaks[0].alpha_hz=20e6;
+        rejects([&] {decode_result(encode_result(171,{bad}),171,20e6,plan);},"outside cyclic frequency accepted");
+        bad=measured; bad.waveform.peaks[0].lag_samples=3;
+        rejects([&] {decode_result(encode_result(171,{bad}),171,20e6,plan);},"unrequested cyclic lag accepted");
+    }
+
+    bad=measured;bad.structure.holdout_offset=0;
+    rejects([&]{decode_result(encode_result(171,{bad}),171,20e6,plan);},"overlapping structure partitions accepted");
+    bad=measured;bad.structure.spread_hypotheses=33;
+    rejects([&]{decode_result(encode_result(171,{bad}),171,20e6,plan);},"excess structure search accepted");
+    if(!measured.structure.ofdm.empty()) {
+        bad=measured;bad.structure.ofdm[0].phase_samples=99999;
+        rejects([&]{decode_result(encode_result(171,{bad}),171,20e6,plan);},"invalid discovered CP phase accepted");
+        bad=measured;bad.structure.ofdm[0].pattern_consistent=!bad.structure.ofdm[0].pattern_consistent;
+        rejects([&]{decode_result(encode_result(171,{bad}),171,20e6,plan);},"invented CP pattern accepted");
+    }
+    if(!measured.structure.spread.empty()) {
+        bad=measured;bad.structure.spread[0].carrier_hz=20e6;
+        rejects([&]{decode_result(encode_result(171,{bad}),171,20e6,plan);},"outside short-code carrier accepted");
+        bad=measured;bad.structure.spread[0].holdout_words=99999;
+        rejects([&]{decode_result(encode_result(171,{bad}),171,20e6,plan);},"invented short-code support accepted");
+        bad=measured;bad.structure.spread[0].holdout_code_coherence_squared=NAN;
+        rejects([&]{decode_result(encode_result(171,{bad}),171,20e6,plan);},"nonfinite short-code score accepted");
+    }
+
+    // Sparse zero-mean impulses can legitimately have fewer than four code
+    // candidates: eight complete nonzero words are a prerequisite, not a quota.
+    auto sparse=measured; std::vector<std::complex<float>> impulses(iq.size());
+    const auto n=measured.structure.partition_samples, offset=measured.structure.holdout_offset;
+    if(n){impulses[0]={1,0};impulses[1]={-1,0};impulses[offset]={1,0};impulses[offset+1]={-1,0};}
+    sparse.structure=discover_waveform_structure(impulses,20e6);fill_clock(sparse,impulses);
+    check(sparse.structure.spread.empty(),"sparse fixture unexpectedly supplies eight code words");
+    decode_result(encode_result(171,{sparse}),171,20e6,plan);
     auto tone = iq;
     for (std::size_t i = 0; i < tone.size(); ++i)
         tone[i] = 0.001f * tone[i] + std::complex<float>(std::polar(1.0, 2 * 3.14159265358979323846 * 64 * (i % 512) / 512));
-    auto with_band = measured; with_band.roi = measure_rois(tone, 20e6);
+    auto with_band = measured; with_band.roi = measure_rois(tone, 20e6); with_band.burst=analyze_burst(tone,20e6,with_band.roi);fill_clock(with_band,tone);
     check(!with_band.roi.regions[0].bands.empty(), "band validation fixture has no interval");
     decode_result(encode_result(171, {with_band}), 171, 20e6, plan);
     bad = with_band; bad.roi.regions[0].bands[0].low_hz = -20e6;
@@ -90,25 +176,98 @@ void protocol_tests(const std::vector<std::complex<float>>& iq) {
     rejects([&] { decode_header(header, reply_byte_limit); }, "wrong wire version accepted");
     header[4] = 2;
     rejects([&] { decode_header(header, reply_byte_limit); }, "old worker wire version accepted");
+    auto burst_iq=iq;std::fill(burst_iq.begin(),burst_iq.end(),std::complex<float>{});
+    for(std::size_t i=1024;i<4096;++i)burst_iq[i]=(i%7<3?1.f:-1.f)*std::polar(1.f,float(3.14159265358979323846*(i%256)/128));
+    auto burst_tile=measured;burst_tile.roi=measure_rois(burst_iq,20e6);
+    burst_tile.burst=analyze_burst(burst_iq,20e6,burst_tile.roi);fill_clock(burst_tile,burst_iq);
+    check(burst_tile.burst.selection.samples>0,"protocol burst fixture absent");
+    const auto burst_wire=encode_result(171,{burst_tile});const auto br=decode_result(burst_wire,171,20e6,plan);
+    check(br[0].burst.selection.offset==burst_tile.burst.selection.offset &&
+        br[0].burst.background_review.candidates.size()==burst_tile.burst.waveform.peaks.size(),"burst supervisor review absent");
+    auto broken=burst_tile;broken.burst.selection.offset++;
+    rejects([&]{decode_result(encode_result(171,{broken}),171,20e6,plan);},"invented burst coordinates accepted");
+    broken=burst_tile;broken.burst.selection.eligible_regions++;
+    rejects([&]{decode_result(encode_result(171,{broken}),171,20e6,plan);},"invented burst selection coverage accepted");
+    broken=burst_tile;broken.burst.selection.cropped=true;
+    rejects([&]{decode_result(encode_result(171,{broken}),171,20e6,plan);},"invented burst crop flag accepted");
+    broken=burst_tile;broken.burst.selection.samples=burst_sample_limit+1;
+    rejects([&]{decode_result(encode_result(171,{broken}),171,20e6,plan);},"burst sample budget escape accepted");
+    broken=burst_tile;broken.burst.spectral.power_fraction[0]=NAN;
+    rejects([&]{decode_result(encode_result(171,{broken}),171,20e6,plan);},"nonfinite compact PSD accepted");
+    broken=burst_tile;broken.burst.waveform.holdout_offset=0;
+    rejects([&]{decode_result(encode_result(171,{broken}),171,20e6,plan);},"burst partitions overlap");
+    broken=burst_tile;broken.burst.background.peaks[0].background_supported=!broken.burst.background.peaks[0].background_supported;
+    rejects([&]{decode_result(encode_result(171,{broken}),171,20e6,plan);},"invented burst cyclic support accepted");
+    check(!measured.clock.cp.empty() && !measured.clock.code.empty(),"clock corruption fixture lacks retained measurements");
+    auto bad_clock=measured;bad_clock.clock.grids_tested++;
+    rejects([&]{decode_result(encode_result(171,{bad_clock}),171,20e6,plan);},"invented timing grid count accepted");
+    bad_clock=measured;bad_clock.clock.holdout_offset=0;
+    rejects([&]{decode_result(encode_result(171,{bad_clock}),171,20e6,plan);},"overlapping timing partitions accepted");
+    bad_clock=measured;bad_clock.clock.cp[0].grid_index=9;
+    rejects([&]{decode_result(encode_result(171,{bad_clock}),171,20e6,plan);},"unsearched timing grid accepted");
+    bad_clock=measured;bad_clock.clock.cp[0].seed_index=2;
+    rejects([&]{decode_result(encode_result(171,{bad_clock}),171,20e6,plan);},"unretained timing seed accepted");
+    bad_clock=measured;bad_clock.clock.interpolated_samples++;
+    rejects([&]{decode_result(encode_result(171,{bad_clock}),171,20e6,plan);},"invented interpolation count accepted");
+    bad_clock=measured;bad_clock.clock.cp[0].measurement.pattern_consistent=!bad_clock.clock.cp[0].measurement.pattern_consistent;
+    rejects([&]{decode_result(encode_result(171,{bad_clock}),171,20e6,plan);},"invented refined CP flag accepted");
+    bad_clock=measured;bad_clock.clock.code[0].measurement.carrier_hz+=100;
+    rejects([&]{decode_result(encode_result(171,{bad_clock}),171,20e6,plan);},"held-refitted code carrier accepted");
+    bad_clock=measured;bad_clock.clock.code[0].measurement.train_code_coherence_squared=NAN;
+    rejects([&]{decode_result(encode_result(171,{bad_clock}),171,20e6,plan);},"nonfinite timing metric accepted");
+    bad_clock=measured;bad_clock.clock.code.push_back(bad_clock.clock.code[0]);
+    rejects([&]{encode_result(171,{bad_clock});},"timing retained candidate budget escape accepted");
     // Maximum retained ROI/band metadata plus full spectra across four tiles
     // must remain inside the unchanged reply budget and decode consistently.
     std::vector<std::complex<float>> dense(65536);
     for (std::size_t i = 0; i < dense.size(); ++i) {
         dense[i] = 0.001f * iq[i % iq.size()];
-        if (i >= 2048 && ((i - 2048) / 4096) < 12 && (i - 2048) % 4096 < 1024)
+        if ((i>=2048 && i<18432) || (i>=20480 && i<49152 && (i-20480)%4096<3072))
             for (int bin : {-64, 32, 96})
                 dense[i] += std::complex<float>(std::polar(1.0, 2 * 3.14159265358979323846 * bin * (i % 512) / 512));
     }
     TileMeasurement full; full.spectral = measure_spectral_correlation(dense, c);
     full.ofdm = measure_ofdm_structure(dense, 20e6, wlan_ofdm_hypotheses(20e6)); full.roi = measure_rois(dense, 20e6);
     full.chirps = measure_chirp_structure(dense, 20e6);
+    full.burst=analyze_burst(dense,20e6,full.roi);
+    full.waveform=measure_waveform_features(dense,20e6);
+    full.cyclic_background=measure_cyclic_background(dense,20e6,full.waveform);
+    full.structure=discover_waveform_structure(dense,20e6);
+    sweep_iq.resize(dense.size());
+    for(std::size_t i=0;i<sweep_iq.size();++i){const double t=double(i%512)-255.5;
+        const double slope=(i/512)%3==0?.4/511:(i/512)%3==1?-.5/511:.6/511;
+        sweep_iq[i]=std::polar(1.f,float(2*3.14159265358979323846*.5*slope*t*t));}
+    full.sweeps=discover_linear_sweeps(sweep_iq,20e6);
+    check(full.burst.selection.samples>0,"full protocol fixture lacks burst payload");
+    const std::vector<std::complex<float>> full_local(dense.begin()+full.burst.selection.offset,dense.begin()+full.burst.selection.offset+full.burst.selection.samples);
+    full.burst.waveform=measure_waveform_features(full_local,20e6);
+    full.burst.background=measure_cyclic_background(full_local,20e6,full.burst.waveform);
+    // Force all eight legal selected CAF records and distinct cached lags in
+    // both scopes, plus three locally observed sweeps. Metadata stress only;
+    // this intentionally combines measurements from different software signals.
+    auto populate=[](WaveformFeatures& w) {
+        w.peaks.clear();w.refinement_evaluations=40;
+        for(bool conjugate:{false,true})for(std::size_t j=0;j<4;++j) {
+            const double alpha=(32+16*j)*w.alpha_bin_hz;
+            w.peaks.push_back({conjugate,cyclic_lags[j],alpha,alpha,.1,.1,true});
+        }
+    };
+    populate(full.waveform);full.cyclic_background=measure_cyclic_background(dense,20e6,full.waveform);
+    populate(full.burst.waveform);full.burst.background=measure_cyclic_background(full_local,20e6,full.burst.waveform);
+    const std::vector<std::complex<float>> local_sweeps(sweep_iq.begin(),sweep_iq.begin()+full.burst.selection.samples);
+    full.burst.sweeps=discover_linear_sweeps(local_sweeps,20e6);
+    check(full.burst.sweeps.candidates.size()==3 && full.burst.background.fft_calls==16 && full.cyclic_background.fft_calls==16,
+        "maximum local metadata fixture not populated");
+    check(full.sweeps.candidates.size()==3,"maximum sweep metadata fixture not populated");
     check(full.roi.regions.size() == 8 && full.roi.regions[0].bands.size() == 3, "maximum metadata fixture not populated");
+    fill_clock(full,dense);
     const auto complete_plan = plan_sample_tiles(capture_sample_budget);
     std::vector<TileMeasurement> complete;
     for (std::size_t i = 0; i < complete_plan.count; ++i) { full.source = complete_plan.tiles[i]; complete.push_back(full); }
     const auto largest = encode_result(172, complete);
     check(largest.size() <= reply_byte_limit && decode_result(largest, 172, 20e6, complete_plan).size() == 4,
           "full ROI metadata exceeds bounded IPC profile");
+    std::cout<<"four-tile burst metadata reply bytes "<<largest.size()<<" / "<<reply_byte_limit<<'\n';
     std::mt19937 rng(581);
     for (int trial = 0; trial < 500; ++trial) {
         WireBytes random(std::size_t(trial % 300)); for (auto& v : random) v = rng() & 255;
