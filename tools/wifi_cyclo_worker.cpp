@@ -37,6 +37,7 @@ int main(int argc, char** argv) {
                     r.ofdm = measure_ofdm_structure(input.iq, request.rate_hz, wlan_ofdm_hypotheses(request.rate_hz));
                     r.roi = measure_rois(input.iq, request.rate_hz);
                     r.chirps = measure_chirp_structure(input.iq, request.rate_hz);
+                    r.marker_structure=measure_marker_structures(input.iq,request.rate_hz,r.chirps);
                     r.waveform = measure_waveform_features(input.iq, request.rate_hz);
                     r.cyclic_background = measure_cyclic_background(input.iq,request.rate_hz,r.waveform);
                     r.structure = discover_waveform_structure(input.iq, request.rate_hz);

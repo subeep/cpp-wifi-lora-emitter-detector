@@ -1,8 +1,26 @@
 # Next steps for broader cyclostationary analysis
 
+11 October update: [native worker and GUI integration](WIFI_NATIVE_MARKER_INTEGRATION_REPORT.md) delivers bounded prefix/span diagnostics, 54/54 development port agreement and passing integration tests. Matched wire-v11 binaries are staged; named-family acceptance, live routing/history and receiver qualification remain pending.
+
+10 October software update: [prefix structure and validation gates](WIFI_PREFIX_AND_VALIDATION_GATES_REPORT.md) implements common-start prefix/span checks, segmented recurrence and independent evaluation tools. Accepted named identities, additional family signatures and live qualification remain pending.
+
+10 October update: [extended SDA dataset validation](WIFI_EXTENDED_DATASET_VALIDATION_REPORT.md) adds read-only DRFF/RFUAV ingestion, label-conflict guards and received 5.8 GHz up/down-chirp evidence. Named-family acceptance and live Mini 2 testing remain pending.
+
+Latest offline update: [full-span and boundary diagnostic](WIFI_MARKER_SYMBOL_VALIDATION_REPORT.md). The added checks remain development evidence; live behavior and named-family acceptance are unchanged.
+
+Latest dataset evidence (9 October): [read-only Leuven/Tampere replay](WIFI_LEUVEN_TAMPERE_LINK_EVIDENCE.md) found recurring marker candidates in Matrice and Mavic Pro and recovered Mini 2 video candidates with bounded offline filtering. This is development evidence; named-family acceptance remains unvalidated.
+
+Named-link update (9 October): [first reference-backed candidate profile](WIFI_NAMED_LINK_CANDIDATES_REPORT.md) adds OcuSync-related chirp compatibility to both GUI panels and opt-in replay. This is unvalidated marker evidence; no named drone family is accepted. Completion requires the signal/reference/receiver gates in that report.
+
+9 October update: [L3/L4 decision-policy report](WIFI_LINK_IDENTIFICATION_L3_DECISION_REPORT.md). The GUI and opt-in replay record now expose explicit unknown/conflict states and reasons while preserving unknowns for later ML review. This is partial decision scaffolding; accepted drone-family decisions, live routing/history and independent/live qualification remain pending.
+
+Latest implementation (8 October): [L1/L2 routing and protocol-evidence report](WIFI_LINK_IDENTIFICATION_L1_L2_REPORT.md). Optional offline routing explores other regions and preserves cyclic sample support. Both Wi-Fi panels can show existing CRC-checked decoder evidence associated with the same capture and contained sample window. L1/L2/L4 remain partial; this does not validate a proprietary drone link.
+
 Updated: 8 October 2026. This is a planning update following the user's request to stop prioritising the Mini 2 recording and improve the general analysis. Live Mini 2 testing is deferred until the user is ready. The implementation updates below record delivered slices of this roadmap.
 
 Priority update (8 October 2026): the user now requests a bounded route to finish the link-identification segment before later ML. Follow the [link-identification completion plan](WIFI_LINK_IDENTIFICATION_COMPLETION_PLAN.md), milestones L0–L6, for the next delivery. Start with reference/profile qualification and candidate coverage, then implement only signatures needed for a small validated catalogue. The broader N1–N8 work below remains the backlog; it does not require completing every waveform branch before the first validated link release. Software readiness and independent/live acceptance are separate checkpoints, and no validation gate is waived.
+
+First L0/L1 package delivered: [reference audit and candidate qualification report](WIFI_LINK_IDENTIFICATION_L0_L1_REPORT.md). The 401-record audit retains all sources in development; the separate offline qualification output accounts for proposal/temporal support losses and preserves previous measurements in 90 comparison cases. The user now has a 10 GbE NIC/SFP; the historical X310 1 GbE ceiling is not a future software design constraint. Named-link validation, receiver qualification and L0/L1 completion remain pending.
 
 The next priority is **qualified candidate bands → stronger cyclic measurements → calibrated rejection → broader waveform measurements → observed RF activity**. Named drone/link validation comes later. ML and Remote ID remain deferred. The existing acquisition schedule, receiver settings, packet/identity/security processing and stores remain unchanged; the add-on stays optional and default-off.
 

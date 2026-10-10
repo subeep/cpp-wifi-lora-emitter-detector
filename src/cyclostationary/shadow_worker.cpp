@@ -66,7 +66,8 @@ bool ShadowWorker::set_enabled(bool enable) noexcept {
 }
 
 bool ShadowWorker::try_submit(const std::vector<std::complex<float>>& iq, std::size_t prefix,
-                              const CaptureContext& capture, const BurstHints& hints) noexcept {
+                              const CaptureContext& capture, const BurstHints& hints,
+                              const WifiProtocolObservations& wifi_protocol) noexcept {
     if (!enabled_.load()) return false;
     const auto start = std::chrono::steady_clock::now();
     try {
@@ -82,6 +83,8 @@ bool ShadowWorker::try_submit(const std::vector<std::complex<float>>& iq, std::s
         if (slot == slots_.end()) { ++busy_; return false; }
         slot->selection = select_sample_tiles(prefix, hints);
         slot->plan = slot->selection.plan;
+        slot->wifi_protocol=valid_wifi_observations(wifi_protocol,wifi_fact_context(capture),prefix,slot->plan)
+            ?wifi_protocol:WifiProtocolObservations{};
         slot->iq.resize(slot->plan.samples); // preallocated capacity
         std::size_t packed = 0;
         for (std::size_t t = 0; t < slot->plan.count; ++t) {
@@ -147,6 +150,7 @@ void ShadowWorker::run() noexcept {
                 r = std::make_shared<ShadowResult>(); r->capture = next->capture;
                 r->epoch = next->epoch; r->copied_samples = next->iq.size();
                 r->selection = next->selection;
+                r->wifi_protocol=next->wifi_protocol;
                 r->tiles = client.analyze(next->sequence, next->capture.sample_rate_hz, next->plan, next->iq, cancelled);
                 ++requests;
                 r->processing_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();

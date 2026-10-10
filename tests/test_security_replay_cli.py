@@ -88,6 +88,80 @@ with tempfile.TemporaryDirectory(prefix='rfmon-security-cli-') as name:
     save_rows(gap_log, gap_rows)
     assert run('wifi_security_replay', gap_log)['incidents_total'] == 0
     print('PASS Default retry and interrupted-flood CLI negative controls')
+    # Production-default benign controls at several positions relative to the
+    # rolling window. Timings/traffic below are constructed, not RF evidence.
+    for phase in (0, 1, 3, 5):
+        for targets in (1, 4):
+            for scenario in ('single_reconnect', 'sparse_reconnect', 'retry_train'):
+                rows = flood_campaign(targets=targets, phase=phase,
+                                      retry=scenario == 'retry_train')
+                controlled = []
+                for row in rows:
+                    seq = row['capture_seq']
+                    if row['kind'] == 'frame':
+                        if scenario == 'single_reconnect' and seq == 32 + phase:
+                            continue
+                        if scenario == 'sparse_reconnect' and row['sample_start'] > 501000:
+                            continue
+                    if row['kind'] == 'capture':
+                        row['events_submitted'] = sum(r['kind'] == 'frame' and r['capture_seq'] == seq
+                                                      for r in controlled)
+                    controlled.append(row)
+                path = tmp / f'control-{scenario}-{targets}-{phase}.ndjson'
+                save_rows(path, controlled)
+                result = run('wifi_security_replay', path)
+                assert result['incidents_total'] == 0, (scenario, targets, phase)
+                assert result['frames_accepted'] == sum(r['kind'] == 'frame' for r in controlled)
+                assert result['flood']['excluded_captures'] == 0
+    print('PASS 24 production-default reconnect/retry controls across window phases and targets')
+
+    def beacon_campaign(pattern):
+        rows = []
+        templates = [r for r in flood_campaign() if r['kind'] == 'capture']
+        for index, (tsf, sequence, retry) in enumerate(pattern):
+            c = dict(templates[index]); c['events_submitted'] = 1
+            raw = bytearray(39)
+            raw[0] = 0x80; raw[1] = 8 if retry else 0
+            raw[4:10] = b'\xff' * 6
+            raw[10:16] = raw[16:22] = bytes.fromhex('020000face01')
+            raw[22:24] = ((sequence % 4096) << 4).to_bytes(2, 'little')
+            raw[24:32] = tsf.to_bytes(8, 'little')
+            raw[32] = 100; raw[34] = 1; raw[37] = 1; raw[38] = ord('X')
+            raw += zlib.crc32(raw).to_bytes(4, 'little')
+            t = c['device_time_ns'] + 50000
+            rows.append(dict(kind='frame',schema=1,run_id=c['run_id'],capture_seq=c['capture_seq'],
+                             radio_session=1,sample_start=1000,sample_length=1000,phy='OFDM',
+                             band=c['band'],channel=c['channel'],sample_rate_hz=c['sample_rate_hz'],
+                             rate_mbps=6,clock='usrp_device',device_time_ns=t,
+                             host_time_ns=1_700_000_000_000_000_000+t,fcs_valid=True,mpdu=raw.hex()))
+            rows.append(c)
+        return rows
+
+    beacon_cases = {
+        'normal_sequence_wrap': ([(1000000,4095,False),(2100000,0,False),(3200000,1,False)], 0),
+        'repeated_no_newer': ([(1000000,10,False),(1000000,10,True),(1000000,10,False)], 0),
+        'restart_new_epoch': ([(1000000,10,False),(2100000,11,False),(1,0,False),
+                               (1100001,1,False),(2200001,2,False)], 0),
+        'same_tsf_changed_sequence': ([(1000000,10,False),(2100000,11,False),(1000000,12,False)], 0),
+        'historical_positive': ([(1000000,10,False),(2100000,11,False),(1000000,10,False)], 1),
+        'historical_retry_positive': ([(1000000,10,False),(2100000,11,False),(1000000,10,True)], 1),
+        # A restart reproducing the exact old bytes is indistinguishable here;
+        # preserve a suspected alert with the benign alternative disclosed.
+        'restart_reuses_identical_state': ([(1000000,10,False),(2100000,11,False),(1000000,10,False)], 1),
+    }
+    for scenario, (pattern, expected) in beacon_cases.items():
+        path = tmp / f'beacon-{scenario}.ndjson'
+        save_rows(path, beacon_campaign(pattern))
+        result = run('wifi_security_replay', path)
+        assert result['frames_accepted'] == len(pattern)
+        assert result['incidents_total'] == expected, scenario
+        assert result['beacon_replay']['evaluated'] == len(pattern)
+        if expected:
+            incident = result['incidents'][0]
+            assert incident['tier'] == 'suspected'
+            assert any('restart' in a.lower() for a in incident['benign_alternatives'])
+    print('PASS Seven production-default beacon progression/restart/replay cases including ambiguity')
+
     src = root / 'tests/fixtures/wifi_ofdm/airtel-2g4.json'
     old = json.loads(src.read_text())
     # Cropped packet fixtures lack the quiet context needed by burst detection.

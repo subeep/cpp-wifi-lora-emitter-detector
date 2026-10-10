@@ -154,7 +154,7 @@ with tempfile.TemporaryDirectory(prefix="rfmon-cyclo-cli-") as directory:
     assert sampled["selection"]["copied_samples"] == 262144
     assert sampled["selection"]["phase_concatenation"] is False
     assert sampled["worker"]["process_isolated"] is True
-    assert sampled["worker"]["wire_version"] == 10
+    assert sampled["worker"]["wire_version"] == 11
     assert all(not t["dsp_evidence"]["named_family_acceptance_enabled"] for t in sampled["tiles"])
     assert sampled["tiles"][0]["dsp_evidence"]["context"]["usable_bandwidth_hz"] is None
     preview = run("analyze", "--input", iq, "--samples", 4096, "--assess-evidence", "--usable-bandwidth", 16000000, *common)
@@ -357,7 +357,65 @@ with tempfile.TemporaryDirectory(prefix="rfmon-cyclo-cli-") as directory:
                 assert not p["cyclic_support_available"]
     assert hashlib.sha256(iq.read_bytes()).hexdigest()==checksum
 
+    run("analyze","--input",iq,"--route-candidates",*common,success=False)
+    run("analyze","--input",iq,"--prepare-candidates","--candidate-round",1,*common,success=False)
+    run("analyze","--input",iq,"--prepare-candidates","--route-candidates","--candidate-round",-1,*common,success=False)
+    plain=run("analyze","--input",iq,"--offset",111,"--samples",6000,"--prepare-candidates",
+              "--qualify-candidates","--usable-bandwidth",48000000,*common)
+    routed=run("analyze","--input",iq,"--offset",111,"--samples",6000,"--prepare-candidates",
+               "--route-candidates","--candidate-round",7,"--usable-bandwidth",48000000,*common)
+    q=routed['candidate_qualification']
+    assert q['routing']['round']==7 and not q['routing']['persistent_history']
+    assert q['cyclic_supported_candidates']>plain['candidate_qualification']['cyclic_supported_candidates']
+    assert q['proposal_accounting_exact'] and q['returned_proposals']<=2
+    for key,value in plain.items():
+        if key not in ('candidate_preparation','candidate_qualification'):
+            assert routed[key]==value,key
+
+    run("analyze", "--input", iq, *common, "--link-decision", success=False)
+    base = run("analyze", "--input", iq, *common, "--samples", 6000, "--review-waveforms")
+    decided = run("analyze", "--input", iq, *common, "--samples", 6000, "--review-waveforms", "--link-decision")
+    decision = decided.pop("link_decision")
+    assert decided == base
+    assert decision["schema"] == "rfmon.link_decision.v1"
+    assert decision["link_family"] == decision["drone_relevance"] == decision["protocol"] == "unknown"
+    assert decision["probability"] is None and not decision["history_used"]
+    assert decision["future_ml_eligibility"] == "not_gated_by_this_decision"
+    assert decision["source_first_sample_center"] == 0 and decision["source_sample_step"] == 1
+    assert decision["decoder_evidence"] == "not_collected_by_offline_analyze"
+
+    run("analyze", "--input", iq, *common, "--named-link-candidates", success=False)
+    base = run("analyze", "--input", iq, *common, "--samples", 6000, "--assess-evidence")
+    named = run("analyze", "--input", iq, *common, "--samples", 6000, "--assess-evidence", "--named-link-candidates")
+    candidates = named.pop("named_link_candidates")
+    assert named == base
+    assert candidates["accepted_family"] is None and not candidates["identity_used"]
+    assert all(not x["accepted"] for x in candidates["candidates"])
+    assert len(candidates["candidates"]) <= 3
+
+    run("analyze", "--input", iq, *common, "--check-marker-structure", success=False)
+    checked = run("analyze", "--input", iq, *common, "--samples", 6000,
+                  "--assess-evidence", "--check-marker-structure")
+    structure = checked.pop("marker_structure")
+    assert checked == base, "marker structure changed existing measurements"
+    assert structure["accepted_family"] is None
+    assert len(structure["candidates"]) == 3
+    assert all(not m["joint_compatible"] for m in structure["candidates"])
+    assert all("marker_structure" in t for t in sampled["tiles"])
+
+    marker = root / "prefix_marker.cf32"
+    rate=20000000; start=400; length=round(rate/15000); gate=80
+    values=[0j]*65536
+    for i in range(length):
+        t=(i-(length-1)/2)/rate
+        phase=math.pi*135.2e9*t*t
+        values[start+i]=complex(math.cos(phase),math.sin(phase))
+    values[start-gate:start]=values[start+length-gate:start+length]
+    marker.write_bytes(b"".join(struct.pack("<ff",v.real,v.imag) for v in values))
+    options=["--input",marker,"--format","cf32_le","--sample-rate",rate]
+    direct=run("analyze",*options,"--assess-evidence","--check-marker-structure")["marker_structure"]
+    child=run("shadow-replay",*options,"--capture-samples",65536)["tiles"][0]["marker_structure"]
+    assert direct==child, "worker transport changed marker structure"
+    assert any(m["joint_compatible"] for m in child["candidates"])
 
 print("cyclostationary CLI checks passed")
-
-# General sweep options and metadata remain separate from legacy evidence.

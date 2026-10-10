@@ -104,6 +104,18 @@ OfdmMeasurement read_ofdm(Reader& q, double rate, std::size_t count, const OfdmH
         std::abs(r.holdout_contrast - (r.holdout_prefix_coherence_squared - r.holdout_outside_coherence_squared)) < 1e-12);
     return r;
 }
+void write_marker(Writer& w,const MarkerStructure& r) {
+    for(bool b:{r.evaluated,r.prefix_compatible,r.joint_compatible,r.boundary_contrast})w.u64(b,1);
+    for(auto n:{r.start,r.lag,r.gate,r.trials})w.u64(n);
+    for(double v:{r.coherence,r.first_half,r.second_half,r.balance,r.guard_max,r.span_min,r.span_energy})w.real(v);
+}
+MarkerStructure read_marker(Reader& q,double rate,std::size_t samples,const ChirpMeasurement& c) {
+    MarkerStructure r;r.evaluated=q.size(1,1);r.prefix_compatible=q.size(1,1);r.joint_compatible=q.size(1,1);r.boundary_contrast=q.size(1,1);
+    r.start=q.size(samples);r.lag=q.size(65536);r.gate=q.size(4000);r.trials=q.size(99);
+    r.coherence=q.real(0,1);r.first_half=q.real(0,1);r.second_half=q.real(0,1);r.balance=q.real(0,1);
+    r.guard_max=q.real(0,1);r.span_min=q.real(0,1);r.span_energy=q.real(0,1);
+    require(valid_marker_structure(r,rate,samples,c));return r;
+}
 void write_chirp(Writer& w, const ChirpMeasurement& r) {
     w.str(r.label); w.str(r.status); w.real(r.slope_hz_per_second); w.real(r.nominal_sweep_hz);
     for (auto n : {r.lag_samples, r.gate_samples, r.positions_examined, r.positions_eligible, r.peak_offset}) w.u64(n);
@@ -578,6 +590,7 @@ WireBytes encode_result(std::uint64_t id, const std::vector<TileMeasurement>& ti
         write_roi(w, tile.roi);
         require(tile.chirps.size() == 3); w.u64(tile.chirps.size(), 4);
         for (const auto& m : tile.chirps) write_chirp(w, m);
+        for (const auto& m : tile.marker_structure) write_marker(w,m);
         write_waveform(w,tile.waveform);
         write_background(w,tile.cyclic_background);
         write_structure(w,tile.structure);
@@ -602,6 +615,7 @@ std::vector<TileMeasurement> decode_result(const WireBytes& bytes, std::uint64_t
         const auto chirp_bank = measure_chirp_structure({}, rate);
         require(q.size(3, 4) == chirp_bank.size());
         for (const auto& h : chirp_bank) tile.chirps.push_back(read_chirp(q, rate, tile.source.samples, h));
+        for(std::size_t i=0;i<3;++i)tile.marker_structure[i]=read_marker(q,rate,tile.source.samples,tile.chirps[i]);
         tile.waveform=read_waveform(q,rate,tile.source.samples);
         tile.cyclic_background=read_background(q,rate,tile.waveform);
         tile.background_review=review_cyclic_background(tile.spectral,tile.waveform,tile.cyclic_background,{rate,0,-1});

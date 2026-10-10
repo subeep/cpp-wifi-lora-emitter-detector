@@ -65,7 +65,7 @@ def main():
             raw, spans = synthetic(kind, n, 6201)
             path = args.output/(kind+'_'+str(n)+'.cf32')
             path.write_bytes(raw)
-            for rate in (20e6, 56e6):
+            for rate in (20e6, 56e6, 100e6, 200e6):
                 for width in (0, .8*rate):
                     cases.append({'path':str(path), 'format':'cf32_le','sample_rate_hz':rate,
                         'capture_center_hz':2444.5e6,'offset':0,'samples':n,'width':width,

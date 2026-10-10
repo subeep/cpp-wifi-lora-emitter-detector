@@ -5,6 +5,7 @@
 #include "capture_timing.hpp"
 #include "process_client.hpp"
 #include "burst_selection.hpp"
+#include "wifi_protocol_observations.hpp"
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -26,6 +27,9 @@ struct CaptureContext {
     std::int64_t first_device_time_ns = 0;
     bool capture_overflow = false, timed_out = false;
 };
+inline WifiFactContext wifi_fact_context(const CaptureContext& c) noexcept {
+    return {c.radio_session,c.capture_sequence,c.band_ghz,c.sample_rate_hz,c.capture_center_hz};
+}
 
 struct ShadowResult {
     CaptureContext capture;
@@ -35,6 +39,7 @@ struct ShadowResult {
     std::chrono::steady_clock::time_point completed_at;
     std::vector<TileMeasurement> tiles; // independently analyzed; never stitched
     TileSelection selection;
+    WifiProtocolObservations wifi_protocol; // existing decoder metadata; never child-inferred
 };
 
 struct ShadowStats {
@@ -69,7 +74,8 @@ public:
     bool enabled() const noexcept { return enabled_.load(); }
     std::uint64_t epoch() const noexcept { return epoch_.load(); }
     bool try_submit(const std::vector<std::complex<float>>& iq, std::size_t contiguous_prefix_samples,
-                    const CaptureContext& capture, const BurstHints& hints = {}) noexcept;
+                    const CaptureContext& capture, const BurstHints& hints = {},
+                    const WifiProtocolObservations& wifi_protocol = {}) noexcept;
     void invalidate() noexcept; // band/channel change; cancels stale queued/results
     std::shared_ptr<const ShadowResult> snapshot() const noexcept;
     ShadowStats stats() const noexcept;
@@ -80,6 +86,7 @@ private:
         CaptureContext capture;
         TilePlan plan;
         TileSelection selection;
+        WifiProtocolObservations wifi_protocol;
         State state = State::free;
         std::uint64_t sequence = 0, epoch = 0;
     };

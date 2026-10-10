@@ -1,10 +1,39 @@
 #include "panel.hpp"
+#include "link_decision.hpp"
+#include "named_link_candidates.hpp"
 #include "imgui.h"
 #include <chrono>
 #include <algorithm>
 
 namespace rfmon::cyclo {
 namespace {
+WindowProtocolEvidence draw_wifi_protocol(const ShadowResult& r,SampleTile tile) {
+    const auto& p=r.wifi_protocol;
+    TilePlan plan;plan.count=std::min(r.tiles.size(),tile_limit);
+    for(std::size_t i=0;i<plan.count;++i)plan.tiles[i]=r.tiles[i].source;
+    const auto protocol=protocol_for_window(p,wifi_fact_context(r.capture),r.capture.source_samples,plan,tile);
+    if(r.tiles.size()>tile_limit || !protocol.associated) {
+        ImGui::TextDisabled("Decoded protocol: no associated decoder evidence supplied.");return {};
+    }
+    const auto ofdm=protocol.ofdm,dsss=protocol.dsss;
+    if(ofdm || dsss) {
+        ImGui::TextWrapped("Decoded protocol: Wi-Fi observed in this window (%zu legacy OFDM, %zu 1 Mbps DSSS decodes).",ofdm,dsss);
+        ImGui::TextWrapped("Existing decoder preamble/header and frame CRC checks passed. Each full decoder window is contained here. Other signals may coexist; drone relevance is unknown.");
+    } else ImGui::TextDisabled("Decoded protocol: no verified Wi-Fi frame associated with this sampled window.");
+    if(ImGui::TreeNode("Decoded protocol evidence")) {
+        ImGui::TextWrapped("Examined %zu/%zu existing burst results; retained %zu. Outside sampled windows %zu; metadata/continuity rejected %zu; per-window budget omissions %zu.",
+            p.examined,p.reported,p.count,p.outside_sampled_windows,p.invalid_evidence,p.budget_omitted);
+        for(std::size_t i=0;i<p.count;++i) {
+            const auto& f=p.facts[i];if(!contains_window(tile,f.decoder_window))continue;
+            ImGui::Text("%s | %u Mbps | %.3f MHz | decoder samples %zu..%zu",
+                f.phy==DecodedWifiPhy::legacy_ofdm?"Legacy OFDM":"Long-preamble DSSS",f.rate_mbps,f.channel_hz/1e6,
+                f.decoder_window.source_offset,f.decoder_window.source_offset+f.decoder_window.samples-1);
+        }
+        ImGui::TextWrapped("Protocol evidence describes decoded frames, not every emitter in the window. Missing evidence is not proof of absence. Payloads and device identities are not copied into this panel.");
+        ImGui::TreePop();
+    }
+    return protocol;
+}
 const char* review_status_label(const std::string& status) {
     if(status=="experimental_pattern" || status=="experimental_patterns")return "Experimental pattern";
     if(status=="cyclic_structure_only")return "Cyclic diagnostic only";
@@ -51,7 +80,7 @@ void draw_review(const WaveformReview& review,const WaveformReview& sweeps) {
         }
         ImGui::EndTable();
     }
-    ImGui::TextWrapped("Matches are uncalibrated measurements, not votes. Cycles/shapes alone are diagnostics; drone and link identity remain unknown.");
+    ImGui::TextWrapped("Matches are uncalibrated measurements, not votes. Cycles/shapes alone are diagnostics; drone and proprietary link identity remain unknown.");
     if(ImGui::TreeNode("Pattern review checks")) {
         ImGui::Text("Observed signal quality: %s",review.observed_quality_passed?"checks passed":"checks failed");
         for(const auto& c:review.quality_checks) {
@@ -76,7 +105,7 @@ void draw_review(const WaveformReview& review,const WaveformReview& sweeps) {
 
 void draw_shadow_panel(const std::shared_ptr<const ShadowResult>& result,
                        const ShadowStats& stats, int active_band_ghz) {
-    ImGui::TextUnformatted("Drone: unknown | Link family: unknown | Waveform measurements");
+    ImGui::TextUnformatted("Drone: unknown | Drone-link family: unknown | RF observations");
     if(stats.failures || stats.worker_timeouts || stats.protocol_errors)
         ImGui::TextWrapped("Worker faults %llu | Timeouts %llu | Invalid replies %llu. See diagnostics when a current measurement is available.",
             (unsigned long long)stats.failures,(unsigned long long)stats.worker_timeouts,(unsigned long long)stats.protocol_errors);
@@ -100,6 +129,42 @@ void draw_shadow_panel(const std::shared_ptr<const ShadowResult>& result,
         std::chrono::duration<double>(std::chrono::steady_clock::now()-r.completed_at).count());
     ImGui::TextDisabled("Latest sampled window only; mixtures and scan gaps remain unresolved.");
     if(c.capture_overflow || c.timed_out)ImGui::TextWrapped("Capture had a gap/timeout; only the eligible continuous prefix was analysed.");
+    const auto protocol=draw_wifi_protocol(r,tile.source);
+    const auto decision=decide_link(tile.review,tile.sweep_review,tile.background_review,protocol);
+    ImGui::TextWrapped("Link decision: %s",decision.protocol_frames?
+        "Wi-Fi protocol observed; drone link unknown":decision.competing_patterns?
+        "Competing waveform patterns; link unknown":std::string(decision.status)=="unavailable"?
+        "Insufficient measurement support; link unknown":"Unknown link; no validated family match");
+    if(ImGui::TreeNode("Link decision reasons")) {
+        ImGui::TextWrapped("Waveform state: %s",check_label(decision.waveform_state).c_str());
+        for(std::size_t i=0;i<decision.reason_count;++i)
+            ImGui::TextWrapped("Reason: %s",check_label(decision.reasons[i]).c_str());
+        ImGui::TextWrapped("Next evidence needed: %s",check_label(decision.next_evidence).c_str());
+        ImGui::TextWrapped("Single-window development policy. Reasons do not exclude unknown signals from later ML review. No probability or transmitter continuity is inferred.");
+        ImGui::TreePop();
+    }
+    const auto named=assess_named_link_candidates(tile.spectral,tile.chirps,{c.sample_rate_hz,tile.evidence.context.usable_bandwidth_hz,tile.evidence.context.full_scale_component_fraction},tile.source.samples);
+    std::size_t compatible=0;for(std::size_t i=0;i<named.count;++i)
+        compatible+=std::string(named.candidates[i].status)=="unvalidated_candidate";
+    if(compatible)ImGui::TextWrapped("Named research candidate: DJI OcuSync-compatible chirp (%zu). Link identity is unvalidated.",compatible);
+    if(ImGui::TreeNode("Named drone-link candidates")) {
+        ImGui::TextWrapped("Catalogue: OcuSync-related chirp markers only. Lightbridge and other families have no implemented signature. No named drone family is accepted yet.");
+        for(std::size_t i=0;i<named.count;++i) {
+            const auto& candidate=named.candidates[i];
+            ImGui::TextWrapped("%s / %s: %s",candidate.family,candidate.profile,check_label(candidate.status).c_str());
+            const auto& structure=tile.marker_structure[candidate.measurement_index];
+            if(structure.evaluated) {
+                ImGui::TextWrapped("Prefix/tail: %s | Joint symbol structure: %s",
+                    structure.prefix_compatible?"compatible":"not supported",structure.joint_compatible?"compatible":"not supported");
+                ImGui::Text("Prefix coherence %.3f | Span minimum %.3f | Trials %zu",structure.coherence,structure.span_min,structure.trials);
+                ImGui::TextWrapped("One contiguous sampled window. Structure compatibility does not validate a protocol name, exact prefix length or recurrence.");
+            } else ImGui::TextDisabled("Prefix/symbol structure: unavailable or marker not eligible.");
+            for(std::size_t j=0;j<candidate.blocker_count;++j)
+                ImGui::TextWrapped("Blocker: %s",check_label(candidate.blockers[j]).c_str());
+        }
+        ImGui::TextWrapped("A compatible chirp is not unique to OcuSync. Device category, endpoint role and exact drone model remain unknown.");
+        ImGui::TreePop();
+    }
     draw_review(tile.review,tile.sweep_review);
     std::size_t raw_ordinary=0,raw_conjugate=0,checked_ordinary=0,checked_conjugate=0;
     for(std::size_t i=0;i<tile.waveform.peaks.size();++i) {

@@ -6,7 +6,7 @@
 
 namespace rfmon::cyclo {
 CandidateBands prepare_candidate_bands(const std::vector<std::complex<float>>& iq, double rate,
-                                      const RoiMeasurements& rois, double source_width) {
+                                      const RoiMeasurements& rois, double source_width, CandidateRouting routing) {
     if(!std::isfinite(rate) || rate<=0 || rate>1e9 || iq.size()>65536 ||
        !std::isfinite(source_width) || source_width<0 || source_width>rate || rois.samples_examined!=iq.size() || rois.regions.size()>roi_region_limit)
         throw std::invalid_argument("invalid candidate profile");
@@ -50,6 +50,25 @@ CandidateBands prepare_candidate_bands(const std::vector<std::complex<float>>& i
     });
     result.proposals_seen=proposals.size();
     result.geometry_eligible_proposals=std::count_if(proposals.begin(),proposals.end(),eligible);
+    result.fair_routing=routing.enabled;result.routing_round=routing.round;
+    if(routing.enabled && !proposals.empty()) {
+        // Keep the strongest eligible proposal. Reserve the second slot for
+        // another region, rotating in source order without consulting scores
+        // from the held partition. Geometry-eligible regions take precedence.
+        const auto strongest_region=proposals.front().band.region_index;
+        std::vector<std::size_t> others;
+        for(std::size_t ri=0;ri<rois.regions.size();++ri) {
+            if(ri==strongest_region) continue;
+            for(std::size_t j=1;j<proposals.size();++j) if(proposals[j].band.region_index==ri &&
+                (!result.geometry_eligible_proposals || eligible(proposals[j]))) {others.push_back(j);break;}
+        }
+        result.routing_regions=others.size()+1;
+        if(!others.empty()) {
+            const auto selected=others[routing.round%others.size()];
+            auto next=proposals[selected];proposals.erase(proposals.begin()+selected);
+            proposals.insert(proposals.begin()+1,std::move(next));
+        }
+    }
     for(auto proposal:proposals) {
         auto c=proposal.band;
         bool duplicate=false; for(const auto& old:result.candidates) if(old.source_offset==c.source_offset &&
@@ -71,6 +90,10 @@ CandidateBands prepare_candidate_bands(const std::vector<std::complex<float>>& i
                     if(wanted>1023) continue;
                     auto taps=std::max<std::size_t>(33,std::size_t(wanted)); if(taps%2==0) ++taps;
                     if(private_iq.size()<taps) continue;
+                    // In routed mode, choose the largest admissible decimation
+                    // that retains the existing 2064-sample cyclic minimum.
+                    // This is sample support, not a link-specific duration rule.
+                    if(routing.enabled && 1+(private_iq.size()-taps)/decimation<2064 && decimation>1) continue;
                     const auto expected_operations=(1+(private_iq.size()-taps)/decimation)*taps;
                     if(expected_operations>64000000-result.fir_operations) { c.status="fir_budget_exceeded"; break; }
                     BandSelection selection{rate,source_width,c.offset_hz,c.width_hz,decimation,false};

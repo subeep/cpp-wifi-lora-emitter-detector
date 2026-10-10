@@ -1,6 +1,24 @@
 # Wi-Fi-band link identification: bounded completion plan
 
-Date: 8 October 2026. Status: proposed implementation and acceptance plan; documentation only.
+11 October update: [native worker and GUI integration](WIFI_NATIVE_MARKER_INTEGRATION_REPORT.md) delivers bounded prefix/span diagnostics, 54/54 development port agreement and passing integration tests. Matched wire-v11 binaries are staged; named-family acceptance, live routing/history and receiver qualification remain pending.
+
+10 October software update: [prefix structure and validation gates](WIFI_PREFIX_AND_VALIDATION_GATES_REPORT.md) implements common-start prefix/span checks, segmented recurrence and independent evaluation tools. Accepted named identities, additional family signatures and live qualification remain pending.
+
+10 October update: [extended SDA dataset validation](WIFI_EXTENDED_DATASET_VALIDATION_REPORT.md) adds read-only DRFF/RFUAV ingestion, label-conflict guards and received 5.8 GHz up/down-chirp evidence. Named-family acceptance and live Mini 2 testing remain pending.
+
+Latest offline update: [full-span and boundary diagnostic](WIFI_MARKER_SYMBOL_VALIDATION_REPORT.md). The added checks remain development evidence; live behavior and named-family acceptance are unchanged.
+
+Latest dataset evidence (9 October): [read-only Leuven/Tampere replay](WIFI_LEUVEN_TAMPERE_LINK_EVIDENCE.md) found recurring marker candidates in Matrice and Mavic Pro and recovered Mini 2 video candidates with bounded offline filtering. This is development evidence; named-family acceptance remains unvalidated.
+
+Named-link update (9 October): [first reference-backed candidate profile](WIFI_NAMED_LINK_CANDIDATES_REPORT.md) adds OcuSync-related chirp compatibility to both GUI panels and opt-in replay. This is unvalidated marker evidence; no named drone family is accepted. Completion requires the signal/reference/receiver gates in that report.
+
+9 October update: [L3/L4 decision-policy report](WIFI_LINK_IDENTIFICATION_L3_DECISION_REPORT.md). The GUI and opt-in replay record now expose explicit unknown/conflict states and reasons while preserving unknowns for later ML review. This is partial decision scaffolding; accepted drone-family decisions, live routing/history and independent/live qualification remain pending.
+
+Latest implementation (8 October): [L1/L2 routing and protocol-evidence report](WIFI_LINK_IDENTIFICATION_L1_L2_REPORT.md). Optional offline routing explores other regions and preserves cyclic sample support. Both Wi-Fi panels can show existing CRC-checked decoder evidence associated with the same capture and contained sample window. L1/L2/L4 remain partial; this does not validate a proprietary drone link.
+
+Date: 8 October 2026. Status: implementation started; [first L0/L1 package and remaining gates](WIFI_LINK_IDENTIFICATION_L0_L1_REPORT.md). Full link-identification acceptance remains pending.
+
+Transport update during implementation: the user now has a 10 GbE NIC and SFP. The previous X310 1 GbE sample-rate ceiling is historical configuration, not a software design constraint for this segment. Software qualification uses actual capture-rate metadata and includes higher-rate scenarios. DSP workload bounds, observation-duration accounting and measured real-time performance remain separate from the transport rate. Hardware throughput/usable passband are measured later; no new radio settings are implied by a software benchmark.
 
 ## Outcome and stopping point
 

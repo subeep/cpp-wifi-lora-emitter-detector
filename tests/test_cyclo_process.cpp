@@ -39,6 +39,7 @@ void protocol_tests(const std::vector<std::complex<float>>& iq) {
     measured.ofdm = measure_ofdm_structure(iq, 20e6, wlan_ofdm_hypotheses(20e6));
     measured.roi = measure_rois(iq, 20e6);
     measured.chirps = measure_chirp_structure(iq, 20e6);
+    measured.marker_structure=measure_marker_structures(iq,20e6,measured.chirps);
     measured.waveform=measure_waveform_features(iq,20e6);
     measured.cyclic_background=measure_cyclic_background(iq,20e6,measured.waveform);
     measured.structure=discover_waveform_structure(iq,20e6);
@@ -66,6 +67,12 @@ void protocol_tests(const std::vector<std::complex<float>>& iq) {
     rejects([&] {decode_result(encode_result(171,{bad_sweep}),171,20e6,plan);},"unsearched sweep span accepted");
     bad_sweep=with_sweep;bad_sweep.sweeps.candidates[0].holdout_trials++;
     rejects([&] {decode_result(encode_result(171,{bad_sweep}),171,20e6,plan);},"invented held trials accepted");
+    auto bad_marker=measured;bad_marker.marker_structure[0].joint_compatible=true;
+    rejects([&]{decode_result(encode_result(171,{bad_marker}),171,20e6,plan);},"unsupported marker flag accepted");
+    bad_marker=measured;bad_marker.marker_structure[0].coherence=std::numeric_limits<double>::quiet_NaN();
+    rejects([&]{decode_result(encode_result(171,{bad_marker}),171,20e6,plan);},"nonfinite marker score accepted");
+    bad_marker=measured;bad_marker.marker_structure[0].start=65537;
+    rejects([&]{decode_result(encode_result(171,{bad_marker}),171,20e6,plan);},"escaping marker support accepted");
     const auto bytes = encode_result(171, {measured}); const auto restored = decode_result(bytes, 171, 20e6, plan);
     check(restored[0].spectral.peaks.size() == measured.spectral.peaks.size(), "validated result round trip");
     check(!restored[0].review.candidates.empty() && restored[0].review.context.usable_bandwidth_hz==0,"supervisor did not populate bounded review with unknown live passband");

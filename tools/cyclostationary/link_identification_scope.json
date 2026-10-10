@@ -1,5 +1,5 @@
 {
-  "schema": "rfmon.link_identification_scope.v1",
+  "schema": "rfmon.link_identification_scope.v2",
   "status": "development_contract_not_release_qualification",
   "reviewed_source_files": [
     {
@@ -8,7 +8,7 @@
     },
     {
       "path": "src/scanner.cpp",
-      "sha256": "03db4c4ec681d369e4523a01cef37eae0a7911a2a9177742d33f7b015dac384e"
+      "sha256": "7ac122b1a1e0b7f3eaefeea7605dce008a94de24f7684f1c79dea132dbaa28f0"
     },
     {
       "path": "src/cyclostationary/sample_tiles.hpp",
@@ -17,8 +17,7 @@
   ],
   "receiver_profiles": [
     {
-      "id": "x310_project_1gige",
-      "requested_rate_cap_hz": 20000000,
+      "id": "x310_metadata_driven",
       "actual_rate_source": "capture_metadata_required",
       "tune_centers_hz": {
         "wifi_2g4": [
@@ -51,14 +50,13 @@
       "usable_analog_bandwidth_hz": null,
       "receiver_qualified": false,
       "live_performance_qualified": false,
-      "full_tile_duration_seconds_at_requested_rate": 0.0032768,
-      "full_job_sample_duration_seconds_at_requested_rate": 0.0131072,
       "result_age_target_seconds": null,
-      "result_age_target_status": "pending_measured_scan_cadence_before_live_acceptance"
+      "result_age_target_status": "pending_measured_scan_cadence_before_live_acceptance",
+      "historical_configured_rate_hz_at_source_review": 20000000,
+      "rate_policy": "use_actual_capture_metadata; historical configuration is not a future software capability limit"
     },
     {
-      "id": "b210_project_usb",
-      "requested_rate_cap_hz": 56000000,
+      "id": "b210_metadata_driven",
       "actual_rate_source": "capture_metadata_required",
       "tune_centers_hz": {
         "wifi_2g4": [
@@ -91,10 +89,10 @@
       "usable_analog_bandwidth_hz": null,
       "receiver_qualified": false,
       "live_performance_qualified": false,
-      "full_tile_duration_seconds_at_requested_rate": 0.0011702857142857142,
-      "full_job_sample_duration_seconds_at_requested_rate": 0.004681142857142857,
       "result_age_target_seconds": null,
-      "result_age_target_status": "pending_measured_scan_cadence_before_live_acceptance"
+      "result_age_target_status": "pending_measured_scan_cadence_before_live_acceptance",
+      "historical_configured_rate_hz_at_source_review": 56000000,
+      "rate_policy": "use_actual_capture_metadata; historical configuration is not a future software capability limit"
     }
   ],
   "analysis_bounds": {
@@ -111,7 +109,7 @@
     {
       "id": "ordinary_wifi_reference",
       "purpose": "protocol_confusable",
-      "status": "decoded_fixture_development_only",
+      "status": "existing_decoder_scoped_protocol_observation_development_only",
       "drone_attribution": false
     },
     {
@@ -156,5 +154,79 @@
     "transmission",
     "ML_training",
     "Remote_ID"
-  ]
+  ],
+  "transport_context": {
+    "user_report": "10 GbE NIC and SFP now available",
+    "legacy_1gige_rate_ceiling_is_design_constraint": false,
+    "hardware_connected_or_reconfigured_by_this_work": false
+  },
+  "software_rate_scenarios_hz": [
+    20000000,
+    25000000,
+    56000000,
+    60000000,
+    100000000,
+    120000000,
+    200000000
+  ],
+  "software_rate_scenarios_meaning": "analysis/provenance test inputs; not a hardware throughput certification",
+  "named_candidate_catalogue": {
+    "version": "named_link_research_catalogue_v1",
+    "family": "DJI OcuSync",
+    "scope": "reported_chirp_marker_compatibility_only",
+    "accepted_family": null,
+    "source": "https://doi.org/10.3390/s25154552",
+    "independent_validation": false,
+    "recurrence_measured": false,
+    "development_received_marker_evidence": {
+      "report": "docs/WIFI_LEUVEN_TAMPERE_LINK_EVIDENCE.md",
+      "recording_contexts": [
+        "Leuven Mini 2 video",
+        "Leuven Matrice video",
+        "Tampere Mavic Pro"
+      ],
+      "distinct_markers_per_selected_interval": 5,
+      "apparent_period_seconds": 0.02,
+      "recurrence_independently_qualified": false,
+      "filter_refinement_offline_only": true,
+      "symbol_diagnostic": {
+        "report": "docs/WIFI_MARKER_SYMBOL_VALIDATION_REPORT.md",
+        "policy": "marker_symbol_span_v1",
+        "offline_only": true,
+        "distinct_evaluated_markers": 25,
+        "span_and_boundary_contrast_matches": 22,
+        "independent_validation": false,
+        "full_symbol_duration_established": false,
+        "prefix_verified": false
+      },
+      "extended_datasets": {
+        "report": "docs/WIFI_EXTENDED_DATASET_VALIDATION_REPORT.md",
+        "sources": [
+          "DRFF-R2",
+          "RFUAV"
+        ],
+        "intervals": 9,
+        "native_windows": 1566,
+        "distinct_marker_candidates": 7,
+        "span_and_contrast_matches": 6,
+        "new_profiles_observed": [
+          "up_18mhz_at_5ghz",
+          "down_9mhz_at_5ghz"
+        ],
+        "certified_negative_recordings": 0,
+        "independent_validation": false,
+        "live_behavior_changed": false
+      },
+      "prefix_diagnostic": {
+        "report": "docs/WIFI_PREFIX_AND_VALIDATION_GATES_REPORT.md",
+        "policy": "marker_prefix_tail_v1",
+        "offline_only": true,
+        "candidate_markers": 32,
+        "joint_span_prefix_markers": 30,
+        "independent_test_encounters": 0,
+        "exact_prefix_length_established": false,
+        "accepted_family": null
+      }
+    }
+  }
 }

@@ -4,6 +4,10 @@
 
 namespace rfmon::cyclo {
 inline constexpr std::size_t prepared_candidate_limit = 2;
+struct CandidateRouting {
+    bool enabled = false;
+    std::size_t round = 0; // explicit exploration index; no implicit cross-capture history
+};
 struct CandidateBand {
     std::size_t region_index = 0;
     std::string proposal_kind;
@@ -18,10 +22,13 @@ struct CandidateBands {
     // Accounting only: does not change proposal order or the existing DSP.
     std::size_t regions_seen = 0, regions_without_spectrum = 0, short_regions = 0;
     std::size_t geometry_eligible_proposals = 0, duplicates_of_returned = 0, budget_omitted = 0;
+    bool fair_routing = false;
+    std::size_t routing_round = 0, routing_regions = 0;
     std::vector<CandidateBand> candidates;
 };
 // Offline preparation only. Explicit usable width is necessary and is not a
 // hardware calibration. Always retain raw/context measurements separately.
 CandidateBands prepare_candidate_bands(const std::vector<std::complex<float>>& iq, double rate_hz,
-                                      const RoiMeasurements& rois, double declared_width_hz);
+                                      const RoiMeasurements& rois, double declared_width_hz,
+                                      CandidateRouting routing = {});
 } // namespace rfmon::cyclo

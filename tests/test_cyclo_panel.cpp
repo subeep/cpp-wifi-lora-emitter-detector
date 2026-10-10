@@ -45,6 +45,9 @@ int main(int argc,char** argv) {
         ImGui::GetStateStorage()->SetInt(ImGui::GetID("Cyclic background checks"),expanded);
         ImGui::GetStateStorage()->SetInt(ImGui::GetID("Burst-local waveform analysis"),expanded);
         ImGui::GetStateStorage()->SetInt(ImGui::GetID("Timing drift refinement"),expanded || argc==2);
+        ImGui::GetStateStorage()->SetInt(ImGui::GetID("Decoded protocol evidence"),expanded);
+        ImGui::GetStateStorage()->SetInt(ImGui::GetID("Link decision reasons"),expanded);
+        ImGui::GetStateStorage()->SetInt(ImGui::GetID("Named drone-link candidates"),expanded);
         ImGui::LogToBuffer(0);
         rfmon::cyclo::draw_shadow_panel(r, stats, band);
         rendered_text=ImGui::GetCurrentContext()->LogBuffer.c_str();
@@ -120,9 +123,54 @@ int main(int argc,char** argv) {
        rendered_text.find("Burst cyclic background:")==std::string::npos || rendered_text.find("Source samples 16384..24576")==std::string::npos) {
         std::cerr<<"new review summary or unknown identity missing from GUI text\n";return 1;
     }
-    if(argc==2){draw(result,stats,2,false);export_draw(argv[1]);}
-    result->capture.band_ghz=5;const auto measured5=draw(result,stats,5);
-    result->capture.band_ghz=2;
+    rfmon::cyclo::TilePlan protocol_plan;protocol_plan.count=1;protocol_plan.tiles[0]=result->tiles[0].source;
+    const auto attach_protocol=[&] {
+        result->wifi_protocol=rfmon::cyclo::collect_wifi_protocol_observations(1,result->capture.source_samples,
+            protocol_plan,rfmon::cyclo::wifi_fact_context(result->capture),[&](std::size_t) {
+                return rfmon::cyclo::WifiDecodeFact{{100,2000},result->capture.capture_center_hz-1.5e6,6,
+                    rfmon::cyclo::DecodedWifiPhy::legacy_ofdm,true};
+            });
+    };
+    attach_protocol();draw(result,stats,2,true);
+    if(rendered_text.find("Wi-Fi observed in this window")==std::string::npos ||
+       rendered_text.find("drone relevance is unknown")==std::string::npos ||
+       rendered_text.find("Wi-Fi protocol observed; drone link unknown")==std::string::npos ||
+       rendered_text.find("no independently validated drone link catalogue")==std::string::npos ||
+       rendered_text.find("Next evidence needed:")==std::string::npos ||
+       rendered_text.find("No named drone family is accepted yet")==std::string::npos) {
+        std::cerr<<"scoped protocol evidence missing\n";return 1;
+    }
+    ++result->wifi_protocol.context.capture_sequence;draw(result,stats,2,false);
+    if(rendered_text.find("Wi-Fi observed in this window")!=std::string::npos) {
+        std::cerr<<"cross-capture protocol evidence rendered\n";return 1;
+    }
+    attach_protocol();
+    std::vector<std::complex<float>> marker(65536);
+    for(std::size_t i=0;i<1333;++i) {
+        const double t=i/20e6;
+        marker[811+i]=std::polar(1.f,float(2*3.14159265358979323846*(-4.5e6*t+135.2e9*t*t/2)));
+    }
+    for(std::size_t i=0;i<80;++i)marker[811-80+i]=marker[811+1333-80+i];
+    result->tiles[0].chirps=rfmon::cyclo::measure_chirp_structure(marker,20e6);
+    result->tiles[0].marker_structure=rfmon::cyclo::measure_marker_structures(marker,20e6,result->tiles[0].chirps);
+    draw(result,stats,2,false);
+    if(rendered_text.find("Named research candidate: DJI OcuSync-compatible chirp")==std::string::npos) {
+        std::cerr<<"compatible named marker missing from GUI\n";return 1;
+    }
+    draw(result,stats,2,true);
+    if(rendered_text.find("Joint symbol structure: compatible")==std::string::npos) {
+        std::cerr<<"joint structure evidence missing from GUI\n";return 1;
+    }
+    if(argc==2)export_draw(argv[1]);
+    result->capture.band_ghz=5;result->capture.capture_center_hz=5181.5e6;const auto measured5=draw(result,stats,5);
+    if(rendered_text.find("Wi-Fi observed in this window")!=std::string::npos) {
+        std::cerr<<"cross-band protocol evidence rendered\n";return 1;
+    }
+    attach_protocol();draw(result,stats,5);
+    if(rendered_text.find("Wi-Fi observed in this window")==std::string::npos) {
+        std::cerr<<"5 GHz protocol evidence missing\n";return 1;
+    }
+    result->capture.band_ghz=2;result->capture.capture_center_hz=2438.5e6;
     if(measured5<=waiting){std::cerr<<"5 GHz review panel missing\n";return 1;}
     const auto other_band = draw(result, stats, 5);
     ++stats.epoch; const auto stale = draw(result, stats, 2);

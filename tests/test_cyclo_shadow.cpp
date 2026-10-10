@@ -50,9 +50,13 @@ int main(int argc, char** argv) {
         check(!worker.enabled() && !worker.snapshot(), "default is disabled/empty");
         check(!worker.try_submit(iq, iq.size(), c) && worker.stats().submitted == 0, "disabled submission is a no-op");
         check(worker.set_enabled(true), "worker starts"); c.submission_epoch = worker.epoch();
-        until([&] { return worker.try_submit(iq, iq.size(), c); });
+        const auto protocol=collect_wifi_protocol_observations(1,iq.size(),plan_sample_tiles(iq.size()),wifi_fact_context(c),
+            [&](std::size_t){return WifiDecodeFact{{100,1000},2437e6,6,DecodedWifiPhy::legacy_ofdm,true};});
+        until([&] { return worker.try_submit(iq, iq.size(), c,{},protocol); });
         until([&] { return bool(worker.snapshot()); });
         const auto first = worker.snapshot();
+        check(first->wifi_protocol.collected && first->wifi_protocol.count==1,
+            "validated existing decoder metadata survives supervisor snapshot");
         check(first->copied_samples == 262144 && first->capture.source_samples == 300000, "copied IQ cap recorded");
         check(first->tiles.size() == 4 && first->tiles.front().spectral.quality == "measured" &&
               first->tiles.front().ofdm.size() == 5, "both estimators ran independently on distributed tiles");
@@ -71,8 +75,9 @@ int main(int argc, char** argv) {
         for (const auto& b : burst_ranges) std::copy_n(late.begin(), b.samples, sparse.begin() + b.source_offset);
         const auto sparse_original = sparse;
         auto sc = c; sc.source_samples = sparse.size(); sc.capture_sequence = 10;
-        until([&] { return worker.try_submit(sparse, sparse.size(), sc); });
+        until([&] { return worker.try_submit(sparse, sparse.size(), sc,{},protocol); });
         until([&] { return worker.snapshot() && worker.snapshot()->capture.capture_sequence == 10; });
+        check(!worker.snapshot()->wifi_protocol.collected,"stale decoder context discarded without dropping DSP job");
         for (const auto& tile : worker.snapshot()->tiles)
             check(tile.ofdm[0].holdout_contrast < 0.1, "unguided windows unexpectedly covered hidden reference bursts");
         const auto hints = collect_burst_hints(2, sparse.size(), false, [&](std::size_t i) { return burst_ranges[i]; });

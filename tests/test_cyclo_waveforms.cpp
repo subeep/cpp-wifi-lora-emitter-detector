@@ -2,6 +2,7 @@
 #include "cyclostationary/candidate_bands.hpp"
 #include "cyclostationary/analysis_samples.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <random>
@@ -130,6 +131,22 @@ void morphology_and_candidates() {
         "proposal accounting is exhaustive");
     check(budget.candidates[0].region_index==0 && budget.candidates[1].region_index==1 &&
         budget.candidates[0].proposal_kind=="occupied_span","stable equal-priority selection and provenance");
+    std::array<bool,8> visited{};
+    for(std::size_t round=0;round<7;++round) {
+        const auto fair=prepare_candidate_bands(x,rate,many,16e6,{true,round});
+        check(fair.candidates.size()==2 && fair.candidates[0].region_index==0,"strongest candidate retained in every exploration round");
+        check(fair.candidates[1].region_index==round+1,"other regions get a deterministic turn");
+        visited[fair.candidates[1].region_index]=true;
+        check(fair.fir_operations<=64000000,"routing retains FIR budget");
+    }
+    check(std::count(visited.begin(),visited.end(),true)==7,"all distinct eligible alternatives explored");
+    auto short_copy=IQ(x.begin(),x.begin()+4096);auto short_roi=roi;short_roi.samples_examined=4096;
+    short_roi.regions.resize(1);short_roi.regions[0].samples=4096;
+    const auto old_short=prepare_candidate_bands(short_copy,rate,short_roi,16e6);
+    const auto fair_short=prepare_candidate_bands(short_copy,rate,short_roi,16e6,{true,0});
+    check(old_short.candidates[0].waveform.cyclic_status=="insufficient_samples" &&
+        fair_short.candidates[0].waveform.cyclic_status=="measured","support-aware decimation avoids unnecessary loss of cyclic partitions");
+    check(fair_short.candidates[0].input_step<old_short.candidates[0].input_step,"support-aware routing retains more actual samples");
     many.regions[0].spectral_status="insufficient_samples";many.regions[1].samples=1000;
     const auto skip=prepare_candidate_bands(x,rate,many,0);
     check(skip.regions_without_spectrum==1 && skip.short_regions==1 && skip.proposals_seen==6 &&

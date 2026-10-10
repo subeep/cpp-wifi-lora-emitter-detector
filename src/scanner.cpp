@@ -22,6 +22,9 @@
 #include "wifi_ofdm_rx.hpp"
 #include "wifi_fingerprint.hpp"
 #include "wifi_phy.hpp"
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+#include "cyclostationary/wifi_protocol_adapter.hpp"
+#endif
 
 // PROJECT_ROOT_DIR is set by CMakeLists.txt to the source tree root for
 // any target that links lora_master.cpp - resolving the master-list
@@ -1000,7 +1003,12 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                     bursts.size() >= WIFI_SECURITY_MAX_BURSTS_PER_CAPTURE, [&](std::size_t i) {
                         return cyclo::SampleTile{bursts[i].start, bursts[i].length};
                     });
-                cyclo_shadow_.try_submit(cap, input.prefix, input.context, hints);
+                const auto plan=cyclo::select_sample_tiles(input.prefix,hints).plan;
+                const auto protocols=cyclo::collect_wifi_protocol_observations(bursts.size(),input.prefix,plan,
+                    cyclo::wifi_fact_context(input.context),[&](std::size_t i) {
+                        return cyclo::wifi_fact_from_existing_decode(bursts[i],works[i],cap.size(),actual_rate,real_channel_hz);
+                    });
+                cyclo_shadow_.try_submit(cap, input.prefix, input.context, hints, protocols);
             }
 #endif
         }

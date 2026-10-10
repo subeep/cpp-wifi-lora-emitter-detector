@@ -4,6 +4,7 @@
 #include "sample_tiles.hpp"
 #include "roi_measurements.hpp"
 #include "chirp_structure.hpp"
+#include "marker_structure.hpp"
 #include "chirp_discovery.hpp"
 #include "link_evidence.hpp"
 #include "waveform_features.hpp"
@@ -17,7 +18,7 @@
 
 namespace rfmon::cyclo {
 using WireBytes = std::vector<unsigned char>;
-inline constexpr std::uint32_t wire_magic = 0x314c4352, wire_version = 10;
+inline constexpr std::uint32_t wire_magic = 0x314c4352, wire_version = 11;
 inline constexpr std::size_t request_byte_limit = 32 + tile_limit * 12 + capture_sample_budget * 8;
 inline constexpr std::size_t reply_byte_limit = 65536;
 enum class MessageType : std::uint32_t { hello = 1, request = 2, result = 3, error = 4 };
@@ -31,6 +32,7 @@ struct TileMeasurement {
     std::vector<OfdmMeasurement> ofdm;
     RoiMeasurements roi;
     std::vector<ChirpMeasurement> chirps;
+    std::array<MarkerStructure,3> marker_structure{};
     WaveformFeatures waveform;
     CyclicBackground cyclic_background;
     WaveformReview background_review; // independent supervisor metadata diagnostic

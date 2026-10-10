@@ -19,6 +19,7 @@ add_library(rfmon_cyclo_core STATIC
   ${CYCLO_ROOT}/src/cyclostationary/analysis_samples.cpp
   ${CYCLO_ROOT}/src/cyclostationary/ofdm_structure.cpp
   ${CYCLO_ROOT}/src/cyclostationary/chirp_structure.cpp
+  ${CYCLO_ROOT}/src/cyclostationary/marker_structure.cpp
   ${CYCLO_ROOT}/src/cyclostationary/chirp_discovery.cpp
   ${CYCLO_ROOT}/src/cyclostationary/chirp_refinement.cpp
   ${CYCLO_ROOT}/src/cyclostationary/structure_discovery.cpp
@@ -79,6 +80,11 @@ add_test(NAME cyclostationary_background COMMAND test_cyclo_background)
 add_executable(test_cyclo_waveforms ${CYCLO_ROOT}/tests/test_cyclo_waveforms.cpp)
 target_link_libraries(test_cyclo_waveforms PRIVATE rfmon_cyclo_core)
 add_test(NAME cyclostationary_waveforms COMMAND test_cyclo_waveforms)
+add_executable(test_cyclo_protocol ${CYCLO_ROOT}/tests/test_cyclo_protocol.cpp
+  ${CYCLO_ROOT}/src/wifi_ofdm_rx.cpp ${CYCLO_ROOT}/src/wifi_phy.cpp ${CYCLO_ROOT}/src/wifi_frame.cpp)
+target_include_directories(test_cyclo_protocol PRIVATE ${CYCLO_JSON_INCLUDE})
+target_link_libraries(test_cyclo_protocol PRIVATE rfmon_cyclo_core)
+add_test(NAME cyclostationary_protocol COMMAND test_cyclo_protocol ${CYCLO_ROOT}/tests/fixtures/wifi_ofdm)
 add_executable(test_cyclo_structure ${CYCLO_ROOT}/tests/test_cyclo_structure.cpp)
 target_link_libraries(test_cyclo_structure PRIVATE rfmon_cyclo_core)
 add_test(NAME cyclostationary_structure COMMAND test_cyclo_structure)
@@ -101,6 +107,24 @@ add_test(NAME cyclostationary_process COMMAND test_cyclo_process $<TARGET_FILE:w
   $<TARGET_FILE:cyclo_fault_worker_3> $<TARGET_FILE:cyclo_fault_worker_4>)
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+  add_test(NAME cyclostationary_link_validation COMMAND ${Python3_EXECUTABLE}
+    ${CYCLO_ROOT}/tests/test_link_validation.py)
+  add_test(NAME cyclostationary_marker_recurrence COMMAND ${Python3_EXECUTABLE}
+    ${CYCLO_ROOT}/tests/test_marker_recurrence.py)
+  execute_process(COMMAND ${Python3_EXECUTABLE} -c "import numpy"
+    RESULT_VARIABLE CYCLO_NUMPY_RESULT OUTPUT_QUIET ERROR_QUIET)
+  if(CYCLO_NUMPY_RESULT EQUAL 0)
+    add_test(NAME cyclostationary_marker_prefix COMMAND ${Python3_EXECUTABLE}
+      ${CYCLO_ROOT}/tests/test_marker_prefix.py)
+    add_test(NAME cyclostationary_extended_link_reader COMMAND ${Python3_EXECUTABLE}
+      ${CYCLO_ROOT}/tests/test_extended_link_reader.py)
+    add_test(NAME cyclostationary_marker_symbol COMMAND ${Python3_EXECUTABLE}
+      ${CYCLO_ROOT}/tests/test_marker_symbol.py)
+    add_test(NAME cyclostationary_local_link_reader COMMAND ${Python3_EXECUTABLE}
+      ${CYCLO_ROOT}/tests/test_local_link_reader.py)
+  else()
+    message(STATUS "NumPy unavailable: optional offline marker-symbol/reader tests omitted")
+  endif()
   add_test(NAME cyclostationary_link_reference_audit COMMAND ${Python3_EXECUTABLE}
     ${CYCLO_ROOT}/tests/test_link_reference_audit.py)
   add_test(NAME cyclostationary_reference_corpus COMMAND ${Python3_EXECUTABLE}
@@ -108,3 +132,15 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME cyclostationary_cli COMMAND ${Python3_EXECUTABLE}
     ${CYCLO_ROOT}/tests/test_cyclo_cli.py $<TARGET_FILE:wifi_cyclo_replay>)
 endif()
+
+add_executable(test_cyclo_decision ${CYCLO_ROOT}/tests/test_cyclo_decision.cpp)
+target_link_libraries(test_cyclo_decision PRIVATE rfmon_cyclo_core)
+add_test(NAME cyclostationary_decision COMMAND test_cyclo_decision)
+
+add_executable(test_cyclo_named ${CYCLO_ROOT}/tests/test_cyclo_named.cpp)
+target_link_libraries(test_cyclo_named PRIVATE rfmon_cyclo_core)
+add_test(NAME cyclostationary_named COMMAND test_cyclo_named)
+
+add_executable(test_cyclo_marker_structure ${CYCLO_ROOT}/tests/test_cyclo_marker_structure.cpp)
+target_link_libraries(test_cyclo_marker_structure PRIVATE rfmon_cyclo_core)
+add_test(NAME cyclostationary_marker_structure COMMAND test_cyclo_marker_structure)

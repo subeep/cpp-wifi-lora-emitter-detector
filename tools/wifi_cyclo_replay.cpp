@@ -6,6 +6,8 @@
 #include "cyclostationary/burst_selection.hpp"
 #include "cyclostationary/chirp_refinement.hpp"
 #include "cyclostationary/candidate_bands.hpp"
+#include "cyclostationary/link_decision.hpp"
+#include "cyclostationary/named_link_candidates.hpp"
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -25,6 +27,16 @@ using nlohmann::json;
 using namespace rfmon::cyclo;
 namespace {
 using Options = std::map<std::string, std::string>;
+json marker_structure_json(const std::array<MarkerStructure,3>& structures,std::size_t first,std::size_t step) {
+        json values=json::array();
+        for(const auto& m:structures)values.push_back({{"evaluated",m.evaluated},{"prefix_compatible",m.prefix_compatible},
+            {"joint_compatible",m.joint_compatible},{"start",m.start},{"lag",m.lag},{"gate",m.gate},{"trials",m.trials},
+            {"coherence",m.coherence},{"first_half",m.first_half},{"second_half",m.second_half},{"balance",m.balance},
+            {"guard_max",m.guard_max},{"span_min",m.span_min},{"span_energy",m.span_energy},{"boundary_contrast",m.boundary_contrast}});
+    return {{"policy","bounded_native_marker_structure_v1"},{"accepted_family",nullptr},
+        {"source_first_sample",first},{"source_sample_step",step},{"candidates",values}};
+}
+
 constexpr const char* usage =
     "Offline measurements only; no radio, GUI, payload decoder or trained classifier.\n"
     "wifi_cyclo_replay analyze --input FILE --format cf32_le|ci16_le\n"
@@ -35,7 +47,11 @@ constexpr const char* usage =
     "  [--refine-chirps] (offline-only dechirp research; <=65536 analysis samples)\n"
     "  [--refine-clock] [--analyze-bursts] [--expand-waveforms] [--check-cyclic-background] [--discover-sweeps] [--discover-structure] [--review-waveforms] [--prepare-candidates] (<=65536 samples; candidate filtering needs declared usable bandwidth)\n"
     "  [--assess-evidence] [--usable-bandwidth HZ] (declared profile, not hardware verification)\n"
+    "  [--check-marker-structure] (requires --assess-evidence; bounded prefix and span checks)\n"
+    "  [--named-link-candidates] (requires --assess-evidence; unvalidated research catalogue)\n"
+    "  [--link-decision] (requires --review-waveforms; separate development decision record)\n"
     "  [--qualify-candidates] (requires --prepare-candidates; separate coverage/support audit)\n"
+    "  [--route-candidates [--candidate-round N]] (requires --prepare-candidates; experimental fair region routing)\n"
     "  [--ofdm-useful N --ofdm-prefix N] (explicit timing replaces WLAN timing bank)\n"
     "  --measure-rois/--measure-chirps require <=65536 analysis samples after optional filtering.\n"
     "wifi_cyclo_replay inventory --root DIRECTORY --format cf32_le|ci16_le\n"
@@ -453,7 +469,7 @@ json candidate_json(const CandidateBands& r,double rate,std::uint64_t first,std:
     json j={{"offline_only",true},{"live_worker_prepares_candidates",false},{"source_usable_width_hz",width>0?json(width):json(nullptr)},
         {"passband_source","caller_declared_not_receiver_calibrated"},{"context_retained",true},{"source_mean_removed",false},
         {"source_separation",false},{"proposals_seen",r.proposals_seen},{"proposals_not_returned",r.proposals_seen-r.candidates.size()},
-        {"selection","declared_geometry_eligible_then_energy_priority"},{"candidate_limit",prepared_candidate_limit},
+        {"selection",r.fair_routing?"strongest_then_round_robin_other_region_support_aware_decimation":"declared_geometry_eligible_then_energy_priority"},{"candidate_limit",prepared_candidate_limit},
         {"fir_operations",r.fir_operations},{"fir_operation_limit",64000000},{"candidates",json::array()}};
     for(const auto& c:r.candidates) {
         json p={{"status",c.status},{"source_region_first_sample",first+c.source_offset*step},
@@ -531,6 +547,9 @@ json candidate_qualification_json(const CandidateBands& r,const RoiMeasurements&
         j["candidates"].push_back(std::move(p));
     }
     j["prepared_candidates"]=prepared_count;j["cyclic_supported_candidates"]=cyclic_supported;
+    if(r.fair_routing) j["routing"]={{"method","strongest_plus_region_exploration_v1"},
+        {"round",r.routing_round},{"available_regions",r.routing_regions},{"persistent_history",false},
+        {"cyclic_sample_support_target",2064},{"physical_duration_qualified",false}};
     j["retained_region_time_union_samples"]=extent(retained);
     j["prepared_region_time_union_samples"]=extent(prepared);
     j["filter_input_time_union_samples"]=extent(filter_inputs);
@@ -688,6 +707,7 @@ json shadow_replay(const Options& o, IqFormat format, double rate) {
         item["roi_measurements"] = roi_json(tile.roi, rate, first.offset_samples + tile.source.source_offset, 1,
                                            j["input"]["capture_center_hz"]);
         item["chirp_structure"] = chirp_json(tile.chirps, rate, first.offset_samples + tile.source.source_offset, 1);
+        item["marker_structure"]=marker_structure_json(tile.marker_structure,first.offset_samples+tile.source.source_offset,1);
         item["waveform_features"]=waveform_json(tile.waveform,rate,first.offset_samples+tile.source.source_offset,1);
         item["cyclic_background"]=background_json(tile.cyclic_background,tile.waveform,rate,first.offset_samples+tile.source.source_offset,1);
         item["cyclic_background_review"]=review_json(review_cyclic_background(r,tile.waveform,tile.cyclic_background,
@@ -715,8 +735,18 @@ json shadow_replay(const Options& o, IqFormat format, double rate) {
 }
 
 json analyze(const Options& o, IqFormat format, double rate) {
+    if(o.count("--check-marker-structure") && !o.count("--assess-evidence"))
+        throw std::invalid_argument("--check-marker-structure requires --assess-evidence");
+    if(o.count("--named-link-candidates") && !o.count("--assess-evidence"))
+        throw std::invalid_argument("--named-link-candidates requires --assess-evidence");
+    if(o.count("--link-decision") && !o.count("--review-waveforms"))
+        throw std::invalid_argument("--link-decision requires --review-waveforms");
     if(o.count("--qualify-candidates") && !o.count("--prepare-candidates"))
         throw std::invalid_argument("candidate qualification requires --prepare-candidates");
+    if(o.count("--route-candidates") && !o.count("--prepare-candidates"))
+        throw std::invalid_argument("candidate routing requires --prepare-candidates");
+    if(o.count("--candidate-round") && !o.count("--route-candidates"))
+        throw std::invalid_argument("candidate round requires --route-candidates");
     auto input = read_iq_window(required(o, "--input"), format,
                                 integer(o, "--offset", 0), integer(o, "--samples", 262144));
     const auto source_metadata = metadata(o, format, rate);
@@ -802,19 +832,40 @@ json analyze(const Options& o, IqFormat format, double rate) {
         waveform=measure_waveform_features(analysis_iq,analysis_rate);
         j["waveform_features"]=waveform_json(waveform,analysis_rate,analysis_first,analysis_step);
     }
-    if(structure_requested)j["waveform_review"]=review_json(review_waveform_measurements(r,structure,waveform,
-        {analysis_rate,evidence_width,source_rails(input.samples,format,0,select_band?input.samples.size():r.samples_used)}));
+    WaveformReview decision_review,decision_sweeps,decision_background;
+    if(structure_requested) {
+        decision_review=review_waveform_measurements(r,structure,waveform,
+            {analysis_rate,evidence_width,source_rails(input.samples,format,0,select_band?input.samples.size():r.samples_used)});
+        j["waveform_review"]=review_json(decision_review);
+    }
     if(o.count("--check-cyclic-background") || o.count("--review-waveforms") || o.count("--expand-waveforms") || o.count("--prepare-candidates")) {
         const auto background=measure_cyclic_background(analysis_iq,analysis_rate,waveform);
         j["cyclic_background"]=background_json(background,waveform,analysis_rate,analysis_first,analysis_step);
-        j["cyclic_background_review"]=review_json(review_cyclic_background(r,waveform,background,
-            {analysis_rate,evidence_width,source_rails(input.samples,format,0,select_band?input.samples.size():r.samples_used)}),background_review_version);
+        decision_background=review_cyclic_background(r,waveform,background,
+            {analysis_rate,evidence_width,source_rails(input.samples,format,0,select_band?input.samples.size():r.samples_used)});
+        j["cyclic_background_review"]=review_json(decision_background,background_review_version);
     }
     if(o.count("--discover-sweeps") || o.count("--review-waveforms") || o.count("--expand-waveforms") || o.count("--prepare-candidates")) {
         const auto sweeps=discover_linear_sweeps(analysis_iq,analysis_rate);
         j["linear_sweep_discovery"]=sweeps_json(sweeps,analysis_rate,analysis_first,analysis_step);
-        j["linear_sweep_review"]=review_json(review_linear_sweeps(r,sweeps,
-            {analysis_rate,evidence_width,source_rails(input.samples,format,0,select_band?input.samples.size():r.samples_used)}),sweep_review_version);
+        decision_sweeps=review_linear_sweeps(r,sweeps,
+            {analysis_rate,evidence_width,source_rails(input.samples,format,0,select_band?input.samples.size():r.samples_used)});
+        j["linear_sweep_review"]=review_json(decision_sweeps,sweep_review_version);
+    }
+    if(o.count("--link-decision")) {
+        const auto d=decide_link(decision_review,decision_sweeps,decision_background);
+        json reasons=json::array();for(std::size_t i=0;i<d.reason_count;++i)reasons.push_back(d.reasons[i]);
+        j["link_decision"]={{"schema","rfmon.link_decision.v1"},{"policy",link_decision_version},
+            {"catalogue","no_accepted_drone_families_v1"},{"status",d.status},{"protocol",d.protocol},
+            {"waveform_state",d.waveform_state},{"competing_patterns",d.competing_patterns},
+            {"link_family","unknown"},{"drone_relevance","unknown"},{"probability",nullptr},
+            {"reasons",reasons},{"next_evidence",d.next_evidence},{"receiver_qualified",false},
+            {"named_family_acceptance_enabled",false},{"future_ml_eligibility","not_gated_by_this_decision"},
+            {"scope","whole_analysis_window"},{"source_first_sample_center",analysis_first},
+            {"source_sample_step",analysis_step},{"analysis_samples",analysis_iq.size()},
+            {"sample_rate_hz",analysis_rate},{"capture_center_hz",source_metadata["capture_center_hz"]},
+            {"continuity",source_metadata["continuity"]},{"history_used",false},
+            {"decoder_evidence","not_collected_by_offline_analyze"}};
     }
     BurstAnalysis b;
     if(o.count("--analyze-bursts") || o.count("--refine-clock")) b=analyze_burst(analysis_iq,analysis_rate,roi);
@@ -834,9 +885,10 @@ json analyze(const Options& o, IqFormat format, double rate) {
         j["clock_refinement"]["source_rail_scope"]=select_band?"entire_pre_filter_source_window":"raw_selected_scope";
     }
     if(o.count("--prepare-candidates")) {
-        const auto candidates=prepare_candidate_bands(analysis_iq,analysis_rate,roi,evidence_width);
+        const auto candidates=prepare_candidate_bands(analysis_iq,analysis_rate,roi,evidence_width,
+            {o.count("--route-candidates")!=0,std::size_t(integer(o,"--candidate-round",0))});
         j["candidate_preparation"]=candidate_json(candidates,analysis_rate,analysis_first,analysis_step,evidence_width);
-        if(o.count("--qualify-candidates")) j["candidate_qualification"]=candidate_qualification_json(
+        if(o.count("--qualify-candidates") || o.count("--route-candidates")) j["candidate_qualification"]=candidate_qualification_json(
             candidates,roi,analysis_first,analysis_step,select_band?prepared.filter_taps/2:0);
     }
     if (o.count("--measure-rois")) j["roi_measurements"] = roi_json(roi, analysis_rate,
@@ -936,6 +988,27 @@ json analyze(const Options& o, IqFormat format, double rate) {
     if (o.count("--assess-evidence")) j["dsp_evidence"] = evidence_json(assess_link_evidence(r, ofdm, chirps,
         {analysis_rate, evidence_width, source_rails(input.samples, format, 0,
             select_band ? input.samples.size() : r.samples_used)}));
+    if(o.count("--check-marker-structure")) {
+        const auto structures=measure_marker_structures(analysis_iq,analysis_rate,chirps);
+        j["marker_structure"]=marker_structure_json(structures,analysis_first,analysis_step);
+    }
+    if(o.count("--named-link-candidates")) {
+        const auto named=assess_named_link_candidates(r,chirps,{analysis_rate,evidence_width,
+            source_rails(input.samples,format,0,select_band?input.samples.size():r.samples_used)},analysis_iq.size());
+        json records=json::array();
+        for(std::size_t i=0;i<named.count;++i) {
+            const auto& candidate=named.candidates[i];json blockers=json::array();
+            for(std::size_t k=0;k<candidate.blocker_count;++k)blockers.push_back(candidate.blockers[k]);
+            records.push_back({{"family",candidate.family},{"profile",candidate.profile},{"scope",candidate.scope},
+                {"status",candidate.status},{"marker_compatible",candidate.marker_compatible},{"accepted",false},
+                {"measurement_index",candidate.measurement_index},{"blockers",blockers},
+                {"first_source_sample_center",candidate.samples?json(analysis_first+candidate.offset*analysis_step):json(nullptr)},
+                {"support_samples",candidate.samples},{"source_sample_step",analysis_step}});
+        }
+        j["named_link_candidates"]={{"catalogue",named_link_catalogue_version},{"accepted_family",nullptr},
+            {"thresholds_calibrated",false},{"identity_used",false},{"remote_id_used",false},
+            {"source","https://doi.org/10.3390/s25154552"},{"candidates",records}};
+    }
     return j;
 }
 
@@ -1026,7 +1099,8 @@ int main(int argc, char** argv) {
                 allowed.insert(k);
             allowed.insert("--measure-rois");
             allowed.insert("--measure-chirps");
-            allowed.insert("--qualify-candidates");
+            allowed.insert("--check-marker-structure"); allowed.insert("--qualify-candidates"); allowed.insert("--link-decision"); allowed.insert("--named-link-candidates");
+            allowed.insert("--route-candidates");allowed.insert("--candidate-round");
             allowed.insert("--refine-clock"); allowed.insert("--analyze-bursts"); allowed.insert("--check-cyclic-background"); allowed.insert("--discover-sweeps"); allowed.insert("--review-waveforms"); allowed.insert("--discover-structure"); allowed.insert("--expand-waveforms"); allowed.insert("--prepare-candidates");
         } else if (command == "inventory") {
             for (const auto& k : {"--root", "--expected-samples", "--probe-samples"}) allowed.insert(k);
@@ -1038,7 +1112,7 @@ int main(int argc, char** argv) {
             const std::string name = argv[i];
             if (!allowed.count(name)) throw std::invalid_argument("unknown option: " + name);
             if (options.count(name)) throw std::invalid_argument("duplicate option: " + name);
-            if (name == "--include-spectrum" || name == "--measure-rois" || name == "--measure-chirps" || name == "--assess-evidence" || name == "--remove-source-dc" || name == "--refine-chirps" || name=="--refine-clock" || name=="--analyze-bursts" || name=="--check-cyclic-background" || name=="--discover-sweeps" || name=="--review-waveforms" || name=="--discover-structure" || name=="--expand-waveforms" || name=="--prepare-candidates" || name=="--qualify-candidates") options[name] = "true";
+            if (name == "--include-spectrum" || name == "--measure-rois" || name == "--measure-chirps" || name == "--assess-evidence" || name == "--remove-source-dc" || name == "--refine-chirps" || name=="--refine-clock" || name=="--analyze-bursts" || name=="--check-cyclic-background" || name=="--discover-sweeps" || name=="--review-waveforms" || name=="--discover-structure" || name=="--expand-waveforms" || name=="--prepare-candidates" || name=="--check-marker-structure" || name=="--named-link-candidates" || name=="--link-decision" || name=="--qualify-candidates" || name=="--route-candidates") options[name] = "true";
             else {
                 if (++i >= argc) throw std::invalid_argument("missing option value: " + name);
                 options[name] = argv[i];
