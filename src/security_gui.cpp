@@ -466,6 +466,10 @@ void incidents_tab(const SecuritySnapshot& s, float height) {
                 for (const auto& m : i.measures) ImGui::Text("%s: %.3f", m.first.c_str(), m.second);
                 for (const auto& c : i.context) ImGui::TextWrapped("%s: %s", c.first.c_str(), c.second.c_str());
                 ImGui::TextDisabled("Historical match rule; no learned flood baseline required.");
+            } else if (i.rule == "management_transaction_replay_anomaly" || i.rule == "eapol_handshake_replay_anomaly") {
+                for (const auto& m : i.measures) ImGui::Text("%s: %.3f", m.first.c_str(), m.second);
+                for (const auto& c : i.context) ImGui::TextWrapped("%s: %s", c.first.c_str(), c.second.c_str());
+                ImGui::TextWrapped("Experimental transaction history; observed responses do not verify authentication or successful replay.");
             } else ImGui::TextWrapped("Baseline: %s v%u",i.baseline_key.c_str(),i.baseline_version);
             for (const auto& b : s.baselines) if (b.key == i.baseline_key)
                 ImGui::Text("Learning: %s | rule holders: %zu | held windows: %llu", b.frozen ? "operator frozen" : b.holders.empty() ? "enabled" : "rule held",b.holders.size(),(unsigned long long)b.windows_held);
@@ -574,7 +578,7 @@ std::string wifi_security_header_label(const SecuritySnapshot& s) {
 void draw_wifi_security_panel(const SecuritySnapshot& s, const QueueStats& q, const std::string& run_id,
                               const std::string& recording, float height, const char* select_tab,
                               const SecurityCommandFn& command) {
-    ImGui::TextDisabled("Passive disconnect-flood and historical-beacon replay detection. Sender and impact unverified.");
+    ImGui::TextDisabled("Passive flood, beacon replay and connection/handshake anomalies. Sender and impact unverified.");
     ImGui::Text("Flood rule: %s | evaluated windows %llu | excluded captures %llu", s.flood_enabled ? "enabled (baseline required)" : "disabled", (unsigned long long)s.flood_evaluations,(unsigned long long)s.flood_excluded_captures);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Provisional configuration: %s",s.flood_config.c_str());
     ImGui::Text("Beacon replay: %s | evaluated %llu | excluded captures %llu | history evictions %llu",
@@ -582,6 +586,16 @@ void draw_wifi_security_panel(const SecuritySnapshot& s, const QueueStats& q, co
         (unsigned long long)s.beacon_replay_evaluated, (unsigned long long)s.beacon_replay_excluded,
         (unsigned long long)s.beacon_replay_forgotten);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Provisional configuration: %s", s.beacon_replay_config.c_str());
+    if (s.transactions.is_object()) {
+        ImGui::Text("Connection/EAPOL anomalies: %s | evaluated %llu | excluded captures %llu",
+            s.transactions.value("enabled", false) ? "experimental" : "disabled",
+            (unsigned long long)s.transactions.value("evaluated", uint64_t(0)),
+            (unsigned long long)s.transactions.value("excluded_captures", uint64_t(0)));
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Unsupported inputs: %llu; history evictions: %llu. Unsupported transaction input breaks comparison continuity.",
+            (unsigned long long)s.transactions.value("unsupported", uint64_t(0)),
+            (unsigned long long)s.transactions.value("history_evictions", uint64_t(0)));
+        ImGui::TextDisabled("Open-system auth, association and supported RSN exchanges only; no MIC or attack-success validation.");
+    }
     // Summary strip.
     ImGui::Text("Frames accepted %llu of %llu offered", static_cast<unsigned long long>(s.frames_accepted),
                 static_cast<unsigned long long>(s.frames_ingested));

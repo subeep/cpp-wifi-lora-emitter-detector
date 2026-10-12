@@ -7,7 +7,8 @@ namespace rfmon::wifi_security {
 using nlohmann::json;
 
 SecurityState::SecurityState(StateLimits limits)
-    : limits_(limits), baselines_(limits.baseline), incidents_(limits.incidents), flood_(limits.flood), beacon_replay_(limits.beacon_replay) {
+    : limits_(limits), baselines_(limits.baseline), incidents_(limits.incidents), flood_(limits.flood), beacon_replay_(limits.beacon_replay), transactions_(limits.transactions) {
+    snap_.transactions = transactions_.diagnostics();
     snap_.beacon_replay_enabled = limits.beacon_replay.enabled;
     snap_.beacon_replay_config = beacon_replay_.config_version();
     snap_.flood_enabled = limits.flood.enabled;
@@ -100,14 +101,24 @@ void SecurityState::ingest(const CaptureRecord& c) {
     auto outcome = flood_.finish_capture(c, baselines_, incidents_);
     snap_.flood_evaluations = flood_.evaluations();
     snap_.flood_excluded_captures = flood_.excluded();
+    auto transaction = transactions_.finish_capture(c, incidents_);
+    snap_.transactions = transactions_.diagnostics();
+    outcome.observed_incidents.insert(transaction.observed_incidents.begin(), transaction.observed_incidents.end());
     auto replay = beacon_replay_.finish_capture(c, incidents_);
     snap_.beacon_replay_evaluated = beacon_replay_.evaluated();
     snap_.beacon_replay_excluded = beacon_replay_.excluded();
     snap_.beacon_replay_forgotten = beacon_replay_.forgotten();
     outcome.observed_incidents.insert(replay.observed_incidents.begin(), replay.observed_incidents.end());
-    baselines_.note_capture(c, outcome.usable && replay.observed_incidents.empty());
+    baselines_.note_capture(c, outcome.usable && replay.observed_incidents.empty() && transaction.observed_incidents.empty());
     refresh_incidents();
     refresh_baselines();
+    if (!transaction.usable) {
+        // Unsupported transaction input is not quiet evidence for these rules;
+        // preserve existing flood/beacon recovery semantics independently.
+        for (const auto& i : incidents_.incidents())
+            if (i.rule == "management_transaction_replay_anomaly" || i.rule == "eapol_handshake_replay_anomaly")
+                outcome.observed_incidents.insert(i.id);
+    }
     if (outcome.usable && replay.usable && incidents_.open_count()) {
         incidents_.note_analysed(c.band, c.channel, c.analysed_seconds(), &outcome.observed_incidents, BaselineStore::key_for(c));
         refresh_incidents();
@@ -138,7 +149,7 @@ json SecurityState::export_persistent() const {
 
 void SecurityState::import_persistent(const json& j) {
     flood_.interrupt();
-    beacon_replay_.interrupt();
+    beacon_replay_.interrupt(); transactions_.interrupt();
     if (j.contains("baselines")) snap_.baselines_restored = baselines_.import_json(j.at("baselines"));
     if (j.contains("incidents")) snap_.incidents_restored = incidents_.import_json(j.at("incidents"));
     if (j.value("baselines_frozen", false)) {
@@ -194,6 +205,7 @@ bool SecurityState::ingest(const FrameEvent& e) {
     baselines_.note_frame(e, pf.frame);
     flood_.note_frame(e, pf.frame);
     beacon_replay_.note_frame(e, pf.frame);
+    transactions_.note_frame(e, pf.frame);
 
     // Same bytes (Retry bit aside) at a different ingest key: a separate
     // transmission. Kept, and linked to where the bytes were first seen.
@@ -220,12 +232,12 @@ bool SecurityState::ingest(const FrameEvent& e) {
 void SecurityState::note_input_rejected() {
     ++snap_.input_lines_rejected;
     flood_.interrupt();
-    beacon_replay_.interrupt();
+    beacon_replay_.interrupt(); transactions_.interrupt();
     baselines_.invalidate_pending();
 }
 
 void SecurityState::ingest(const LossNotice& l) {
-    if (l.events_dropped || l.captures_dropped) { flood_.interrupt(); beacon_replay_.interrupt(); baselines_.invalidate_pending(); }
+    if (l.events_dropped || l.captures_dropped) { flood_.interrupt(); beacon_replay_.interrupt(); transactions_.interrupt(); baselines_.invalidate_pending(); }
     snap_.queue_events_dropped += l.events_dropped;
     snap_.queue_captures_dropped += l.captures_dropped;
     snap_.losses.push_back(l);
@@ -282,6 +294,7 @@ json snapshot_json(const SecuritySnapshot& s, bool include_recent) {
     }
     j["baselines"] = bl;
     j["flood"] = {{"enabled",s.flood_enabled},{"evaluations",s.flood_evaluations},{"excluded_captures",s.flood_excluded_captures},{"config",s.flood_config}};
+    j["transactions"] = s.transactions;
     j["beacon_replay"] = {{"enabled",s.beacon_replay_enabled},{"evaluated",s.beacon_replay_evaluated},{"excluded_captures",s.beacon_replay_excluded},{"forgotten",s.beacon_replay_forgotten},{"config",s.beacon_replay_config}};
     json incidents = json::array();
     for (const auto& incident : s.incidents) incidents.push_back(incident_json(incident));

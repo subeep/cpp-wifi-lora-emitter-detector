@@ -35,12 +35,14 @@
 #include "security/wifi_security_io.hpp"
 #include "security/wifi_security_flood.hpp"
 #include "security/wifi_security_beacon_replay.hpp"
+#include "security/wifi_security_transactions.hpp"
 
 namespace rfmon::wifi_security {
 
 struct StateLimits {
     FloodConfig flood;
     BeaconReplayConfig beacon_replay;
+    TransactionConfig transactions;
     BaselineLimits baseline;
     IncidentLimits incidents;
     size_t published_incidents = 200;  // newest incidents mirrored into the snapshot
@@ -86,6 +88,7 @@ struct TimelineSummary {
 };
 
 struct SecuritySnapshot {
+    nlohmann::json transactions;
     bool beacon_replay_enabled = true;
     uint64_t beacon_replay_evaluated = 0, beacon_replay_excluded = 0, beacon_replay_forgotten = 0;
     std::string beacon_replay_config;
@@ -157,6 +160,7 @@ private:
     IncidentStore incidents_;
     ManagementFloodRule flood_;
     BeaconReplayRule beacon_replay_;
+    TransactionReplayRule transactions_;
     struct SessionClock { bool end_known = false; int64_t end_ns = 0; };
     std::map<std::pair<std::string, uint64_t>, SessionClock> sessions_;  // (run, radio session)
     // Dedupe: capture -> sample/PHY keys seen, evicted oldest-capture-first.

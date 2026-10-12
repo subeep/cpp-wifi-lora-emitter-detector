@@ -270,7 +270,7 @@ int main(int argc, char** argv) {
             ImGui_ImplOpenGL3_NewFrame();ImGui::NewFrame();
             ImGui::SetNextWindowPos(ImVec2(0,0));ImGui::SetNextWindowSize(hio.DisplaySize);
             ImGui::Begin("Recorded HackRF/X310 security evidence",nullptr,ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove);
-            ImGui::TextUnformatted("Replay of recorded conducted RF test; hardware capture finished.");
+            ImGui::TextUnformatted(argc>3 && std::string(argv[3])=="--synthetic" ? "Synthetic transaction anomaly fixture; no RF transmission or attack-success evidence." : "Replay of recorded conducted RF test; hardware capture finished.");
             draw_wifi_security_panel(hardware,{},"recorded-hardware",argv[2],900,i<2?"Incidents":nullptr);
             if(i==2)for(auto* w:ImGui::GetCurrentContext()->Windows)
                 if(std::string(w->Name).find("wifi_security_incidents")!=std::string::npos) {

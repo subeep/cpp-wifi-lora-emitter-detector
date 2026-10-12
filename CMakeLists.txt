@@ -313,7 +313,7 @@ if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
   add_executable(test_wifi_gui tests/test_wifi_gui.cpp src/wifi_gui.cpp src/wifi_frame.cpp src/security_gui.cpp
       src/security/wifi_mac_frame.cpp src/security/wifi_frame_event.cpp src/security/wifi_security_io.cpp
       src/security/wifi_security_state.cpp src/security/wifi_security_monitor.cpp
-      src/security/wifi_security_baseline.cpp src/security/wifi_security_incidents.cpp src/security/wifi_security_flood.cpp src/security/wifi_security_beacon_replay.cpp
+      src/security/wifi_security_baseline.cpp src/security/wifi_security_incidents.cpp src/security/wifi_security_flood.cpp src/security/wifi_security_beacon_replay.cpp src/security/wifi_security_transactions.cpp
       ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp
       ${IMGUI_DIR}/imgui_widgets.cpp ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
   target_include_directories(test_wifi_gui PRIVATE ${CMAKE_SOURCE_DIR}/src ${IMGUI_DIR} ${WIFI_EGL_INCLUDE_DIR}
@@ -512,7 +512,7 @@ set(WIFI_SECURITY_MONITOR_SOURCES
   src/security/wifi_security_state.cpp
   src/security/wifi_security_baseline.cpp
   src/security/wifi_security_incidents.cpp
-  src/security/wifi_security_flood.cpp src/security/wifi_security_beacon_replay.cpp
+  src/security/wifi_security_flood.cpp src/security/wifi_security_beacon_replay.cpp src/security/wifi_security_transactions.cpp
   src/security/wifi_security_monitor.cpp)
 foreach(target rf_monitor_gui band_smoke_test wifi_scan_smoke)
   target_sources(${target} PRIVATE ${WIFI_SECURITY_MONITOR_SOURCES})
@@ -592,6 +592,8 @@ target_link_libraries(test_lora_security PRIVATE PkgConfig::KISSFFT Threads::Thr
 add_test(NAME lora_security COMMAND test_lora_security)
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+  add_test(NAME wifi_security_transactions COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/tests/test_wifi_security_transactions.py $<TARGET_FILE:wifi_security_replay>)
   add_test(NAME security_replay_cli COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_SOURCE_DIR}/tests/test_security_replay_cli.py ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR})
 endif()

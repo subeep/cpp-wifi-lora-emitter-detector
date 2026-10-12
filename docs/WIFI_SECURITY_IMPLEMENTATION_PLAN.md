@@ -1,5 +1,7 @@
 # Wi-Fi replay and DoS detection: implementation plan
 
+11 October implementation: [connection and EAPOL replay-like anomalies](WIFI_TRANSACTION_REPLAY_ANOMALIES.md) adds bounded historical transaction checks and GUI evidence. New rules are experimental and lack positive RF qualification.
+
 Current checkpoint: [11 October validation report](WIFI_SECURITY_VALIDATION_2026-10-11.md). Attack detection is now the active priority; the original proposed plan below is historical. Existing flood/replay hardware evidence and new production-default regression controls pass; calibration and broader independent validation remain open.
 
 Date: 2026-09-23. Status: proposed work; this document does not implement or authorize hardware transmissions.

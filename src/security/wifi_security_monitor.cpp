@@ -160,6 +160,7 @@ void WifiSecurityMonitor::publish() {
     const SecuritySnapshot& cur = state_.snapshot();
     // Copy everything except the bulk of the recent-frame buffer.
     s->schema = cur.schema;
+    s->transactions = cur.transactions;
     s->beacon_replay_enabled = cur.beacon_replay_enabled;
     s->beacon_replay_config = cur.beacon_replay_config;
     s->beacon_replay_evaluated = cur.beacon_replay_evaluated;

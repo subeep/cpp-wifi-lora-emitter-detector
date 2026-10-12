@@ -42,8 +42,14 @@ def audit(tool, campaign):
             raise RuntimeError(f'{phase}: replay failed: {result.stderr}')
         current = json.loads(result.stdout)
         recorded = json.loads(reference.read_text())
-        diff = sorted(k for k in semantic(current).keys() | semantic(recorded).keys()
-                      if semantic(current).get(k) != semantic(recorded).get(k))
+        projected = semantic(current)
+        added = {}
+        # An older snapshot has no transaction diagnostics. Compare every old
+        # semantic field, including all incidents; retain the additive field.
+        if 'transactions' not in recorded and 'transactions' in projected:
+            added['transactions'] = projected.pop('transactions')
+        diff = sorted(k for k in projected.keys() | semantic(recorded).keys()
+                      if projected.get(k) != semantic(recorded).get(k))
         observations = {str(i['id']): i['observations'] for i in current['incidents']}
         paths = {i['path'] for i in current['incidents']} | {t['path'] for i in current['incidents'] for t in i['timeline']}
         # A path must gain a new observation in its own phase, not merely remain
@@ -59,7 +65,7 @@ def audit(tool, campaign):
                      not c['overflow_captures'] and not c['failed_captures'] and not c['burst_cap_captures']
                      for c in current['coverage']))
         cases.append(dict(phase=phase,passed=not diff and path_advanced and negative_ok and clean,
-                          semantic_difference_keys=diff,expected_path=expected_path,
+                          semantic_difference_keys=diff,added_snapshot_fields=added,expected_path=expected_path,
                           path_advanced=path_advanced,negative_control_passed=negative_ok,
                           clean_coverage=clean,frames_accepted=current['frames_accepted'],
                           incidents=current['incidents_total'],observations=observations,paths=sorted(paths)))
