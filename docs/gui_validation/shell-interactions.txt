@@ -1,0 +1,2 @@
+Shell software-render average ms/frame: 0.761357
+Production navigation, warning visibility, explicit command and scale isolation: PASS

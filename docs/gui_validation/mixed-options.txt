@@ -1,0 +1,2 @@
+Drones OFF / DSP ON: PASS (main translation unit syntax check)
+Drones ON / DSP OFF: PASS (main translation unit syntax check)

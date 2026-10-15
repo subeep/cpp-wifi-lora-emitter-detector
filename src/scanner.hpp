@@ -104,7 +104,11 @@ struct WifiPacketRow {
 
 class Scanner {
 public:
+    using WifiIqObserver = std::function<void(const std::vector<std::complex<float>>&, const wifi_security::CaptureRecord&)>;
+    using WifiFrameObserver = std::function<void(const wifi_security::FrameEvent&)>;
     Scanner();
+    // Optional immutable processing-tail observer; configured before any receiver starts.
+    explicit Scanner(WifiIqObserver observer, WifiFrameObserver frames = {}) : Scanner() { wifi_iq_observer_ = std::move(observer); wifi_frame_observer_ = std::move(frames); }
     // Same as Scanner(), with every persistent store rooted at `data_root`
     // instead of <project>/data (tests use a temporary directory).
     explicit Scanner(const std::string& data_root);
@@ -212,6 +216,8 @@ public:
     bool wifi_security_command(const std::string& action, const std::string& key = "");
 
 private:
+    WifiIqObserver wifi_iq_observer_;
+    WifiFrameObserver wifi_frame_observer_;
     friend struct ScannerTestAccess;  // radio-free tests (tests/test_scanner_wifi_lane.cpp)
     void run();
     // Appends any energy-detected segment(s) found in this same

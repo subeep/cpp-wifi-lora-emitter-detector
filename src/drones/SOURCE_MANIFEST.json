@@ -1,0 +1,22 @@
+{
+  "copied_from": "/home/sudeep/Pictures/Drone_recorder.",
+  "date": "2026-10-14",
+  "source_head": "d87fe37b2c895870c29dc2124574e886a5b30333",
+  "note": "Local working copy had modifications; hashes identify actual input files, not pristine HEAD. Local integration adaptations are documented in NOTICE.md.",
+  "sha256": {
+    "src/detector/detector.cpp": "fe23d7f36de0160955ddd2043261948105f5763159759c4ef4f22329b25c5c52",
+    "src/detector/detector.hpp": "2ace20fe57aa6ef7fe4ff5fcdd28a0ee2a09c7b91fa4d7fed9f0b8649d7227a1",
+    "src/detector/broadcast.hpp": "42a70b426b7c91038f7c9c891e5e09f74f2abe98a330fcc4424dd7b07a9f1059",
+    "src/detector/turbo_bridge.c": "c1b96f79d14d4d8d51a66505afa26628fac1f9db151cc2a76f9d57e482e3a3e9",
+    "src/detector/python/backend.py": "844f4c57f4b74bf703baa25cc849810297475acb7602fb2aedfd93b5a7f338bd",
+    "src/detector/python/telemetry.py": "fd1786350737ccc265fc14adcd62abd5eda9b7c59754f3046b3524e24395dd84",
+    "src/detector/python/reference/Packet.py": "7df730643ea86917ac674aebe6f44b56c60262787997f5f53d061d502e6560b2",
+    "src/detector/python/reference/SpectrumCapture.py": "77b7260ee010174bb91d01fa1819671c09ac1b59243a7c509d56627124bdaa80",
+    "src/detector/python/reference/droneid_packet.py": "9f8d8e4c254e3a09f53d9cc476978b4d1db6be18068d8339fc70379eb2f7a0ae",
+    "src/detector/python/reference/goldgen.py": "b211925fee6208f2ec6c1e733c90db8a9411abcb70913ce7e871064a940be931",
+    "src/detector/python/reference/helpers.py": "2990b5c1b12f7603dda3e0e541f91bacf6e6aa7187609069800b2c6e6fe79b4c",
+    "src/detector/python/reference/packetizer.py": "563cdcf9f1a22f844d8d4fa8b03e151bc1e6e96e57fbd553dcb0e5ebb14cdec4",
+    "src/detector/python/reference/qpsk.py": "18de24827ce5b9ce6a7c374779d34a3dc3abf6d4ac9400cbf93620e37ef5b274",
+    "src/detector/python/reference/zcsequence.py": "4534aac3dffbb328cc0581f3a997f28ee3ea6ed6df7e8af2fe7d921a339af267"
+  }
+}

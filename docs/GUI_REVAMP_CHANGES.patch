@@ -1,0 +1,1836 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -69,6 +69,7 @@
+ 
+ add_executable(rf_monitor_gui
+   ${APP_SOURCES}
++  src/gui/app_shell.cpp
+   ${IMGUI_SOURCES}
+ )
+ 
+@@ -313,7 +314,7 @@
+ find_path(WIFI_EGL_INCLUDE_DIR EGL/egl.h)
+ find_library(WIFI_EGL_LIBRARY EGL)
+ if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
+-  add_executable(test_wifi_gui tests/test_wifi_gui.cpp src/wifi_gui.cpp src/wifi_frame.cpp src/security_gui.cpp
++  add_executable(test_wifi_gui src/gui/app_shell.cpp tests/test_wifi_gui.cpp src/wifi_gui.cpp src/wifi_frame.cpp src/security_gui.cpp
+       src/security/wifi_mac_frame.cpp src/security/wifi_frame_event.cpp src/security/wifi_security_io.cpp
+       src/security/wifi_security_state.cpp src/security/wifi_security_monitor.cpp
+       src/security/wifi_security_baseline.cpp src/security/wifi_security_incidents.cpp src/security/wifi_security_flood.cpp src/security/wifi_security_beacon_replay.cpp src/security/wifi_security_transactions.cpp
+@@ -687,3 +688,22 @@
+   target_link_libraries(test_cyclo_panel PRIVATE rfmon_cyclo_offline)
+   add_test(NAME cyclostationary_panel COMMAND test_cyclo_panel)
+ endif()
++
++# UI-only navigation qualification; no Scanner, SDR, worker or persisted store.
++if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
++  add_executable(test_gui_shell tests/test_gui_shell.cpp src/gui/app_shell.cpp
++    ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp
++    ${IMGUI_DIR}/imgui_widgets.cpp ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
++  target_include_directories(test_gui_shell PRIVATE ${CMAKE_SOURCE_DIR}/src ${IMGUI_DIR} ${WIFI_EGL_INCLUDE_DIR})
++  target_link_libraries(test_gui_shell PRIVATE OpenGL::GL ${WIFI_EGL_LIBRARY} dl)
++  add_test(NAME gui_shell COMMAND test_gui_shell)
++endif()
++
++if(TARGET test_wifi_gui)
++  add_test(NAME wifi_gui COMMAND test_wifi_gui)
++  set_tests_properties(wifi_gui PROPERTIES ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1")
++endif()
++if(TARGET test_lora_gui)
++  add_test(NAME lora_gui COMMAND test_lora_gui)
++  set_tests_properties(lora_gui PROPERTIES ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1")
++endif()
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -1,11 +1,7 @@
+ // rf_monitor_gui - live B210 LoRa/Wi-Fi(2.4/5GHz) emitter monitor, ImGui UI.
+ //
+-// Energy detection only (see README.md) - frequency, bandwidth and
+-// power are measured directly; protocol is a bandwidth-based guess,
+-// not a decode. Switching the band mode below changes which scan plan
+-// the background Scanner thread is actively running and which of the
+-// three per-band device lists is shown; each band keeps its own list
+-// so switching away and back doesn't lose it.
++// Native display workspace. Navigation and display state are independent of
++// explicit acquisition commands; existing Scanner and add-on ownership is retained.
+ 
+ #include <algorithm>
+ #include <cstdio>
+@@ -26,6 +22,7 @@
+ #include "drones/panel.hpp"
+ #endif
+ #include "config.hpp"
++#include "gui/app_shell.hpp"
+ #include "fingerprint.hpp"
+ #include "lora_master.hpp"
+ #include "lora_gui.hpp"
+@@ -120,12 +117,12 @@
+ void draw_device_table(const std::vector<DeviceRow>& devices, float height,
+                         const std::map<int, int>& source_counts) {
+     if (devices.empty()) {
+-        ImGui::TextDisabled("No active emitters right now.");
++        ImGui::TextDisabled("No retained RF observations for this band. This does not establish absence of signals.");
+         return;
+     }
+ 
+     static ImGuiTableFlags flags = ImGuiTableFlags_Sortable | ImGuiTableFlags_RowBg |
+-                                   ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
++                                   ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
+                                    ImGuiTableFlags_ScrollY;
+     ImVec2 outer_size(0.0f, height);
+     if (!ImGui::BeginTable("devices", 10, flags, outer_size)) return;
+@@ -139,10 +136,10 @@
+     ImGui::TableSetupColumn("Protocol guess", ImGuiTableColumnFlags_WidthStretch);
+     ImGui::TableSetupColumn("Sources", ImGuiTableColumnFlags_WidthFixed, 70.0f);
+     ImGui::TableSetupColumn("Power (dB, rel.)", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+-    ImGui::TableSetupColumn("Cycles seen", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+-    ImGui::TableSetupColumn("Age (s)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
++    ImGui::TableSetupColumn("Cycles seen", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 90.0f);
++    ImGui::TableSetupColumn("Age (s)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0f);
+     ImGui::TableSetupColumn("Last seen (s ago)", ImGuiTableColumnFlags_WidthFixed, 130.0f);
+-    ImGui::TableSetupColumn("Band", ImGuiTableColumnFlags_WidthFixed, 110.0f);
++    ImGui::TableSetupColumn("Band", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 110.0f);
+     ImGui::TableHeadersRow();
+ 
+     std::vector<DeviceRow> rows = devices;
+@@ -164,7 +161,18 @@
+                     case 8: less = a.last_seen_s_ago < b.last_seen_s_ago; break;
+                     default: less = a.band < b.band; break;
+                 }
+-                return asc ? less : !less;
++                if (asc) return less;
++                switch(col) {
++                    case 0:case 4:return a.freq_mhz>b.freq_mhz;
++                    case 1:return device_row_channel(a)>device_row_channel(b);
++                    case 2:return a.bandwidth_khz>b.bandwidth_khz;
++                    case 3:return a.protocol_guess>b.protocol_guess;
++                    case 5:return a.power_db>b.power_db;
++                    case 6:return a.hit_count>b.hit_count;
++                    case 7:return a.age_s>b.age_s;
++                    case 8:return a.last_seen_s_ago>b.last_seen_s_ago;
++                    default:return a.band>b.band;
++                }
+             });
+             specs->SpecsDirty = false;
+         }
+@@ -224,24 +232,26 @@
+         return;
+     }
+ 
+-    static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
++    static std::optional<lora_master::LoraMasterRow> selected;
++    ImGui::TextDisabled("Heuristic RF clusters. Select an ID for full latest-reading detail; header menu shows all columns.");
++    static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable |
+                                    ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
+                                    ImGuiTableFlags_ScrollX;
+-    ImVec2 outer_size(0.0f, height);
++    ImVec2 outer_size(0.0f, selected?std::min(height,250.f):height);
+     if (!ImGui::BeginTable("lora_master", 11, flags, outer_size)) return;
+ 
+     ImGui::TableSetupScrollFreeze(0, 1);
+     ImGui::TableSetupColumn("Device ID", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+-    ImGui::TableSetupColumn("First seen", ImGuiTableColumnFlags_WidthFixed, 190.0f);
++    ImGui::TableSetupColumn("First seen", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 190.0f);
+     ImGui::TableSetupColumn("Last seen", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+     ImGui::TableSetupColumn("Readings", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+     ImGui::TableSetupColumn("Freq (MHz)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+     ImGui::TableSetupColumn("SF", ImGuiTableColumnFlags_WidthFixed, 40.0f);
+     ImGui::TableSetupColumn("BW (kHz)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+-    ImGui::TableSetupColumn("IRR (dB)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+-    ImGui::TableSetupColumn("IQ eps", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+-    ImGui::TableSetupColumn("IQ phi (deg)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+-    ImGui::TableSetupColumn("DC (dBc)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
++    ImGui::TableSetupColumn("IRR (dB)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0f);
++    ImGui::TableSetupColumn("IQ eps", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0f);
++    ImGui::TableSetupColumn("IQ phi (deg)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 100.0f);
++    ImGui::TableSetupColumn("DC (dBc)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0f);
+     ImGui::TableHeadersRow();
+ 
+     // Already sorted by last_seen_ts (most recent first) by
+@@ -252,7 +262,7 @@
+     for (const auto& row : rows) {
+         ImGui::TableNextRow();
+         ImGui::TableNextColumn();
+-        ImGui::TextUnformatted(row.device_id_str.c_str());
++        if(ImGui::Selectable(row.device_id_str.c_str(),selected && selected->device_id==row.device_id))selected=row;
+ 
+         ImGui::TableNextColumn();
+         {
+@@ -292,6 +302,20 @@
+         ImGui::Text("%.2f", row.latest.dc_dbc);
+     }
+     ImGui::EndTable();
++    if(selected) {
++        const auto& row=*selected;const auto& f=row.latest;
++        ImGui::SeparatorText("Selected LoRa cluster snapshot");
++        ImGui::TextWrapped("%s | First/last Unix seconds: %lld / %lld | Retained readings: %d",row.device_id_str.c_str(),(long long)row.first_seen_ts,(long long)row.last_seen_ts,row.reading_count);
++        ImGui::TextWrapped("Provisional cluster; matching is based on IRR/DC/IQ imbalance, not physical-device authentication.");
++        if(ImGui::Button("Close cluster details"))selected.reset();
++        else if(ImGui::CollapsingHeader("Complete latest reading",ImGuiTreeNodeFlags_DefaultOpen)) {
++            ImGui::Text("Reading Unix seconds: %lld | Frequency %.17g Hz | SF %d | BW %.17g Hz",(long long)f.ts,f.freq_hz,f.sf,f.bw_hz);
++            ImGui::Text("CFO %.17g ppm | IRR %.17g dB | IQ epsilon %.17g | IQ phase %.17g deg",f.cfo_ppm,f.irr_db,f.iq_eps,f.iq_phi_deg);
++            ImGui::Text("DC %.17g dBc | DC angle %.17g deg | SNR %.17g dB",f.dc_dbc,f.dc_ang_deg,f.snr_db);
++            ImGui::Text("EVM %.17g percent | Sync correlation %.17g",f.evm_pct,f.sync_corr);
++        }
++    }
++
+ }
+ 
+ }  // namespace
+@@ -320,7 +344,8 @@
+     ImGui::CreateContext();
+     ImGuiIO& io = ImGui::GetIO();
+     io.IniFilename = nullptr;  // nothing worth persisting across runs yet
+-    ImGui::StyleColorsDark();
++    gui::configure_font();
++    gui::apply_theme();
+ 
+     ImGui_ImplGlfw_InitForOpenGL(window, true);
+     ImGui_ImplOpenGL3_Init(glsl_version);
+@@ -352,21 +377,56 @@
+     bool agc = false;
+     float gain_db = float(DEFAULT_GAIN_DB);
+ 
++    gui::State ui;
++    bool theme_dirty = false;
++    SdrDeviceType selected_device = SdrDeviceType::B210;
++    bool lora_laboratory_mode = false;
+     int frame_count = 0;
+     while (!glfwWindowShouldClose(window)) {
+         glfwPollEvents();
+ 
++        if(theme_dirty){gui::apply_theme(ui.scale,ui.compact);theme_dirty=false;}
+         ImGui_ImplOpenGL3_NewFrame();
+         ImGui_ImplGlfw_NewFrame();
+         ImGui::NewFrame();
+ 
+-        ImGuiIO& cur_io = ImGui::GetIO();
+-        ImGui::SetNextWindowPos(ImVec2(0, 0));
+-        ImGui::SetNextWindowSize(cur_io.DisplaySize);
+-        ImGui::Begin("RF Monitor", nullptr,
+-                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+-                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse);
+-
++        ScannerStatus status = scanner.status();
++        std::string active_band = scanner.active_band();
++        DeviceProfile profile = device_profile(selected_device);
++        const bool drones_available =
++#ifdef RFMON_ENABLE_DJI_DRONEID
++            true;
++#else
++            false;
++#endif
++        const bool cyclo_available =
++#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
++            true;
++#else
++            false;
++#endif
++        // UI snapshot cache only; receiver/analysis cadence is unchanged.
++        static double last_snapshot = -1;
++        static std::map<std::string, std::vector<DeviceRow>> rf_rows;
++        static std::map<std::string, std::map<int,int>> source_counts;
++        static std::vector<WifiPacketRow> wifi_rows;
++        static std::vector<wifi_master::WifiMasterRow> wifi_identities;
++        static std::vector<LoraPacketRow> lora_rows;
++        static std::vector<lora_master::LoraMasterRow> lora_identities;
++        if(last_snapshot < 0 || ImGui::GetTime()-last_snapshot >= .2) {
++            for(const auto& band : {BAND_SUB_GHZ,BAND_WIFI_2G4,BAND_WIFI_5G}) {
++                rf_rows[band]=scanner.snapshot(band);source_counts[band]=scanner.wifi_source_counts(band);
++            }
++            wifi_rows=scanner.wifi_packets();wifi_identities=scanner.wifi_master_snapshot();
++            lora_rows=scanner.lora_packets();lora_identities=scanner.lora_master_snapshot();
++            last_snapshot=ImGui::GetTime();
++        }
++        const auto security=scanner.wifi_security_snapshot();
++        const auto security_queue=scanner.wifi_security_queue_stats();
++        const auto run=scanner.wifi_security_run_id();
++        auto draw_setup = [&] {
++            ImGui::SeparatorText("Monitoring setup — explicit controls");
++            gui::note("Choose the receiver and acquisition settings here. Display navigation does not apply settings.");
+         // --- SDR device selector ---
+         // Picking a device only changes which radio button is
+         // highlighted - it does NOT connect by itself. Switching means
+@@ -379,7 +439,6 @@
+             {"USRP B210", SdrDeviceType::B210},
+             {"USRP X310", SdrDeviceType::X310},
+         };
+-        static SdrDeviceType selected_device = SdrDeviceType::B210;
+         for (size_t i = 0; i < devices.size(); ++i) {
+             bool selected = selected_device == devices[i].second;
+             if (i > 0) ImGui::SameLine();
+@@ -435,49 +494,7 @@
+             ImGui::SameLine();
+             ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.2f, 1), "(applies on Reconnect)");
+         }
+-        DeviceProfile profile = device_profile(selected_device);
+-
+-        ImGui::Separator();
+-
+-        ScannerStatus status = scanner.status();
+-        std::string active_band = scanner.active_band();
+-
+-        // --- Status line ---
+-        if (!scanner_started) {
+-            ImGui::TextDisabled("Select a device above and click Connect to start scanning.");
+-        } else if (!status.connected) {
+-            ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1),
+-                                "Not connected%s%s", status.error.empty() ? "" : ": ",
+-                                status.error.c_str());
+-        } else {
+-            ImGui::TextColored(ImVec4(0.25f, 0.73f, 0.31f, 1), "Connected");
+-            ImGui::SameLine();
+-            ImGui::Text("| step: %s | cycles: %d", status.active_step_label.c_str(),
+-                        status.cycle_count);
+-            if (status.wifi_fixed_channel) {
+-                ImGui::SameLine();
+-                ImGui::TextColored(ImVec4(0.36f, 0.68f, 0.93f, 1), "| fixed on channel %d", *status.wifi_fixed_channel);
+-            } else if (status.wifi_fixed_channel_invalid) {
+-                ImGui::SameLine();
+-                ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.2f, 1), "| requested channel not in this band: sweeping");
+-            }
+-            if (status.last_overflow) {
+-                ImGui::SameLine();
+-                ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.1f, 1), "| USB overflow last cycle");
+-            }
+-            if (status.rx_stalled) {
+-                ImGui::SameLine();
+-                ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1),
+-                                    "| RX STALLED - no samples received recently");
+-            }
+-        }
+-
+-        ImGui::Separator();
+-
+-#ifdef RFMON_ENABLE_DJI_DRONEID
+-        if (ImGui::BeginTabBar("Application pages")) {
+-        if (ImGui::BeginTabItem("Monitoring")) {
+-#endif
++        profile = device_profile(selected_device);
+         // --- Band mode selector ---
+         static const std::vector<std::pair<const char*, std::string>> modes = {
+             {"LoRa (Sub-GHz)", BAND_SUB_GHZ},
+@@ -554,8 +571,7 @@
+             if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                 "Choose a window longer than the expected packet, including its preamble. "
+                 "Reception pauses during processing/retuning; boundary packets can still be truncated.");
+-            static bool lora_laboratory_mode = false;
+-            if (ImGui::Checkbox("Legacy laboratory codecs (nonstandard)", &lora_laboratory_mode)) {
++                if (ImGui::Checkbox("Legacy laboratory codecs (nonstandard)", &lora_laboratory_mode)) {
+                 scanner.set_lora_laboratory_mode(lora_laboratory_mode);
+             }
+             if (ImGui::IsItemHovered()) {
+@@ -563,23 +579,6 @@
+                                   "Production derives timing, header and sync observations from IQ.");
+             }
+         }
+-
+-        if (active_band == BAND_SUB_GHZ) {
+-            if (ImGui::CollapsingHeader("Save a LoRa IQ capture")) {
+-                static char save_directory[1024] = PROJECT_ROOT_DIR "/data/lora_captures";
+-                ImGui::InputText("Save under", save_directory, sizeof(save_directory));
+-                ImGui::BeginDisabled(!scanner.status().connected || scanner.lora_capture_pending() || !save_directory[0]);
+-                if (ImGui::Button("Save next completed capture")) scanner.request_lora_capture_save(save_directory);
+-                ImGui::EndDisabled();
+-                ImGui::TextWrapped("One capture per click, including recordings with no detections. IQ and settings are saved together. Requires a connected receiver.");
+-                auto message = scanner.lora_capture_message();
+-                if (!message.empty()) ImGui::TextWrapped("%s", message.c_str());
+-            }
+-            draw_lora_security_panel(*scanner.lora_security_snapshot());
+-            draw_lora_replay_panel();
+-        }
+-
+-        ImGui::Spacing();
+ 
+         // --- Controls ---
+         if (ImGui::SliderFloat("Threshold (dB above noise floor)", &threshold_db, 3.0f, 30.0f,
+@@ -609,141 +608,178 @@
+ 
+         ImGui::Separator();
+ 
+-        // --- Frequency map + table for the currently selected band ---
+-        ImGui::TextUnformatted("Frequency map");
+-        for (const auto& range : track_ranges_for_band(active_band)) {
+-            draw_frequency_track(range, scanner.snapshot(active_band));
+-        }
+-        if (active_band == BAND_SUB_GHZ) {
+-            auto locked = scanner.lora_lock_freq();
+-            if (locked && std::isfinite(*locked) && (*locked < 863e6 || *locked > 868e6)) {
+-                double mhz = *locked / 1e6;
+-                char label[128];
+-                std::snprintf(label, sizeof(label), "Additional receive view: %.3f-%.3f MHz (frequency lock)", mhz-.5, mhz+.5);
+-                draw_frequency_track({label, mhz-.5, mhz+.5}, scanner.snapshot(active_band));
+-            }
+-        }
+-        auto legend_item = [](const char* id, ImVec4 color, const char* text) {
+-            ImGui::ColorButton(id, color,
+-                                ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop |
+-                                    ImGuiColorEditFlags_NoBorder,
+-                                ImVec2(12, 12));
+-            ImGui::SameLine(0, 4);
+-            ImGui::TextUnformatted(text);
+-            ImGui::SameLine(0, 16);
+-        };
+-        legend_item("##legend_lora", ImVec4(0.94f, 0.55f, 0.24f, 1), "LoRa-like");
+-        legend_item("##legend_wifi", ImVec4(0.25f, 0.73f, 0.31f, 1), "WiFi-like");
+-        legend_item("##legend_narrow", ImVec4(0.82f, 0.60f, 0.13f, 1), "Narrowband (BLE/Zigbee?)");
+-        legend_item("##legend_unknown", ImVec4(0.55f, 0.55f, 0.58f, 1), "Unknown");
+-        ImGui::NewLine();
+-
+-        ImGui::Spacing();
+-        ImGui::TextUnformatted("Active emitters");
+-
+-        bool show_lora_packets = (active_band == BAND_SUB_GHZ);
+-        bool show_wifi_packets = (active_band == BAND_WIFI_2G4 || active_band == BAND_WIFI_5G);
+-        float remaining = ImGui::GetContentRegionAvail().y;
+-        // Split remaining space three ways when the two LoRa-only
+-        // tables are shown below it, in half when the Wi-Fi packet list
+-        // is, else give it all to the generic energy-detection list.
+-        // Not adjusted for collapsed headers below - ImGui already
+-        // reclaims a collapsed section's space within its own layout
+-        // flow, so this split doesn't need to know about that state.
+-        float device_table_height = remaining;
+-        if (show_lora_packets) device_table_height = remaining * 0.3f;
+-        else if (show_wifi_packets) device_table_height = remaining * 0.45f;
+-        draw_device_table(scanner.snapshot(active_band), device_table_height,
+-                           scanner.wifi_source_counts(active_band));
+-
+-        // Each list below is its own independently collapsible
+-        // CollapsingHeader (click the arrow/label to close or reopen) -
+-        // starts open (ImGuiTreeNodeFlags_DefaultOpen) so behavior on
+-        // first appearance is unchanged from before this was added.
+-        if (show_wifi_packets) {
+-            ImGui::Spacing();
+-            if (ImGui::CollapsingHeader("Detected Wi-Fi packets", ImGuiTreeNodeFlags_DefaultOpen)) {
+-                ImGui::TextDisabled(
+-                    "One row per individually detected burst, classified on its own window. "
+-                    "FCS-valid DSSS and legacy OFDM beacons/probe responses show decoded identities. "
+-                    "Sampled, not exhaustive: only the channel currently being swept is heard.");
+-                float wifi_packets_height = ImGui::GetContentRegionAvail().y * 0.5f;
+-                draw_wifi_packet_table(scanner.wifi_packets(), wifi_packets_height);
+-            }
+-
+-            // Collapsed by default; the header itself carries the totals.
+-            ImGui::Spacing();
+-            {
+-                const auto security = scanner.wifi_security_snapshot();
+-                if (ImGui::CollapsingHeader(wifi_security_header_label(*security).c_str())) {
+-                    draw_wifi_security_panel(*security, scanner.wifi_security_queue_stats(),
+-                                             scanner.wifi_security_run_id(), wifi_security_recording,
+-                                             std::max(260.0f, ImGui::GetContentRegionAvail().y * 0.6f), nullptr,
+-                                             [&](const std::string& action, const std::string& key) {
+-                                                 scanner.wifi_security_command(action, key);
+-                                             });
++
++        };
++        auto monitor_band = [&](const std::string& band) {
++            if(active_band!=band) scanner.set_wifi_fixed_channel(std::nullopt);
++            scanner.set_active_band(band);active_band=band;
++        };
++        auto draw_rf = [&](const std::string& band) {
++            gui::note("Retained RF groups are observations, not physical devices. Power is relative, not calibrated dBm.");
++            if(band==BAND_SUB_GHZ && scanner.lora_lock_freq())
++                gui::note("Frequency lock active: the wideband map is retained; the wideband energy scan is skipped.",true);
++            for(const auto& range:track_ranges_for_band(band))draw_frequency_track(range,rf_rows[band]);
++            if(band==BAND_SUB_GHZ) {
++                auto locked=scanner.lora_lock_freq();
++                if(locked && std::isfinite(*locked) && (*locked<863e6 || *locked>868e6)) {
++                    const double mhz=*locked/1e6;
++                    draw_frequency_track({"Additional view around locked receive frequency",mhz-.5,mhz+.5},rf_rows[band]);
+                 }
+             }
+-
++            gui::note("Orange: LoRa-like | Named green row: decoded Wi-Fi AP | Narrowband: unverified BLE/Zigbee hint | Grey: unknown");
++            draw_device_table(rf_rows[band],std::max(180.f,ImGui::GetContentRegionAvail().y-50),source_counts[band]);
++        };
++        auto draw_security = [&] {
++            gui::note("Coverage and incidents span the current monitor run and retained store; they are not limited to the viewed Wi-Fi page.");
++            draw_wifi_security_panel(*security,security_queue,run,wifi_security_recording,
++                std::max(360.f,ImGui::GetContentRegionAvail().y-30),ui.security_first?"Incidents":nullptr,
++                [&](const std::string& action,const std::string& key){scanner.wifi_security_command(action,key);},true);
++            ui.security_first=false;
++        };
++        auto draw_cyclo = [&](const std::string& band) {
+ #ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+-            ImGui::Spacing();
+-            if (ImGui::CollapsingHeader("Drone / link analysis (experimental cyclostationary DSP)")) {
+-                const float analysis_height = std::clamp(ImGui::GetContentRegionAvail().y * 0.5f, 200.0f, 480.0f);
+-                ImGui::BeginChild("wifi_cyclo_measurements", ImVec2(0, analysis_height), ImGuiChildFlags_Borders);
+-                bool enabled = scanner.wifi_cyclo_stats().enabled;
+-                if (ImGui::Checkbox("Enable optional DSP analysis", &enabled)) scanner.set_wifi_cyclo_enabled(enabled);
+-                ImGui::TextDisabled("Receive-only sidecar; live performance gates are still pending.");
+-                cyclo::draw_shadow_panel(scanner.wifi_cyclo_snapshot(), scanner.wifi_cyclo_stats(),
+-                                        active_band == BAND_WIFI_2G4 ? 2 : 5);
+-                ImGui::EndChild();
+-            }
+-#endif
+-            ImGui::Spacing();
+-            if (ImGui::CollapsingHeader("Wi-Fi Identities & RF Clusters (persistent)",
+-                                         ImGuiTreeNodeFlags_DefaultOpen)) {
+-                ImGui::TextDisabled("Click an identity for details. Orange = decoded BSSID; gray = provisional RF cluster. Ch = monitored; AP ch = advertised.");
+-                ImGui::TextDisabled("Identity details survive restart. RF history retains the latest ~1000 accepted readings per entry.");
+-                const auto wifi_storage_error = scanner.wifi_storage_error();
+-                if (!wifi_storage_error.empty()) ImGui::TextColored(ImVec4(1,.5f,.3f,1), "%s", wifi_storage_error.c_str());
+-                draw_wifi_master_table(scanner.wifi_master_snapshot(), ImGui::GetContentRegionAvail().y);
+-            }
+-        }
+-
+-        if (show_lora_packets) {
+-            ImGui::Spacing();
+-            if (ImGui::CollapsingHeader("LoRa PHY packets (Sub-GHz IN865 channels)",
+-                                         ImGuiTreeNodeFlags_DefaultOpen)) {
+-                ImGui::TextDisabled(
+-                    "Each row is an SF/BW hypothesis, not a unique packet or identity. Hover the outcome for details. "
+-                    "CRC validates bytes under the named decoder; real-radio interoperability remains unverified.");
+-                float lora_packets_height = ImGui::GetContentRegionAvail().y * 0.5f;
+-                draw_lora_packet_table(scanner.lora_packets(), lora_packets_height);
+-            }
+-
+-            ImGui::Spacing();
+-            if (ImGui::CollapsingHeader("LoRa Master Emitters (persistent across restarts)",
+-                                         ImGuiTreeNodeFlags_DefaultOpen)) {
+-                ImGui::TextDisabled(
+-                    "Every accepted fingerprint reading ever recorded for a device - kept forever "
+-                    "until manually deleted. Matched on IRR/DC/IQ-imbalance only, not CFO (see docs) "
+-                    "- a placeholder comparison, not the final model.");
+-                draw_lora_master_table(scanner.lora_master_snapshot(), ImGui::GetContentRegionAvail().y);
+-            }
+-        }
+-
++            bool enabled=scanner.wifi_cyclo_stats().enabled;
++            if(ImGui::Checkbox("Enable optional DSP analysis",&enabled))scanner.set_wifi_cyclo_enabled(enabled);
++            gui::note("Experimental; sampled independent windows, not full-channel coverage. Named identity remains unvalidated.",true);
++            cyclo::draw_shadow_panel(scanner.wifi_cyclo_snapshot(),scanner.wifi_cyclo_stats(),band==BAND_WIFI_2G4?2:5);
++#else
++            gui::note("Experimental cyclostationary analysis is not compiled in this build.");
++#endif
++        };
++        auto draw_wifi = [&](const std::string& band) {
++            ImGui::PushID(band.c_str());
++            if(band!=active_band) {
++                gui::note(("Viewing retained "+gui::band_label(band)+" observations; the receiver is monitoring "+gui::band_label(active_band)+".").c_str(),true);
++                if(ImGui::Button("Monitor this band"))monitor_band(band);
++            }
++            if(ImGui::Button("Security workspace")){ui.page=gui::Page::Security;ui.security_first=true;}
++            ImGui::SameLine();gui::note("Security uses the complete run, not this filtered view.");
++            if(ImGui::BeginTabBar("Wi-Fi views")) {
++                if(ImGui::BeginTabItem("RF observations")){draw_rf(band);ImGui::EndTabItem();}
++                if(ImGui::BeginTabItem("Packets")){
++                    std::vector<WifiPacketRow> viewed;
++                    for(const auto& row:wifi_rows)if((band==BAND_WIFI_2G4 && row.freq_mhz>=2400 && row.freq_mhz<2500)||
++                        (band==BAND_WIFI_5G && row.freq_mhz>=5000 && row.freq_mhz<6000))viewed.push_back(row);
++                    gui::note("Search retained rows only. Maximum 1,000 rows across the packet tail; not exhaustive RF coverage.");
++                    draw_wifi_packet_table(viewed,std::max(180.f,ImGui::GetContentRegionAvail().y-110));ImGui::EndTabItem();
++                }
++                if(ImGui::BeginTabItem("Identities & RF clusters")){
++                    gui::note("Persistent identities across bands. BSSIDs are claimed interfaces; clusters are provisional. No physical-device count.");
++                    auto error=scanner.wifi_storage_error();if(!error.empty())gui::note(error.c_str(),true);
++                    draw_wifi_master_table(wifi_identities,std::max(180.f,ImGui::GetContentRegionAvail().y-100),true);ImGui::EndTabItem();
++                }
++                if(ImGui::BeginTabItem("Experimental link analysis")){draw_cyclo(band);ImGui::EndTabItem();}
++                if(ImGui::BeginTabItem("Coverage & limits")){gui::draw_capabilities(drones_available,cyclo_available);ImGui::EndTabItem();}
++                ImGui::EndTabBar();
++            }ImGui::PopID();
++        };
++        auto draw_lora = [&] {
++            if(active_band!=BAND_SUB_GHZ){gui::note("Viewing retained LoRa data; receiver is monitoring another band.",true);
++                if(ImGui::Button("Monitor LoRa band"))monitor_band(BAND_SUB_GHZ);}
++            if(scanner.lora_laboratory_mode())gui::note("Nonstandard laboratory mode is active.",true);
++            gui::note("LoRaWAN is structural parsing only. Attack rules, MIC verification and authenticated identity are unavailable.");
++            if(ImGui::BeginTabBar("LoRa views")) {
++                if(ImGui::BeginTabItem("RF observations")){draw_rf(BAND_SUB_GHZ);ImGui::EndTabItem();}
++                if(ImGui::BeginTabItem("PHY packets")){
++                    gui::note("SF/BW/polarity hypothesis rows; not unique packets. Recorded interoperability evidence covers tested setups only.");
++                    draw_lora_packet_table(lora_rows,std::max(180.f,ImGui::GetContentRegionAvail().y-150));ImGui::EndTabItem();}
++                if(ImGui::BeginTabItem("Master emitters")){
++                    gui::note("Heuristic RF clusters matched on IRR/DC/IQ imbalance, not CFO. History retains about 1,000 readings, with compaction slack to 1,100.");
++                    draw_lora_master_table(lora_identities,std::max(180.f,ImGui::GetContentRegionAvail().y-40));ImGui::EndTabItem();}
++                if(ImGui::BeginTabItem("Capture evidence")){draw_lora_security_panel(*scanner.lora_security_snapshot());ImGui::EndTabItem();}
++                if(ImGui::BeginTabItem("Coverage & limits")){gui::draw_capabilities(drones_available,cyclo_available);ImGui::EndTabItem();}
++                ImGui::EndTabBar();
++            }
++            if(ImGui::Button("Save / offline review"))ui.page=gui::Page::Captures;
++        };
++        auto draw_captures = [&] {
++            gui::note("LIVE save and OFFLINE results are separate. Source files remain read-only during review.");
++            if (ImGui::CollapsingHeader("Save a LoRa IQ capture")) {
++                static char save_directory[1024] = PROJECT_ROOT_DIR "/data/lora_captures";
++                ImGui::InputText("Save under", save_directory, sizeof(save_directory));
++                ImGui::BeginDisabled(active_band != BAND_SUB_GHZ || !status.connected || scanner.lora_capture_pending() || !save_directory[0]);
++                if (ImGui::Button("Save next completed capture")) scanner.request_lora_capture_save(save_directory);
++                ImGui::EndDisabled();
++                ImGui::TextWrapped("One capture per click, including recordings with no detections. IQ and settings are saved together. Requires a connected receiver.");
++                auto message = scanner.lora_capture_message();
++                if (!message.empty()) ImGui::TextWrapped("%s", message.c_str());
++            }
++
++            if(active_band!=BAND_SUB_GHZ)gui::note("Save next LoRa capture requires LoRa acquisition. Change it explicitly in Monitoring setup.");
++            draw_lora_replay_panel();
+ #ifdef RFMON_ENABLE_DJI_DRONEID
+-        ImGui::EndTabItem();
+-        }
+-        if (ImGui::BeginTabItem("Drones")) {
+-            ImGui::BeginChild("Drone workspace", ImVec2(0,0), false, ImGuiWindowFlags_HorizontalScrollbar);
+-            drone::draw_panel(drones, active_band, status.connected);
+-            ImGui::EndChild();
+-            ImGui::EndTabItem();
+-        }
+-        ImGui::EndTabBar();
+-        }
+-#endif
+-        ImGui::End();
++            ImGui::SeparatorText("Offline DJI interval review");
++            gui::note("Use the existing bounded DJI decoder: raw cf32, explicit rate/centre/offset. No Wi-Fi Remote ID IQ replay.");
++            if(ImGui::Button("Open DJI offline review")){ui.page=gui::Page::Drones;ui.drones_offline=true;}
++#endif
++            if(gui::section("Unsupported investigation workflows"))gui::note("Wi-Fi IQ/event replay adapters, a disk capture catalogue and evidence-bundle export are not implemented in this workspace.");
++        };
++        gui::Context context;
++        context.radio=scanner.device_type()==SdrDeviceType::B210?"USRP B210":"USRP X310";
++        context.band=active_band;context.step=status.active_step_label;context.error=status.error;
++        if(status.wifi_fixed_channel)context.step+=" | fixed channel "+std::to_string(*status.wifi_fixed_channel);
++        if(status.wifi_fixed_channel_invalid)context.error+=" Requested fixed channel is invalid for the active band; sweeping.";
++        if(security_queue.events_dropped||security_queue.captures_dropped)context.error+=" Security queue loss reported.";
++        const auto identity_error=scanner.wifi_storage_error();if(!identity_error.empty())context.error+=" Wi-Fi identity storage: "+identity_error;
++        const auto lora_health=scanner.lora_security_snapshot();if(!lora_health->recording_error.empty())context.error+=" LoRa recording: "+lora_health->recording_error;
++        context.started=scanner_started;context.connected=status.connected;context.stalled=status.rx_stalled;
++        context.overflow=status.last_overflow;context.cycles=status.cycle_count;context.incidents=security->incidents_open;
++        context.recording=wifi_security_recording;context.run=run;
++        context.recording_pending=scanner_started && record_wifi_security!=!wifi_security_recording.empty();
++        context.laboratory=scanner.lora_laboratory_mode();
++        if(!security->storage_error.empty())context.error+=" Recording: "+security->storage_error;
++        if(!security->persist_error.empty())context.error+=" Persistence: "+security->persist_error;
++        auto draw_overview = [&] {
++            gui::Overview data;
++            data.captures=security->captures_ingested;data.groups=rf_rows[active_band].size();
++            data.queue_depth=security_queue.depth;data.queue_peak=security_queue.high_water;
++            data.queue_loss=security->queue_events_dropped||security->queue_captures_dropped;
++            data.lane_enabled=status.wifi_lane_enabled;data.lane_wait=status.wifi_lane_wait_s;data.lane_peak=status.wifi_lane_high_water;
++#ifdef RFMON_ENABLE_DJI_DRONEID
++            data.dji_enabled=drones.live.running();data.rid_enabled=drones.remote_id.enabled();
++#endif
++            gui::draw_overview(ui,context,data,drones_available,[&]{
++                if(active_band==BAND_SUB_GHZ && scanner.lora_lock_freq())gui::note("Frequency lock active: wideband map is retained; wideband scan is skipped.",true);
++                for(const auto& range:track_ranges_for_band(active_band))draw_frequency_track(range,rf_rows[active_band]);
++            });
++        };
++        gui::draw_workspace(ui,context,drones_available,[&](gui::Page page){
++            if(ui.setup_open || page==gui::Page::Settings || ui.legacy)draw_setup();
++            if(ui.legacy){
++                if(ImGui::BeginTabBar("Legacy monitoring views")){
++                    if(ImGui::BeginTabItem("Monitoring")){if(active_band==BAND_SUB_GHZ)draw_lora();else draw_wifi(active_band);ImGui::EndTabItem();}
++                    if(ImGui::BeginTabItem("Security")){draw_security();ImGui::EndTabItem();}
++                    if(ImGui::BeginTabItem("Captures")){draw_captures();ImGui::EndTabItem();}
++#ifdef RFMON_ENABLE_DJI_DRONEID
++                    if(ImGui::BeginTabItem("Drones")){drone::draw_panel(drones,gui::band_label(active_band),status.connected);ImGui::EndTabItem();}
++#endif
++                    if(ImGui::BeginTabItem("Display")){if(ImGui::Button("Return to modern workspace"))ui.legacy=false;ImGui::EndTabItem();}
++                    ImGui::EndTabBar();
++                }return;
++            }
++            switch(page){
++            case gui::Page::Overview:draw_overview();break;
++            case gui::Page::Wifi24:draw_wifi(BAND_WIFI_2G4);break;
++            case gui::Page::Wifi5:draw_wifi(BAND_WIFI_5G);break;
++            case gui::Page::Lora:draw_lora();break;
++            case gui::Page::Security:draw_security();break;
++            case gui::Page::Captures:draw_captures();break;
++            case gui::Page::Drones:
++#ifdef RFMON_ENABLE_DJI_DRONEID
++                drone::draw_panel(drones,gui::band_label(active_band),status.connected,ui.drones_offline?"Offline IQ review":nullptr);ui.drones_offline=false;
++#endif
++                break;
++            case gui::Page::Settings:
++                if(gui::section("Display preferences",true)){
++                    bool changed=ImGui::SliderFloat("UI scale",&ui.scale,1,2,"%.2fx");
++                    changed=ImGui::Checkbox("Compact table density",&ui.compact)||changed;
++                    if(changed)theme_dirty=true;
++                    ImGui::Checkbox("Legacy presentation",&ui.legacy);
++                    gui::note("Display preferences are session-only and never start acquisition or analysis.");
++                }
++                if(gui::section("Capabilities",true))gui::draw_capabilities(drones_available,cyclo_available);break;
++            }
++        });
+         ImGui::Render();
+ 
+         int display_w, display_h;
+--- a/src/wifi_gui.cpp
++++ b/src/wifi_gui.cpp
+@@ -2,53 +2,67 @@
+ #include "imgui.h"
+ #include <algorithm>
+ #include <ctime>
++#include <map>
++#include <sstream>
++#include <iomanip>
+ 
+ namespace rfmon {
+ void draw_wifi_packet_table(const std::vector<WifiPacketRow>& packets, float height) {
+     if (packets.empty()) {
+-        ImGui::TextDisabled("No Wi-Fi packets detected yet.");
+-        return;
+-    }
+-
+-    static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
++        ImGui::TextDisabled("No current Wi-Fi packet rows; any paused or selected snapshot is retained below.");
++    }
++
++    struct View { ImGuiTextFilter filter; bool valid_only=false, follow=true; std::vector<WifiPacketRow> paused; std::optional<WifiPacketRow> selected; };
++    static std::map<ImGuiID, View> views;
++    auto& view=views[ImGui::GetID("packet view")];
++    if(ImGui::IsKeyChordPressed(ImGuiMod_Ctrl|ImGuiKey_F))ImGui::SetKeyboardFocusHere();
++    view.filter.Draw("Search retained rows",std::min(300.f,ImGui::GetContentRegionAvail().x));
++    ImGui::Checkbox("FCS valid only",&view.valid_only);ImGui::SameLine();
++    if(ImGui::Checkbox("Follow live",&view.follow)) {if(!view.follow)view.paused=packets;else view.paused.clear();}
++    ImGui::SameLine();if(ImGui::SmallButton("Clear filters")){view.filter.Clear();view.valid_only=false;}
++    if(!view.follow){ImGui::TextDisabled("Paused display snapshot; acquisition continues.");}
++    ImGui::TextDisabled("Right-click table headers for all columns. Selected details are a frozen row snapshot, not an exact security-frame join.");
++    if(view.selected && ImGui::IsKeyPressed(ImGuiKey_Escape))view.selected.reset();
++    const auto& displayed=view.follow?packets:view.paused;
++    static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable |
+                                    ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
+                                    ImGuiTableFlags_ScrollX;
+-    ImVec2 outer_size(0.0f, height);
++    ImVec2 outer_size(0.0f, view.selected?std::min(height,280.f):height);
+     if (!ImGui::BeginTable("wifi_packets_identity_v4", 23, flags, outer_size)) return;
+ 
+     ImGui::TableSetupScrollFreeze(0, 1);
+     ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+-    ImGui::TableSetupColumn("Freq (MHz)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
++    ImGui::TableSetupColumn("Freq (MHz)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 100.0f);
+     ImGui::TableSetupColumn("Ch", ImGuiTableColumnFlags_WidthFixed, 40.0f);
+-    ImGui::TableSetupColumn("Identity key", ImGuiTableColumnFlags_WidthFixed, 155.0f);
++    ImGui::TableSetupColumn("Identity key", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 155.0f);
+     ImGui::TableSetupColumn("Network / SSID", ImGuiTableColumnFlags_WidthFixed, 170.0f);
+-    ImGui::TableSetupColumn("AP ch", ImGuiTableColumnFlags_WidthFixed, 55.0f);
+-    ImGui::TableSetupColumn("Advertised security", ImGuiTableColumnFlags_WidthFixed, 230.0f);
++    ImGui::TableSetupColumn("AP ch", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 55.0f);
++    ImGui::TableSetupColumn("Advertised security", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 230.0f);
+     ImGui::TableSetupColumn("Decode status", ImGuiTableColumnFlags_WidthFixed, 270.0f);
+     // MAC type/subtype of any FCS-valid MPDU (both receive chains);
+     // "short" marks a sub-beacon-length DSSS burst decoded for the
+     // security monitor only (never used for identity/fingerprints).
+     ImGui::TableSetupColumn("Frame type", ImGuiTableColumnFlags_WidthFixed, 200.0f);
+     ImGui::TableSetupColumn("OFDM Mbps", ImGuiTableColumnFlags_WidthFixed, 95.0f);
+-    ImGui::TableSetupColumn("PSDU bytes", ImGuiTableColumnFlags_WidthFixed, 95.0f);
++    ImGui::TableSetupColumn("PSDU bytes", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 95.0f);
+     ImGui::TableSetupColumn("Modulation", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+-    ImGui::TableSetupColumn("Power (dB)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+-    ImGui::TableSetupColumn("BW (MHz)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+-    ImGui::TableSetupColumn("Duration (us)", ImGuiTableColumnFlags_WidthFixed, 110.0f);
+-    ImGui::TableSetupColumn("Confidence", ImGuiTableColumnFlags_WidthFixed, 90.0f);
++    ImGui::TableSetupColumn("Power (dB)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 90.0f);
++    ImGui::TableSetupColumn("BW (MHz)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 90.0f);
++    ImGui::TableSetupColumn("Duration (us)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 110.0f);
++    ImGui::TableSetupColumn("Classifier score", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 90.0f);
+     // RF fingerprint (see wifi_fingerprint.hpp) - only populated once a
+     // burst clears the bandwidth gate and (for DSSS) is beacon-shaped;
+     // "--" means not attempted, the gate reason means attempted but
+     // rejected. IRR/IQ eps/IQ phi are additionally always blank on a
+     // DSSS row - see WifiPacketRow's own comment on why that's
+     // structural, not a gate outcome.
+-    ImGui::TableSetupColumn("CFO (ppm)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+-    ImGui::TableSetupColumn("IRR (dB)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+-    ImGui::TableSetupColumn("IQ eps", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+-    ImGui::TableSetupColumn("IQ phi (deg)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+-    ImGui::TableSetupColumn("DC (dBc)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+-    ImGui::TableSetupColumn("EVM (%)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+-    ImGui::TableSetupColumn("Sync corr", ImGuiTableColumnFlags_WidthFixed, 90.0f);
++    ImGui::TableSetupColumn("CFO (ppm)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 90.0f);
++    ImGui::TableSetupColumn("IRR (dB)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0f);
++    ImGui::TableSetupColumn("IQ eps", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0f);
++    ImGui::TableSetupColumn("IQ phi (deg)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 100.0f);
++    ImGui::TableSetupColumn("DC (dBc)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0f);
++    ImGui::TableSetupColumn("EVM (%)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0f);
++    ImGui::TableSetupColumn("Sync corr", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 90.0f);
+     ImGui::TableHeadersRow();
+ 
+     const ImVec4 dsss_color(0.36f, 0.68f, 0.93f, 1.0f);
+@@ -62,12 +76,23 @@
+         else ImGui::TextColored(dim, "--");
+     };
+ 
+-    // Most recent first - the log itself is appended chronologically.
+-    for (size_t i = packets.size(); i-- > 0;) {
+-        const auto& p = packets[i];
++    // Filter the bounded tail once, then virtualise fixed-height visible rows.
++    std::vector<size_t> visible;
++    for(size_t i=displayed.size();i-- >0;) {
++        const auto& p=displayed[i];
++        const std::string searchable=p.time+" "+p.modulation+" "+p.frame_type+" "+p.master_key+" "+p.decode_status+" "+
++            (p.identity?p.identity->ssid+" "+p.identity->security:std::string())+" "+std::to_string(p.channel);
++        if(view.filter.PassFilter(searchable.c_str()) && (!view.valid_only||p.fcs_valid))visible.push_back(i);
++    }
++    ImGuiListClipper clipper;
++    clipper.Begin(static_cast<int>(visible.size()),ImGui::GetTextLineHeight()+2*ImGui::GetStyle().CellPadding.y);
++    while(clipper.Step())for(int row=clipper.DisplayStart;row<clipper.DisplayEnd;++row) {
++        const size_t i=visible[row];const auto& p=displayed[i];
+         ImGui::TableNextRow();
+         ImGui::TableNextColumn();
+-        ImGui::TextUnformatted(p.time.c_str());
++        ImGui::PushID(static_cast<int>(i));
++        if(ImGui::Selectable(p.time.c_str(),false))view.selected=p;
++        ImGui::PopID();
+         ImGui::TableNextColumn();
+         ImGui::Text("%.4f", p.freq_mhz);
+         ImGui::TableNextColumn();
+@@ -136,14 +161,40 @@
+         }
+     }
+     ImGui::EndTable();
++    if(view.selected) {
++        const auto& p=*view.selected;
++        ImGui::SeparatorText("Selected packet snapshot");
++        ImGui::TextWrapped("%s | Channel %d | %.9g MHz | %s | FCS: %s",p.time.c_str(),p.channel,p.freq_mhz,p.modulation.c_str(),p.fcs_valid?"passed":"not passed / unavailable");
++        ImGui::TextWrapped("Decode: %s | Frame: %s | Identity key: %s",p.decode_status.c_str(),p.frame_type.c_str(),p.master_key.c_str());
++        if(p.fp_gate_reason)ImGui::TextWrapped("Fingerprint rejected: %s",p.fp_gate_reason->c_str());
++        if(ImGui::Button("Close packet details"))view.selected.reset();
++        // Do not access p after resetting its owning optional.
++        else if(ImGui::CollapsingHeader("Complete packet measurements",ImGuiTreeNodeFlags_DefaultOpen)) {
++            ImGui::Text("Relative power %.17g dB | Bandwidth %.17g kHz | Duration %.17g us",p.power_db,p.bandwidth_khz,p.duration_us);
++            ImGui::Text("Classifier score (not calibrated probability): %.17g",p.confidence);
++            if(p.ofdm_rate_mbps)ImGui::Text("OFDM rate: %d Mbps",p.ofdm_rate_mbps);else ImGui::TextDisabled("OFDM rate: unavailable / not applicable");
++            if(p.psdu_length)ImGui::Text("PSDU: %zu bytes",p.psdu_length);else ImGui::TextDisabled("PSDU length: unavailable");
++            auto value=[](const char* label,const std::optional<double>& v){if(v)ImGui::Text("%s: %.17g",label,*v);else ImGui::TextDisabled("%s: unavailable",label);};
++            value("CFO ppm",p.fp_cfo_ppm);value("DC dBc",p.fp_dc_dbc);value("DC angle degrees",p.fp_dc_ang_deg);value("SNR dB",p.fp_snr_db);value("EVM percent",p.fp_evm_pct);value("Sync correlation",p.fp_sync_corr);
++            if(p.modulation=="DSSS")ImGui::TextDisabled("IRR / IQ imbalance: n/a for DSSS");
++            else {value("IRR dB",p.fp_irr_db);value("IQ epsilon",p.fp_iq_eps);value("IQ phase degrees",p.fp_iq_phi_deg);}
++            ImGui::Text("Security-only decode: %s",p.security_decode_only?"yes":"no");
++            if(p.identity) {
++                ImGui::TextWrapped("SSID: %s | Claimed BSSID: %s | Advertised security: %s",wifi::display_text(p.identity->ssid).c_str(),p.identity->bssid.c_str(),p.identity->security.c_str());
++                if(p.identity->channel)ImGui::Text("Advertised AP channel: %d",p.identity->channel);else ImGui::TextDisabled("Advertised AP channel: unavailable");
++            }
++            ImGui::TextDisabled("Full raw MPDU and exact capture key are not retained in this row. Inspect Security for its own retained frame evidence.");
++        }
++    }
++
+ }
+ 
+ // Persistent identities and provisional clusters. Select a row for provenance,
+ // advertised capabilities and the latest accepted RF reading.
+-void draw_wifi_master_table(const std::vector<wifi_master::WifiMasterRow>& rows, float height) {
++void draw_wifi_master_table(const std::vector<wifi_master::WifiMasterRow>& rows, float height, bool inline_inspector) {
+     if (rows.empty()) { ImGui::TextDisabled("No Wi-Fi identities or fingerprints recorded yet."); return; }
+     static std::string selected;
+-    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
++    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable |
+                        ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX;
+     bool open_details = false;
+     auto text = [](const std::string& value, const char* empty = "Not advertised") {
+@@ -152,16 +203,18 @@
+     };
+     auto date = [](int64_t ts) {
+         std::time_t time = std::time_t(ts); std::tm tm{}; localtime_r(&time, &tm);
+-        char buf[32]; std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
++        char buf[32]; std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S %Z", &tm);
+         return std::string(buf);
+     };
+-    if (ImGui::BeginTable("wifi_master_identity_v2", 13, flags, ImVec2(0, height))) {
++    const bool wide_inspector=inline_inspector && !selected.empty() && ImGui::GetContentRegionAvail().x>=1100;
++    if(wide_inspector)ImGui::BeginChild("Identity list",ImVec2(ImGui::GetContentRegionAvail().x-450,height),ImGuiChildFlags_None,ImGuiWindowFlags_HorizontalScrollbar);
++    if (ImGui::BeginTable("wifi_master_identity_v2", 13, flags, ImVec2(0, wide_inspector?std::max(120.f,height-20):inline_inspector && !selected.empty()?std::min(height,260.f):height))) {
+         ImGui::TableSetupScrollFreeze(2, 1);
+         const char* columns[] = {"Identity (click)", "Network / SSID", "Vendor assignment", "Advertised security",
+             "AP channel", "WPS model", "PHY capabilities", "First seen", "Last seen", "Identity observations",
+             "RF readings retained", "Monitored MHz", "Identity source"};
+         const float widths[] = {155,180,190,245,85,150,180,155,155,140,135,110,140};
+-        for (int i=0; i<13; ++i) ImGui::TableSetupColumn(columns[i], ImGuiTableColumnFlags_WidthFixed, widths[i]);
++        for (int i=0; i<13; ++i) ImGui::TableSetupColumn(columns[i], ImGuiTableColumnFlags_WidthFixed | ((i>=5)?ImGuiTableColumnFlags_DefaultHide:0), widths[i]);
+         ImGui::TableHeadersRow();
+         for (const auto& row : rows) {
+             ImGui::TableNextRow(); ImGui::TableNextColumn();
+@@ -193,16 +246,18 @@
+         }
+         ImGui::EndTable();
+     }
+-    if (open_details) ImGui::OpenPopup("Wi-Fi identity details");
+-    ImGui::SetNextWindowSize(ImVec2(720, 620), ImGuiCond_Appearing);
+-    if (ImGui::BeginPopup("Wi-Fi identity details")) {
++    if(wide_inspector){ImGui::EndChild();ImGui::SameLine();ImGui::BeginChild("Identity inspector",ImVec2(0,height),ImGuiChildFlags_Borders);}
++    if (open_details && !inline_inspector) ImGui::OpenPopup("Wi-Fi identity details");
++    if(!inline_inspector)ImGui::SetNextWindowSize(ImVec2(720, 620), ImGuiCond_Appearing);
++    if (inline_inspector ? !selected.empty() : ImGui::BeginPopup("Wi-Fi identity details")) {
++        if(inline_inspector)ImGui::SeparatorText("Selected identity inspector");
+         auto it = std::find_if(rows.begin(), rows.end(), [&](const auto& r) { return r.device_key == selected; });
+         if (it != rows.end()) {
+             const auto& row = *it;
++            ImGui::PushTextWrapPos(0);
+             ImGui::Text("%s", row.device_key.c_str());
+             ImGui::TextDisabled("%s", row.key_is_mac ? "Decoded network identity; multiple BSSIDs can share one radio." : "Provisional RF cluster; not a verified physical device.");
+             ImGui::Separator();
+-            ImGui::PushTextWrapPos(0);
+             ImGui::Text("Vendor assignment: %s", row.vendor.empty() ? "Unknown" : wifi::display_text(row.vendor).c_str());
+             ImGui::TextWrapped("Lookup source: %s", row.vendor_source.empty() ? "No decoded MAC" : row.vendor_source.c_str());
+             if (row.identity) {
+@@ -213,6 +268,8 @@
+                 ImGui::Text("Monitored channel center: %.3f MHz", row.monitored_channel_hz / 1e6);
+                 if (b.channel) ImGui::Text("Advertised channel: %d (%s)", b.channel, b.channel_source.c_str());
+                 else ImGui::TextDisabled("Advertised channel: unknown");
++                if (!b.ies_complete) ImGui::TextColored(ImVec4(1,.65f,.2f,1), "Some information elements are malformed or incomplete.");
++                if(ImGui::CollapsingHeader("Advertised security and PHY capabilities",ImGuiTreeNodeFlags_DefaultOpen)) {
+                 ImGui::Text("Beacon interval: %u TU (%.3f ms)", unsigned(b.beacon_interval_tu), b.beacon_interval_tu * 1.024);
+                 ImGui::Text("Capability: 0x%04x | ESS: %s | IBSS: %s | Privacy: %s", unsigned(b.capability),
+                             b.capability & 1 ? "yes" : "no", b.capability & 2 ? "yes" : "no", b.capability & 0x10 ? "set" : "clear");
+@@ -220,8 +277,9 @@
+                 ImGui::TextWrapped("Cipher suites: %s", b.ciphers.empty() ? "Not advertised" : b.ciphers.c_str());
+                 ImGui::Text("Protected management frames: %s", b.pmf.empty() ? "Not advertised" : b.pmf.c_str());
+                 ImGui::TextWrapped("PHY capability IEs: %s", b.standards.empty() ? "Not advertised" : b.standards.c_str());
+-                if (!b.ies_complete) ImGui::TextColored(ImVec4(1,.65f,.2f,1), "Some information elements are malformed or incomplete.");
++                }
+                 ImGui::Separator();
++                if(ImGui::CollapsingHeader("WPS device-advertised hints")) {
+                 ImGui::Text("WPS IE in latest frame: %s", b.wps_present ? "Present" : "Not advertised");
+                 if (row.wps_seen_ts) ImGui::TextDisabled("WPS hints last observed: %s (%s)", date(row.wps_seen_ts).c_str(), row.wps_source.c_str());
+                 auto hint = [&](const char* label, const std::string& s) {
+@@ -230,12 +288,13 @@
+                 hint("WPS device name", b.wps_device_name); hint("WPS manufacturer", b.wps_manufacturer);
+                 hint("WPS model", b.wps_model_name); hint("WPS model number", b.wps_model_number);
+                 ImGui::TextDisabled("WPS strings are device-advertised hints, not verified model identification.");
++                }
+             } else ImGui::TextWrapped("No beacon metadata saved. Legacy MAC records acquire details on the next successful decode.");
+             ImGui::Separator();
+             ImGui::Text("First seen: %s | Last seen: %s", date(row.first_seen_ts).c_str(), date(row.last_seen_ts).c_str());
+             ImGui::Text("Identity observations: %llu | Retained RF readings: %d", static_cast<unsigned long long>(row.identity_count), row.reading_count);
+             if (!row.reading_count) ImGui::TextDisabled("No accepted RF fingerprint. The decoded identity is still saved.");
+-            else {
++            else if(ImGui::CollapsingHeader("Latest accepted RF fingerprint")) {
+                 const auto& f = row.latest;
+                 ImGui::Text("Latest accepted RF reading: %s (%s)", date(f.ts).c_str(), f.phy.c_str());
+                 ImGui::Text("CFO: %.2f ppm | DC: %.2f dBc | DC angle: %.2f deg", f.cfo_ppm, f.dc_dbc, f.dc_ang_deg);
+@@ -245,9 +304,11 @@
+             }
+             ImGui::PopTextWrapPos();
+         }
+-        if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+-        ImGui::EndPopup();
+-    }
++        else ImGui::TextDisabled("Selected identity no longer retained.");
++        if (ImGui::Button("Close")) {if(inline_inspector)selected.clear();else ImGui::CloseCurrentPopup();}
++        if(!inline_inspector)ImGui::EndPopup();
++    }
++    if(wide_inspector)ImGui::EndChild();
+ }
+ 
+ 
+--- a/src/wifi_gui.hpp
++++ b/src/wifi_gui.hpp
+@@ -2,5 +2,5 @@
+ #include "scanner.hpp"
+ namespace rfmon {
+ void draw_wifi_packet_table(const std::vector<WifiPacketRow>& packets, float height);
+-void draw_wifi_master_table(const std::vector<wifi_master::WifiMasterRow>& rows, float height);
++void draw_wifi_master_table(const std::vector<wifi_master::WifiMasterRow>& rows, float height, bool inline_inspector = false);
+ }
+--- a/src/lora_gui.cpp
++++ b/src/lora_gui.cpp
+@@ -4,6 +4,9 @@
+ #include "imgui.h"
+ #include <future>
+ #include <chrono>
++#include <map>
++#include <sstream>
++#include <iomanip>
+ 
+ namespace rfmon {
+ void draw_lora_security_panel(const lora_security::Snapshot& s) {
+@@ -43,6 +46,14 @@
+         return;
+     }
+ 
++    struct View { ImGuiTextFilter filter; bool crc_only=false; std::optional<LoraPacketRow> selected; };
++    static std::map<ImGuiID,View> views;
++    auto& view=views[ImGui::GetID("LoRa retained view")];
++    if(ImGui::IsKeyChordPressed(ImGuiMod_Ctrl|ImGuiKey_F))ImGui::SetKeyboardFocusHere();
++    view.filter.Draw("Search retained hypotheses",280);
++    ImGui::Checkbox("CRC valid only",&view.crc_only);ImGui::SameLine();
++    if(ImGui::SmallButton("Clear filters")){view.filter.Clear();view.crc_only=false;}
++    ImGui::TextDisabled("Right-click headers for every column. Select a time for a complete frozen hypothesis inspector.");
+     size_t headers=0, verified_count=0, partial=0, failed=0;
+     for (const auto& row : packets) {
+         headers += row.header_valid;
+@@ -53,52 +64,52 @@
+     ImGui::Text("Retained observations: %zu | Valid headers: %zu | CRC valid: %zu | Partial: %zu | CRC failed: %zu",
+                 packets.size(), headers, verified_count, partial, failed);
+     ImGui::TextDisabled("SF/BW/polarity hypotheses; counts are not unique transmitters or delivery rates.");
+-    static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
++    static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable |
+                                    ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
+                                    ImGuiTableFlags_ScrollX;
+-    ImVec2 outer_size(0.0f, height);
++    ImVec2 outer_size(0.0f,view.selected?std::min(height,240.f):height);
+     if (!ImGui::BeginTable("lora_packets", 31, flags, outer_size)) return;
+ 
+     ImGui::TableSetupScrollFreeze(0, 1);
+     ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+     ImGui::TableSetupColumn("Decode outcome", ImGuiTableColumnFlags_WidthFixed, 170.0f);
+-    ImGui::TableSetupColumn("Decoder", ImGuiTableColumnFlags_WidthFixed, 235.0f);
++    ImGui::TableSetupColumn("Decoder", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 235.0f);
+     ImGui::TableSetupColumn("Header", ImGuiTableColumnFlags_WidthFixed, 85.0f);
+     ImGui::TableSetupColumn("Freq (MHz)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+     ImGui::TableSetupColumn("SF", ImGuiTableColumnFlags_WidthFixed, 40.0f);
+     ImGui::TableSetupColumn("BW guess (kHz)", ImGuiTableColumnFlags_WidthFixed, 110.0f);
+     ImGui::TableSetupColumn("CR", ImGuiTableColumnFlags_WidthFixed, 40.0f);
+-    ImGui::TableSetupColumn("LDRO", ImGuiTableColumnFlags_WidthFixed, 55.0f);
+-    ImGui::TableSetupColumn("Sync observed", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+-    ImGui::TableSetupColumn("Header len", ImGuiTableColumnFlags_WidthFixed, 85.0f);
++    ImGui::TableSetupColumn("LDRO", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 55.0f);
++    ImGui::TableSetupColumn("Sync observed", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 100.0f);
++    ImGui::TableSetupColumn("Header len", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 85.0f);
+     ImGui::TableSetupColumn("Payload CRC", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+-    ImGui::TableSetupColumn("CFO (bins)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
++    ImGui::TableSetupColumn("CFO (bins)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 90.0f);
+     // --- RF fingerprint (see fingerprint.hpp) - Tier-1 "stable core"
+     // parameters, only populated on a "Detected" row (see
+     // run_lora_listen_step()). SNR doubles as the gate-reason column
+     // when extraction was rejected, since that's the most common gate.
+-    ImGui::TableSetupColumn("SNR (dB)", ImGuiTableColumnFlags_WidthFixed, 110.0f);
++    ImGui::TableSetupColumn("SNR (dB)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 110.0f);
+     // Fit-quality covariates (source spec §5/§1.6) - what the
+     // LORA_EVM_CEILING_PCT/LORA_SYNC_CORR_FLOOR gate uses to reject a
+     // wrong-hypothesis match that still had plenty of raw SNR behind
+     // it. Shown even on a gated row when they were actually computed.
+-    ImGui::TableSetupColumn("EVM (%)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+-    ImGui::TableSetupColumn("Sync corr", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+-    ImGui::TableSetupColumn("CFO (ppm)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+-    ImGui::TableSetupColumn("IRR (dB)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+-    ImGui::TableSetupColumn("IQ eps", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+-    ImGui::TableSetupColumn("IQ phi (deg)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+-    ImGui::TableSetupColumn("DC (dBc)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+-    ImGui::TableSetupColumn("DC ang (deg)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
++    ImGui::TableSetupColumn("EVM (%)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 90.0f);
++    ImGui::TableSetupColumn("Sync corr", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 90.0f);
++    ImGui::TableSetupColumn("CFO (ppm)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 90.0f);
++    ImGui::TableSetupColumn("IRR (dB)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0f);
++    ImGui::TableSetupColumn("IQ eps", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0f);
++    ImGui::TableSetupColumn("IQ phi (deg)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 100.0f);
++    ImGui::TableSetupColumn("DC (dBc)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0f);
++    ImGui::TableSetupColumn("DC ang (deg)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 100.0f);
+     ImGui::TableSetupColumn("Payload", ImGuiTableColumnFlags_WidthFixed, 360.0f);
+-    ImGui::TableSetupColumn("IQ polarity", ImGuiTableColumnFlags_WidthFixed, 95.0f);
+-    ImGui::TableSetupColumn("Preamble peak", ImGuiTableColumnFlags_WidthFixed, 105.0f);
+-    ImGui::TableSetupColumn("SFD peak", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+-    ImGui::TableSetupColumn("CFO estimate (Hz)", ImGuiTableColumnFlags_WidthFixed, 130.0f);
+-    ImGui::TableSetupColumn("Drift (Hz/symbol)", ImGuiTableColumnFlags_WidthFixed, 135.0f);
+-    ImGui::TableSetupColumn("Capture offset (s)", ImGuiTableColumnFlags_WidthFixed, 135.0f);
+-    ImGui::TableSetupColumn("FEC mismatches", ImGuiTableColumnFlags_WidthFixed, 120.0f);
+-    ImGui::TableSetupColumn("LoRaWAN structure", ImGuiTableColumnFlags_WidthFixed, 220.0f);
++    ImGui::TableSetupColumn("IQ polarity", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 95.0f);
++    ImGui::TableSetupColumn("Preamble peak", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 105.0f);
++    ImGui::TableSetupColumn("SFD peak", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 90.0f);
++    ImGui::TableSetupColumn("CFO estimate (Hz)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 130.0f);
++    ImGui::TableSetupColumn("Drift (Hz/symbol)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 135.0f);
++    ImGui::TableSetupColumn("Capture offset (s)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 135.0f);
++    ImGui::TableSetupColumn("FEC mismatches", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 120.0f);
++    ImGui::TableSetupColumn("LoRaWAN structure", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 220.0f);
+     ImGui::TableHeadersRow();
+ 
+     ImVec4 dim(0.55f, 0.55f, 0.58f, 1.0f);
+@@ -107,10 +118,14 @@
+ 
+     for (auto it = packets.rbegin(); it != packets.rend(); ++it) {
+         const auto& d = *it;
++        std::string search=d.time+" "+d.status+" "+d.decoder+" "+d.payload_hex+" "+std::to_string(d.sf)+" "+std::to_string(d.freq_mhz);
++        if(!view.filter.PassFilter(search.c_str())||(view.crc_only&&d.crc!=LoraPacketRow::Crc::Valid))continue;
+         bool verified = d.crc == LoraPacketRow::Crc::Valid;
+         ImGui::TableNextRow();
+         ImGui::TableNextColumn();
+-        ImGui::TextUnformatted(d.time.c_str());
++        ImGui::PushID(static_cast<int>(std::distance(packets.rbegin(),it)));
++        if(ImGui::Selectable(d.time.c_str(),false))view.selected=d;
++        ImGui::PopID();
+         ImGui::TableNextColumn();
+         ImGui::TextColored(verified ? good : d.crc == LoraPacketRow::Crc::Failed ? bad : dim, "%s", d.status.c_str());
+         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", d.detail.c_str());
+@@ -222,6 +237,30 @@
+         } else ImGui::TextDisabled("Unclassified");
+     }
+     ImGui::EndTable();
++    if(view.selected) {
++        const auto& d=*view.selected;
++        ImGui::SeparatorText("Selected LoRa hypothesis snapshot");
++        ImGui::TextWrapped("%s | %s | %s | CRC: %s",d.time.c_str(),d.status.c_str(),d.decoder.c_str(),lora_crc_label(d.crc));
++        ImGui::TextWrapped("%s",d.detail.c_str());
++        if(d.fp_gate_reason)ImGui::TextWrapped("RF fingerprint gate: %s",d.fp_gate_reason->c_str());
++        if(ImGui::Button("Close hypothesis details"))view.selected.reset();
++        else {
++            if(ImGui::CollapsingHeader("PHY, payload and decoder evidence",ImGuiTreeNodeFlags_DefaultOpen)) {
++                ImGui::Text("Frequency %.17g MHz | SF %d | BW %.17g kHz | CFO %d bins",d.freq_mhz,d.sf,d.bandwidth_khz,d.cfo_bins);
++                ImGui::Text("Header valid: %s | Payload complete: %s | LDRO ambiguous: %s | Analysis limited: %s",d.header_valid?"yes":"no",d.payload_complete?"yes":"no",d.ldro_ambiguous?"yes":"no",d.analysis_limited?"yes":"no");
++                auto field=[](const char* name,const auto& value){if(value){std::ostringstream out;out<<std::setprecision(17)<<*value;ImGui::TextWrapped("%s: %s",name,out.str().c_str());}else ImGui::TextDisabled("%s: unavailable",name);};
++                field("CR code",d.cr);field("Header length bytes",d.payload_len);field("CRC validity",d.crc_valid);field("LDRO",d.ldro);field("Sync observation",d.sync_word);field("Sync check skipped (lab)",d.sync_check_skipped);field("Inverted IQ",d.inverted_iq);
++                field("Preamble peak ratio",d.preamble_peak_ratio);field("SFD peak ratio",d.sfd_peak_ratio);field("CFO Hz",d.cfo_hz);field("Drift Hz/symbol",d.drift_hz_per_symbol);field("Capture offset s",d.capture_offset_s);field("FEC disagreements",d.fec_disagreements);
++                field("Decoder sample start",d.decoder_sample_start);field("Decoder sample end",d.decoder_sample_end);ImGui::Text("Start uncertainty: %zu samples",d.start_uncertainty_samples);
++                ImGui::TextWrapped("Payload hex: %s",d.payload_hex.c_str());field("Payload text",d.payload_repr);field("LoRaWAN candidate",d.lorawan_candidate);field("LoRaWAN detail (MIC unverified)",d.lorawan_detail);
++            }
++            if(ImGui::CollapsingHeader("Complete RF fingerprint measurements")) {
++                auto field=[](const char* name,const std::optional<double>& v){if(v)ImGui::Text("%s: %.17g",name,*v);else ImGui::TextDisabled("%s: unavailable",name);};
++                field("CFO ppm",d.fp_cfo_ppm);field("IRR dB",d.fp_irr_db);field("IQ epsilon",d.fp_iq_eps);field("IQ phase degrees",d.fp_iq_phi_deg);field("DC dBc",d.fp_dc_dbc);field("DC angle degrees",d.fp_dc_ang_deg);field("SNR dB",d.fp_snr_db);field("EVM percent",d.fp_evm_pct);field("Sync correlation",d.fp_sync_corr);
++            }
++        }
++    }
++
+ }
+ 
+ void draw_lora_replay_panel() {
+--- a/src/security_gui.cpp
++++ b/src/security_gui.cpp
+@@ -72,7 +72,7 @@
+                           "length or across restarts are counted as unknown, never as observed.");
+     ImGui::TextDisabled("Sampled = received. Analysed = actually examined for bursts: once a capture hits the "
+                         "burst cap, the rest of it is never looked at and does not count as observed.");
+-    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
++    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
+                        ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX;
+     if (!ImGui::BeginTable("wifi_security_coverage_v2", 17, flags, ImVec2(0, height - ImGui::GetTextLineHeightWithSpacing()))) return;
+     ImGui::TableSetupScrollFreeze(2, 1);
+@@ -230,7 +230,7 @@
+ 
+ void recent_tab(const SecuritySnapshot& s, float height) {
+     static bool mgmt_only = false, hide_control = true;
+-    static int selected = -1;
++    static std::optional<IngestKey> selected;
+     static ProcessedFrame selected_frame;
+     ImGui::Checkbox("Management frames only", &mgmt_only);
+     ImGui::SameLine();
+@@ -238,7 +238,7 @@
+     ImGui::SameLine();
+     ImGui::TextDisabled("| newest %zu shown, newest first; click a row for details", s.recent.size());
+     if (s.recent.empty()) { ImGui::TextDisabled("No FCS-valid frames accepted yet."); return; }
+-    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
++    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
+                        ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX;
+     bool open = false;
+     if (ImGui::BeginTable("wifi_security_recent", 13, flags, ImVec2(0, height - ImGui::GetFrameHeightWithSpacing()))) {
+@@ -258,9 +258,9 @@
+             ImGui::TableNextRow();
+             ImGui::TableNextColumn();
+             ImGui::PushID(int(i));
+-            if (ImGui::Selectable(time_label(p.event).c_str(), selected == int(i),
++            if (ImGui::Selectable(time_label(p.event).c_str(), selected && *selected == ingest_key(p.event),
+                                   ImGuiSelectableFlags_SpanAllColumns)) {
+-                selected = int(i);
++                selected = ingest_key(p.event);
+                 selected_frame = p;
+                 open = true;
+             }
+@@ -330,7 +330,7 @@
+         ImGui::EndPopup();
+     }
+     if (s.baselines.empty()) { ImGui::TextDisabled("No baselines yet: they start with the first contiguous capture."); return; }
+-    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
++    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
+                        ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX;
+     const BaselineMetric shown[] = {BaselineMetric::Frames, BaselineMetric::Deauth, BaselineMetric::Disassoc,
+                                     BaselineMetric::Auth, BaselineMetric::ProbeRequest, BaselineMetric::Beacon,
+@@ -386,7 +386,7 @@
+     ImGui::EndTable();
+ }
+ 
+-void incidents_tab(const SecuritySnapshot& s, float height) {
++void incidents_tab(const SecuritySnapshot& s, float height, bool inline_inspector) {
+     ImGui::TextDisabled("Incident store: coalesced, bounded, versioned records with evidence and coverage limits. "
+                         "An incident closes only after quiet ANALYSED air on its channel, never because of a scan gap.");
+     ImGui::Text("Open %zu | total %zu | evicted %llu", s.incidents_open, s.incidents_total,
+@@ -402,20 +402,29 @@
+             : "Flood detection disabled. An empty list does not establish absence of attacks.");
+         return;
+     }
+-    static uint64_t selected = 0;
++    static std::map<ImGuiID,uint64_t> selections;
++    auto& selected=selections[ImGui::GetID("incident selection")];
++    static ImGuiTextFilter incident_filter;
++    ImGui::TextDisabled("Right-click table headers for additional columns. Select an incident for all evidence.");
++    incident_filter.Draw("Search retained incidents",280);
++    ImGui::SameLine();if(ImGui::SmallButton("Clear filter"))incident_filter.Clear();
+     bool open_details = false;
+-    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
++    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
+                        ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX;
+-    if (!ImGui::BeginTable("wifi_security_incidents", 12, flags, ImVec2(0, height - 2 * ImGui::GetFrameHeightWithSpacing())))
+-        return;
++    const bool wide_inspector=inline_inspector && selected && ImGui::GetContentRegionAvail().x>=1100;
++    if(wide_inspector)ImGui::BeginChild("Incident list",ImVec2(ImGui::GetContentRegionAvail().x-480,height),ImGuiChildFlags_None,ImGuiWindowFlags_HorizontalScrollbar);
++    if (!ImGui::BeginTable("wifi_security_incidents", 12, flags, ImVec2(0,wide_inspector?std::max(120.f,height-20):inline_inspector && selected?std::min(height,230.f):height - 2 * ImGui::GetFrameHeightWithSpacing())))
++        {if(wide_inspector)ImGui::EndChild();return;}
+     ImGui::TableSetupScrollFreeze(1, 1);
+     const char* cols[] = {"#", "Rule", "State", "Severity", "Confidence", "Ch", "Claimed source", "Target",
+                           "Observations", "Rate (per analysed s)", "Coverage", "Benign alternatives"};
+     const float w[] = {45, 170, 90, 75, 90, 40, 140, 140, 100, 150, 220, 260};
+-    for (int i = 0; i < 12; ++i) ImGui::TableSetupColumn(cols[i], ImGuiTableColumnFlags_WidthFixed, w[i]);
++    for (int i = 0; i < 12; ++i) ImGui::TableSetupColumn(cols[i], ImGuiTableColumnFlags_WidthFixed | (i>=9?ImGuiTableColumnFlags_DefaultHide:0), w[i]);
+     ImGui::TableHeadersRow();
+     for (size_t k = s.incidents.size(); k-- > 0;) {
+         const Incident& i = s.incidents[k];
++        const std::string search=i.rule+" "+i.claimed_source+" "+i.claimed_bssid+" "+i.target+" "+std::to_string(i.channel)+" "+(i.open?"open":"closed");
++        if(!incident_filter.PassFilter(search.c_str()))continue;
+         ImGui::TableNextRow();
+         ImGui::TableNextColumn();
+         if (ImGui::Selectable(std::to_string(i.id).c_str(), selected == i.id)) { selected = i.id; open_details = true; }
+@@ -440,9 +449,11 @@
+         ImGui::TextUnformatted(alt.empty() ? "--" : alt.c_str());
+     }
+     ImGui::EndTable();
+-    if (open_details) ImGui::OpenPopup("Wi-Fi incident evidence");
+-    ImGui::SetNextWindowSize(ImVec2(920,650), ImGuiCond_Appearing);
+-    if (ImGui::BeginPopupModal("Wi-Fi incident evidence", nullptr, ImGuiWindowFlags_None)) {
++    if(wide_inspector){ImGui::EndChild();ImGui::SameLine();ImGui::BeginChild("Incident inspector",ImVec2(0,height),ImGuiChildFlags_Borders);}
++    if (open_details && !inline_inspector) ImGui::OpenPopup("Wi-Fi incident evidence");
++    if(!inline_inspector)ImGui::SetNextWindowSize(ImVec2(920,650), ImGuiCond_Appearing);
++    if (inline_inspector ? selected!=0 : ImGui::BeginPopupModal("Wi-Fi incident evidence", nullptr, ImGuiWindowFlags_None)) {
++        if(inline_inspector)ImGui::SeparatorText("Incident evidence inspector");
+         auto it = std::find_if(s.incidents.begin(),s.incidents.end(),[&](const auto& i){ return i.id == selected; });
+         if (it == s.incidents.end()) ImGui::TextDisabled("Incident no longer retained.");
+         else {
+@@ -505,9 +516,10 @@
+                 ImGui::EndChild();
+             }
+         }
+-        if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+-        ImGui::EndPopup();
+-    }
++        if (ImGui::Button("Close")) {if(inline_inspector)selected=0;else ImGui::CloseCurrentPopup();}
++        if(!inline_inspector)ImGui::EndPopup();
++    }
++    if(wide_inspector)ImGui::EndChild();
+ }
+ 
+ }  // namespace
+@@ -577,7 +589,14 @@
+ 
+ void draw_wifi_security_panel(const SecuritySnapshot& s, const QueueStats& q, const std::string& run_id,
+                               const std::string& recording, float height, const char* select_tab,
+-                              const SecurityCommandFn& command) {
++                              const SecurityCommandFn& command, bool inline_inspector) {
++    ImGui::TextWrapped("Open suspected incidents: %zu | Accepted frames: %llu | Sampled duty: %.1f%% (current run)",s.incidents_open,(unsigned long long)s.frames_accepted,100*s.timeline.duty());
++    if(s.timeline.sampled_s+s.timeline.dead_s<=0)ImGui::TextDisabled("Duty has no observed time denominator yet; the displayed counter is not a coverage verdict.");
++    ImGui::TextWrapped("No incident does not establish a safe network: gaps, eligibility and baseline maturity limit detection.");
++    if(q.events_dropped||q.captures_dropped)ImGui::TextColored(kBad,"QUEUE LOSS: %llu frames / %llu captures",(unsigned long long)q.events_dropped,(unsigned long long)q.captures_dropped);
++    if(!s.storage_error.empty())ImGui::TextWrapped("Recording failed: %s",s.storage_error.c_str());
++    if(!s.persist_error.empty())ImGui::TextWrapped("Persistence warning: %s",s.persist_error.c_str());
++    if(ImGui::CollapsingHeader("Rule coverage and processing diagnostics")) {
+     ImGui::TextDisabled("Passive flood, beacon replay and connection/handshake anomalies. Sender and impact unverified.");
+     ImGui::Text("Flood rule: %s | evaluated windows %llu | excluded captures %llu", s.flood_enabled ? "enabled (baseline required)" : "disabled", (unsigned long long)s.flood_evaluations,(unsigned long long)s.flood_excluded_captures);
+     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Provisional configuration: %s",s.flood_config.c_str());
+@@ -633,11 +652,14 @@
+     else ImGui::TextColored(kDim, "not recording");
+     ImGui::SameLine(); ImGui::TextDisabled("| run %s", run_id.c_str());
+ 
++    }
++    ImGui::PushID(run_id.c_str());
+     if (ImGui::BeginTabBar("wifi_security_tabs")) {
+         const float h = std::max(120.0f, height - 3.5f * ImGui::GetFrameHeightWithSpacing());
+         auto tab_flags = [&](const char* name) {
+             return select_tab && std::string(select_tab) == name ? ImGuiTabItemFlags_SetSelected : 0;
+         };
++        if (ImGui::BeginTabItem("Incidents", nullptr, tab_flags("Incidents"))) { incidents_tab(s, h, inline_inspector); ImGui::EndTabItem(); }
+         if (ImGui::BeginTabItem("Coverage", nullptr, tab_flags("Coverage"))) {
+             coverage_tab(s, h - ImGui::GetTextLineHeightWithSpacing());
+             ImGui::EndTabItem();
+@@ -645,9 +667,10 @@
+         if (ImGui::BeginTabItem("Frame types", nullptr, tab_flags("Frame types"))) { frame_types_tab(s, h); ImGui::EndTabItem(); }
+         if (ImGui::BeginTabItem("Recent frames", nullptr, tab_flags("Recent frames"))) { recent_tab(s, h); ImGui::EndTabItem(); }
+         if (ImGui::BeginTabItem("Baselines", nullptr, tab_flags("Baselines"))) { baselines_tab(s, h, command); ImGui::EndTabItem(); }
+-        if (ImGui::BeginTabItem("Incidents", nullptr, tab_flags("Incidents"))) { incidents_tab(s, h); ImGui::EndTabItem(); }
++
+         ImGui::EndTabBar();
+     }
++    ImGui::PopID();
+ }
+ 
+ }  // namespace rfmon
+--- a/src/security_gui.hpp
++++ b/src/security_gui.hpp
+@@ -27,7 +27,7 @@
+ // the user's choice alone.
+ void draw_wifi_security_panel(const wifi_security::SecuritySnapshot& s, const wifi_security::QueueStats& q,
+                               const std::string& run_id, const std::string& recording, float height,
+-                              const char* select_tab = nullptr, const SecurityCommandFn& command = {});
++                              const char* select_tab = nullptr, const SecurityCommandFn& command = {}, bool inline_inspector = false);
+ 
+ // One-line key fields for a frame (reason/status/SSID/TSF/PN/EAPOL...),
+ // shared by the table and tests.
+--- a/src/drones/panel.cpp
++++ b/src/drones/panel.cpp
+@@ -1,24 +1,31 @@
+ #include "panel.hpp"
+ #include "imgui.h"
+ #include <algorithm>
++#include <map>
+ 
+ namespace drone {
+ void draw_results(const Snapshot& s, bool offline) {
+     ImGui::PushID(offline?"offline":"live");
+     ImGui::TextWrapped("%s",s.status.c_str());
++    ImGui::Text("Checksum-valid observations: %llu | Queue: %zu / 4",(unsigned long long)s.decoded,s.queue_depth);
++    if(s.dropped || s.analysis_errors)ImGui::TextColored(ImVec4(1,.7f,.35f,1),"Drops: %llu samples | Worker errors: %llu",(unsigned long long)s.dropped,(unsigned long long)s.analysis_errors);
++    if(ImGui::CollapsingHeader("Processing diagnostics")) {
+     ImGui::Text("Decoded packets: %llu   Candidates: %llu   Rejected: %llu",
+         (unsigned long long)s.decoded,(unsigned long long)s.candidates,(unsigned long long)s.rejected);
+     ImGui::Text("Analysed samples: %llu   Queue: %zu / 4   Dropped samples: %llu",
+         (unsigned long long)s.samples,s.queue_depth,(unsigned long long)s.dropped);
+     ImGui::Text("Decode: %.1f ms   Queue age: %.1f ms   Errors: %llu",
+         s.processing_ms,s.oldest_queue_ms,(unsigned long long)s.analysis_errors);
++    ImGui::Text("Preprocessing %.3f ms | Current queue age %.3f ms | End-to-end %.3f ms",s.preprocessing_ms,s.queue_age_ms,s.end_to_end_ms);
++    ImGui::Text("Discontinuities %llu | Partial discarded %llu | Stop discarded %llu",(unsigned long long)s.discontinuities,(unsigned long long)s.partial_discarded,(unsigned long long)s.stop_discarded);
++    }
+     if(s.observations.empty()) {
+         ImGui::Spacing(); ImGui::TextWrapped("No checksum-valid DJI DroneID broadcast decoded. This does not establish that no drone is present.");
+         ImGui::PopID(); return;
+     }
+     static std::string live_selected, replay_selected;
+     auto& selected=offline?replay_selected:live_selected;
+-    if(std::none_of(s.observations.begin(),s.observations.end(),[&](const Observation& o){return o.serial==selected;})) selected=s.observations.front().serial;
++    if(selected.empty()) selected=s.observations.front().serial;
+     const auto flags=ImGuiTableFlags_BordersInnerH|ImGuiTableFlags_RowBg|ImGuiTableFlags_Resizable|ImGuiTableFlags_ScrollX|ImGuiTableFlags_ScrollY;
+     if(ImGui::BeginTable("Broadcasts",5,flags,ImVec2(0,155))) {
+         ImGui::TableSetupColumn("Reported serial",ImGuiTableColumnFlags_WidthFixed,210);
+@@ -46,61 +53,106 @@
+         const auto& o=*it;
+         ImGui::SeparatorText("Selected broadcast details");
+         ImGui::TextWrapped("%s",o.evidence.c_str());
+-        ImGui::TextWrapped("Source: %s",o.source.c_str());
++        ImGui::TextWrapped("Source: %s | Receiver epoch: %llu",o.source.c_str(),(unsigned long long)o.receiver_epoch);
+         ImGui::Text("Sequence: %lld | Source-clock time: %.9f s | Relative power: %.1f dB",
+             (long long)o.sequence,o.timestamp,o.power);
+         ImGui::Text("Input: %.3f MSps | %s symbol format | Carrier-bin correction: %.0f Hz",o.sample_rate/1e6,o.legacy?"Legacy":"Current",o.carrier_correction_hz);
+         ImGui::TextWrapped("Aircraft position: %s",o.position_status.c_str());
+         if(ImGui::Button("Copy complete decoded packet JSON")) ImGui::SetClipboardText(o.packet_json.c_str());
+-        if(ImGui::BeginTable("Telemetry",4,flags,ImVec2(0,std::max(180.f,ImGui::GetContentRegionAvail().y-55)))) {
+-            ImGui::TableSetupColumn("Group",ImGuiTableColumnFlags_WidthFixed,125);
+-            ImGui::TableSetupColumn("Field",ImGuiTableColumnFlags_WidthFixed,255);
+-            ImGui::TableSetupColumn("Value",ImGuiTableColumnFlags_WidthFixed,220);
+-            ImGui::TableSetupColumn("Validity / interpretation",ImGuiTableColumnFlags_WidthStretch);
+-            ImGui::TableSetupScrollFreeze(0,1); ImGui::TableHeadersRow();
+-            for(const auto& f:o.telemetry) {
+-                ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextWrapped("%s",f.group.c_str());
+-                ImGui::TableNextColumn(); ImGui::TextWrapped("%s",f.name.c_str());
+-                ImGui::TableNextColumn(); ImGui::TextWrapped("%s",f.value.c_str());
+-                ImGui::TableNextColumn(); ImGui::TextWrapped("%s",f.status.c_str());
+-            }
+-            ImGui::EndTable();
++        static ImGuiTextFilter fields;
++        fields.Draw("Find telemetry field",280);
++        int expansion=0;
++        if(ImGui::SmallButton("Expand details"))expansion=1;
++        ImGui::SameLine();if(ImGui::SmallButton("Collapse details"))expansion=-1;
++        std::map<std::string,std::vector<const TelemetryField*>> groups;
++        for(const auto& f:o.telemetry)if(fields.PassFilter((f.group+" "+f.name+" "+f.value+" "+f.status).c_str()))groups[f.group].push_back(&f);
++        for(const auto& group:groups) {
++            ImGui::PushID(group.first.c_str());
++            if(expansion || fields.IsActive())ImGui::SetNextItemOpen(expansion>0 || fields.IsActive());
++            const std::string label=group.first+" ("+std::to_string(group.second.size())+" fields)###telemetrygroup";
++            if(ImGui::CollapsingHeader(label.c_str(),group.first=="Positions"?ImGuiTreeNodeFlags_DefaultOpen:0)) {
++                if(ImGui::BeginTable("Telemetry",3,flags)) {
++                    ImGui::TableSetupColumn("Field",ImGuiTableColumnFlags_WidthFixed,220);
++                    ImGui::TableSetupColumn("Value",ImGuiTableColumnFlags_WidthFixed,220);
++                    ImGui::TableSetupColumn("Validity / interpretation",ImGuiTableColumnFlags_WidthStretch);
++                    ImGui::TableHeadersRow();
++                    for(const auto* f:group.second) {
++                        ImGui::TableNextRow();ImGui::TableNextColumn();ImGui::TextWrapped("%s",f->name.c_str());
++                        ImGui::TableNextColumn();ImGui::TextWrapped("%s",f->value.c_str());
++                        ImGui::TableNextColumn();ImGui::TextWrapped("%s",f->status.c_str());
++                    }ImGui::EndTable();
++                }
++            }ImGui::PopID();
+         }
+         if(ImGui::CollapsingHeader("Raw decoded packet JSON")) ImGui::TextWrapped("%s",o.packet_json.c_str());
+     }
++    else ImGui::TextDisabled("Selected observation no longer retained; select another row.");
+     ImGui::PopID();
+ }
+ void draw_remote_id(const RidJson& s) {
+-    ImGui::Text("Examined management frames: %llu | Accepted packs: %llu | Not decoded: %llu",
+-        (unsigned long long)s.value("examined",uint64_t(0)),(unsigned long long)s.value("accepted",uint64_t(0)),(unsigned long long)s.value("not_decoded",uint64_t(0)));
+-    ImGui::Text("Queue: %zu / 128 | Queue drops: %llu | Errors: %llu | Out of order: %llu",
+-        s.value("queue_depth",size_t(0)),(unsigned long long)s.value("dropped",uint64_t(0)),
+-        (unsigned long long)s.value("errors",uint64_t(0)),(unsigned long long)s.value("out_of_order",uint64_t(0)));
+-    if(!s.value("enabled",false)) ImGui::TextDisabled("Disabled. Retained observations are historical.");
+-    ImGui::TextWrapped("Reported categories do not identify an exact model or authenticate an aircraft. Accuracy categories are transmitter claims. A valid packet does not establish continuous channel coverage.");
++    ImGui::TextWrapped("Unauthenticated broadcast claims. Aircraft category is not exact-model classification. Accuracy is transmitter-reported.");
++    if(!s.value("enabled",false))ImGui::TextDisabled("Decoder disabled; retained observations are historical.");
++    if(s.value("dropped",uint64_t(0)) || s.value("errors",uint64_t(0)))ImGui::TextColored(ImVec4(1,.7f,.35f,1),"Queue drops: %llu | Errors: %llu",(unsigned long long)s.value("dropped",uint64_t(0)),(unsigned long long)s.value("errors",uint64_t(0)));
++    if(ImGui::CollapsingHeader("Remote ID processing diagnostics")) {
++        ImGui::Text("Examined management frames: %llu | Accepted packs: %llu | Not decoded: %llu",(unsigned long long)s.value("examined",uint64_t(0)),(unsigned long long)s.value("accepted",uint64_t(0)),(unsigned long long)s.value("not_decoded",uint64_t(0)));
++        ImGui::Text("Queue: %zu / 128 | Queue drops: %llu | Errors: %llu | Out of order: %llu",s.value("queue_depth",size_t(0)),(unsigned long long)s.value("dropped",uint64_t(0)),(unsigned long long)s.value("errors",uint64_t(0)),(unsigned long long)s.value("out_of_order",uint64_t(0)));
++        ImGui::TextWrapped("Ordinary Beacons can be not decoded; this is not a false-drone-alarm counter. Up to 64 sources / 32 message slots each. Message stale after 10 s; inactivity pruning after five minutes happens on the next supported pack.");
++    }
+     if(!s.contains("tracks")||s["tracks"].empty()){ImGui::TextWrapped("No supported Wi-Fi Remote ID messages decoded. Ordinary Wi-Fi traffic is not drone evidence.");return;}
+-    ImGui::TextDisabled("Retained sources: %zu / 64 | Up to 32 message slots each | Stale after 10 seconds",s["tracks"].size());
+-    for(const auto& t:s["tracks"]){
+-        ImGui::PushID(t.at("key").get_ref<const std::string&>().c_str());
+-        std::string title=t.at("transmitter").get<std::string>()+" | "+t.at("transport").get<std::string>()+" | v"+std::to_string(t.at("protocol_version").get<int>());
+-        if(ImGui::CollapsingHeader(title.c_str(),s["tracks"].size()==1?ImGuiTreeNodeFlags_DefaultOpen:0)){
++    static std::string selected;static ImGuiTextFilter filter;
++    if(selected.empty())selected=s["tracks"][0].at("key").get<std::string>();
++    filter.Draw("Search retained Remote ID sources",280);
++    ImGui::SameLine();if(ImGui::SmallButton("Clear source filter"))filter.Clear();
++    ImGui::TextDisabled("Retained broadcast sources: %zu / 64; not a physical-aircraft count.",s["tracks"].size());
++    if(ImGui::BeginTable("Remote ID sources",6,ImGuiTableFlags_RowBg|ImGuiTableFlags_Resizable|ImGuiTableFlags_ScrollX|ImGuiTableFlags_ScrollY,ImVec2(0,155))) {
++        for(const char* name:{"Reported ID (select)","Aircraft category","Source MAC","Transport","Version","Identity freshness"})ImGui::TableSetupColumn(name,ImGuiTableColumnFlags_WidthFixed,170);
++        ImGui::TableSetupScrollFreeze(1,1);ImGui::TableHeadersRow();
++        for(const auto& t:s["tracks"]) {
++            std::string id="ID unavailable",category="Not reported";
++            for(const auto& m:t.at("messages"))if(m.at("type")=="Basic ID") {id=m.value("reported_id",m.value("reported_id_hex",std::string()));category=m.at("ua_type_name").get<std::string>();break;}
++            if(!filter.PassFilter((id+" "+category+" "+t.at("transmitter").get<std::string>()+" "+t.at("transport").get<std::string>()).c_str()))continue;
++            ImGui::PushID(t.at("key").get_ref<const std::string&>().c_str());ImGui::TableNextRow();ImGui::TableNextColumn();
++            if(ImGui::Selectable(id.c_str(),selected==t.at("key").get<std::string>()))selected=t.at("key").get<std::string>();
++            ImGui::TableNextColumn();ImGui::TextWrapped("%s",category.c_str());
++            ImGui::TableNextColumn();ImGui::TextUnformatted(t.at("transmitter").get_ref<const std::string&>().c_str());
++            ImGui::TableNextColumn();ImGui::TextUnformatted(t.at("transport").get_ref<const std::string&>().c_str());
++            ImGui::TableNextColumn();ImGui::Text("%d",t.at("protocol_version").get<int>());
++            ImGui::TableNextColumn();ImGui::TextWrapped("%s",t.at("identity_status").get_ref<const std::string&>().c_str());ImGui::PopID();
++        }ImGui::EndTable();
++    }
++    auto it=std::find_if(s["tracks"].begin(),s["tracks"].end(),[&](const RidJson& t){return t.at("key").get<std::string>()==selected;});
++    if(it==s["tracks"].end()){ImGui::TextDisabled("Selected source no longer retained; select another row.");return;}
++    const auto& t=*it;ImGui::PushID(selected.c_str());
++    ImGui::SeparatorText("Selected Remote ID source");
++    ImGui::TextWrapped("%s | %s | protocol v%d",t.at("transmitter").get_ref<const std::string&>().c_str(),t.at("transport").get_ref<const std::string&>().c_str(),t.at("protocol_version").get<int>());
+             ImGui::Text("Packs: %llu | %s",(unsigned long long)t.at("packs").get<uint64_t>(),t.at("identity_status").get_ref<const std::string&>().c_str());
+             for(const auto& m:t.at("messages")) {
+                 if(m.at("type")=="Basic ID") {
+                     const std::string id=m.value("reported_id",m.value("reported_id_hex",std::string()));
+-                    ImGui::TextWrapped("Reported ID: %s | %s | %s",id.c_str(),m.at("ua_type_name").get_ref<const std::string&>().c_str(),m.at("stale").get<bool>()?"STALE":"recently received");
++                    ImGui::TextWrapped("Reported ID: %s | %s | %s | age %.1f s",id.c_str(),m.at("ua_type_name").get_ref<const std::string&>().c_str(),m.at("stale").get<bool>()?"STALE":"recently received",m.at("age_s").get<double>());
+                 }
+                 if(m.at("type")=="Location") {
+-                    if(m.at("latitude").is_number()&&m.at("longitude").is_number())ImGui::Text("Reported aircraft position: %.7f, %.7f deg | %s",m.at("latitude").get<double>(),m.at("longitude").get<double>(),m.at("stale").get<bool>()?"STALE":"recently received");
++                    if(m.at("latitude").is_number()&&m.at("longitude").is_number())ImGui::TextWrapped("Reported aircraft position: %.7f, %.7f deg | %s | age %.1f s",m.at("latitude").get<double>(),m.at("longitude").get<double>(),m.at("stale").get<bool>()?"STALE":"recently received",m.at("age_s").get<double>());
+                     else ImGui::TextUnformatted("Reported aircraft position: unavailable");
+                 }
+             }
+             if(ImGui::Button("Copy Remote ID evidence JSON"))ImGui::SetClipboardText(t.dump(2).c_str());
++            static ImGuiTextFilter field_search;
++            field_search.Draw("Find message field",280);
++            int expand=0;if(ImGui::SmallButton("Expand details"))expand=1;
++            ImGui::SameLine();if(ImGui::SmallButton("Collapse details"))expand=-1;
+             for(const auto& m:t.at("messages")){
++                if(field_search.IsActive()&&!field_search.PassFilter(m.dump().c_str()))continue;
+                 std::string label=m.at("type").get<std::string>();
+                 if(m.contains("id_type_name"))label+=" / "+m.at("id_type_name").get<std::string>();
+                 if(m.contains("data_page"))label+=" / type "+std::to_string(m.at("auth_type").get<int>())+" page "+std::to_string(m.at("data_page").get<int>());
+                 label+=m.at("stale").get<bool>()?" | STALE":" | recently received";
++                label+=" | "+std::to_string(int(m.at("age_s").get<double>()))+" s";
++                std::string slot=m.at("type").get<std::string>()+"/"+m.value("id_type_name",std::string())+"/"+std::to_string(m.value("data_page",-1))+"/"+std::to_string(m.value("auth_type",-1));
++                ImGui::PushID(slot.c_str());
++                if(expand || field_search.IsActive())ImGui::SetNextItemOpen(expand>0 || field_search.IsActive());
++                label+="###message";
++                if(m.at("type")=="Authentication")ImGui::TextDisabled("Authentication page bytes are unverified; no signature check.");
+                 if(ImGui::TreeNodeEx(label.c_str(),m.at("type")=="Basic ID"?ImGuiTreeNodeFlags_DefaultOpen:0)){
+                     ImGui::Text("Age: %.1f s",m.at("age_s").get<double>());
+                     ImGui::TextWrapped("%s",m.at("source").at("age_basis").get_ref<const std::string&>().c_str());
+@@ -114,12 +166,11 @@
+                     if(ImGui::TreeNode("Raw message and acquisition provenance")){ImGui::TextWrapped("Message: %s",m.at("raw_hex").get_ref<const std::string&>().c_str());ImGui::TextWrapped("%s",m.at("source").dump(2).c_str());ImGui::TreePop();}
+                     ImGui::TreePop();
+                 }
++                ImGui::PopID();
+             }
+-        }
+-        ImGui::PopID();
+-    }
+-}
+-void draw_panel(Addon& a,const std::string& band,bool connected) {
++    ImGui::PopID();
++}
++void draw_panel(Addon& a,const std::string& band,bool connected, const char* select_tab) {
+     ImGui::SeparatorText("Drone broadcasts");
+     ImGui::TextWrapped("Receive-only add-ons | Reported identities and telemetry are unauthenticated. DJI DroneID and standards-based Wi-Fi Remote ID remain separate sources.");
+     if(ImGui::BeginTabBar("Drone sources")) {
+@@ -127,8 +178,10 @@
+             if(a.live.running()) { if(ImGui::Button("Disable DJI add-on")) a.live.stop(); }
+             else if(ImGui::Button("Enable DJI add-on")) { a.offered=0; a.omitted=0; a.unhealthy=0; a.live.start(); }
+             ImGui::SameLine(); ImGui::Text("Receiver: %s | Active band: %s",connected?"connected":"disconnected",band.c_str());
++            ImGui::TextDisabled("Stop retains history. A new start resets observations.");
+             ImGui::TextWrapped("Uses existing Wi-Fi captures; does not retune or open another radio. Up to four separate 20 ms windows per capture (2M samples/window maximum). Gapped captures are skipped. Sweeping, passband and sampling gaps can miss broadcasts.");
+-            ImGui::Text("Capture samples: %llu | Not selected: %llu | Unusable captures: %llu",
++            if(a.unhealthy.load())ImGui::TextColored(ImVec4(1,.7f,.35f,1),"Unusable captures: %llu",(unsigned long long)a.unhealthy.load());
++            if(ImGui::CollapsingHeader("Capture sampling counters"))ImGui::Text("Capture samples: %llu | Not selected: %llu | Unusable captures: %llu",
+                 (unsigned long long)a.offered.load(),(unsigned long long)a.omitted.load(),(unsigned long long)a.unhealthy.load());
+             draw_results(a.live.snapshot(),false);
+             ImGui::EndTabItem();
+@@ -138,15 +191,17 @@
+             if(ImGui::Checkbox("Enable Wi-Fi OpenDroneID",&enabled)) a.remote_id.enable(enabled);
+             ImGui::SameLine(); ImGui::Text("Receiver: %s | %s",connected?"connected":"disconnected",band.c_str());
+             ImGui::TextWrapped("Beacon and NAN message packs, protocol versions 0 / 1 / 2. Uses complete decoded Wi-Fi frames; event recording and DJI decoding are not required. No Bluetooth reception or signature verification. Scan gaps and unsupported Wi-Fi PHYs limit reception.");
++            ImGui::TextDisabled("Disable retains history. Re-enable resets sources and messages.");
+             // Bound snapshot copying independently of render rate.
+             static RidJson rid; static double last=-1; static bool last_enabled=false;
+             if(rid.is_null()||ImGui::GetTime()-last>.25||enabled!=last_enabled){rid=a.remote_id.snapshot();last=ImGui::GetTime();last_enabled=enabled;}
+             draw_remote_id(rid);
+             ImGui::EndTabItem();
+         }
+-        if(ImGui::BeginTabItem("Offline IQ review")) {
++        if(ImGui::BeginTabItem("Offline IQ review", nullptr, select_tab && std::string(select_tab)=="Offline IQ review" ? ImGuiTabItemFlags_SetSelected : 0)) {
+             static char path[1024]=""; static double rate=50e6,frequency=2444.5e6,offset=0;
+             ImGui::TextWrapped("Raw little-endian complex-float32 IQ only. Enter the recording's actual metadata. Reads at most 40 ms / 2M samples; source files are not modified. Results remain separate from live broadcasts.");
++            ImGui::TextUnformatted("Raw IQ file path");
+             ImGui::SetNextItemWidth(-1); ImGui::InputText("##IQ path",path,sizeof(path));
+             ImGui::SetNextItemWidth(180); ImGui::InputDouble("Sample rate (Hz)",&rate,0,0,"%.0f");
+             ImGui::SetNextItemWidth(180); ImGui::InputDouble("Centre frequency (Hz)",&frequency,0,0,"%.0f");
+--- a/src/drones/panel.hpp
++++ b/src/drones/panel.hpp
+@@ -3,5 +3,5 @@
+ namespace drone {
+ void draw_remote_id(const RidJson& snapshot);
+ void draw_results(const Snapshot& snapshot, bool offline);
+-void draw_panel(Addon& addon, const std::string& band, bool connected);
++void draw_panel(Addon& addon, const std::string& band, bool connected, const char* select_tab = nullptr);
+ }
+--- a/tests/test_wifi_gui.cpp
++++ b/tests/test_wifi_gui.cpp
+@@ -1,6 +1,7 @@
+ // Offscreen GUI smoke/interaction test. Renders the actual production Wi-Fi
+ // tables with controlled fixtures, without starting Scanner or accessing a radio.
+ #include "wifi_gui.hpp"
++#include "gui/app_shell.hpp"
+ #include "security_gui.hpp"
+ #include "imgui.h"
+ #include "imgui_internal.h"
+@@ -288,6 +289,45 @@
+             if(glGetError()!=GL_NO_ERROR)++failures;
+         }
+     }
++    // Revamped production shell and inline inspectors. The same fixture values
++    // must remain reachable; passive inspection must not issue baseline commands.
++    ImGui_ImplOpenGL3_Shutdown();ImGui::DestroyContext();ImGui::CreateContext();
++    auto& rio=ImGui::GetIO();rio.IniFilename=nullptr;rio.DisplaySize={1600,1000};rio.DeltaTime=1.f/60;
++    gui::configure_font();gui::apply_theme();ImGui_ImplOpenGL3_Init("#version 130");
++    gui::State ui;gui::Context ctx;ctx.radio="USRP X310";ctx.band=BAND_WIFI_2G4;ctx.run="synthetic-revamp";
++    wifi_security::SecuritySnapshot sample;wifi_security::Incident incident;
++    incident.id=9;incident.rule="historical_beacon_replay";incident.rule_version="fixture";
++    incident.claimed_bssid="00:11:22:33:44:55";incident.context={{"original_tsf_us","1000000"},{"newer_tsf_us","1600000"},{"repeated_tsf_us","1000000"}};
++    sample.incidents.push_back(incident);sample.incidents_open=sample.incidents_total=1;
++    int passive_commands=0;
++    for(int scene=0;scene<3;++scene) {
++        std::string rendered;
++        for(int frame=0;frame<7;++frame) {
++            ImGui_ImplOpenGL3_NewFrame();ImGui::NewFrame();ImGui::LogToBuffer(0);
++            ui.page=scene==2?gui::Page::Security:gui::Page::Wifi24;
++            gui::draw_workspace(ui,ctx,true,[&](gui::Page){
++                ImGui::TextUnformatted("SYNTHETIC UI fixture; receiver disconnected; no live evidence.");
++                if(scene==0)draw_wifi_master_table(rows,330,true);
++                if(scene==1)draw_wifi_packet_table(packets,330);
++                if(scene==2)draw_wifi_security_panel(sample,{},ctx.run,"",700,"Incidents",[&](const auto&,const auto&){++passive_commands;},true);
++                if(frame==2) {
++                    const char* table=scene==0?"wifi_master_identity_v2":scene==1?"wifi_packets_identity_v4":"wifi_security_incidents";
++                    for(auto* w:ImGui::GetCurrentContext()->Windows)if(std::string(w->Name).find(table)!=std::string::npos&&w->Active) {
++                        rio.AddMousePosEvent(w->Pos.x+25,w->Pos.y+40);rio.AddMouseButtonEvent(0,true);break;
++                    }
++                }
++            });
++            if(frame==3)rio.AddMouseButtonEvent(0,false);
++            rendered=ImGui::GetCurrentContext()->LogBuffer.c_str();ImGui::LogFinish();ImGui::Render();
++            if(ImGui::GetCurrentContext()->ErrorCountCurrentFrame)++failures;
++            glViewport(0,0,1600,1000);glClearColor(.065,.085,.115,1);glClear(GL_COLOR_BUFFER_BIT);ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());glFinish();
++        }
++        const char* expected=scene==0?"WPS":scene==1?"Selected packet snapshot":"Incident evidence inspector";
++        if(rendered.find(expected)==std::string::npos){std::cerr<<"Revamp inspector missing: "<<expected<<'\n';++failures;}
++        if(glGetError()!=GL_NO_ERROR)++failures;
++        save(scene==0?"-revamp-identities.ppm":scene==1?"-revamp-packets.ppm":"-revamp-incidents.ppm");
++    }
++    if(passive_commands){std::cerr<<"Passive inspection emitted backend command\n";++failures;}
+     ImGui_ImplOpenGL3_Shutdown(); ImGui::DestroyContext();
+     eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);
+     eglDestroyContext(display,context); eglDestroySurface(display,surface); eglTerminate(display);
+--- a/tests/test_dji_addon.cpp
++++ b/tests/test_dji_addon.cpp
+@@ -95,7 +95,7 @@
+             require(rendered.find("TEST-RID-FULL-0001")!=std::string::npos,"reported ID missing from GUI");
+             require(rendered.find("Wi-Fi Beacon")!=std::string::npos,"transport missing from GUI");
+         } else drone::draw_remote_id(rid);
+-        ImGui::End();ImGui::Render();
++        ImGui::End();ImGui::Render();require(ImGui::GetCurrentContext()->ErrorCountCurrentFrame==0,"ImGui renderer state error");
+     }
+ #ifdef DJI_EGL
+     glViewport(0,0,1280,900); glClear(GL_COLOR_BUFFER_BIT); ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+--- /dev/null
++++ b/src/gui/app_shell.cpp
+@@ -0,0 +1,160 @@
++#include "app_shell.hpp"
++#include <algorithm>
++#include <filesystem>
++
++namespace rfmon::gui {
++std::string band_label(const std::string& band) {
++    if(band=="wifi_2g4")return "Wi-Fi 2.4 GHz";
++    if(band=="wifi_5g")return "Wi-Fi 5 GHz";
++    if(band=="sub_ghz_ism")return "LoRa / Sub-GHz ISM";
++    return band;
++}
++const char* page_name(Page p) {
++    switch(p) {
++    case Page::Overview:return "Overview"; case Page::Wifi24:return "Wi-Fi 2.4 GHz";
++    case Page::Wifi5:return "Wi-Fi 5 GHz"; case Page::Lora:return "LoRa";
++    case Page::Drones:return "Drones"; case Page::Security:return "Security";
++    case Page::Captures:return "Captures"; default:return "Settings";
++    }
++}
++const char* page_purpose(Page p) {
++    switch(p) {
++    case Page::Overview:return "Acquisition, observation health and evidence at a glance.";
++    case Page::Wifi24:case Page::Wifi5:return "Sampled RF observations, decoded packets and claimed network identities.";
++    case Page::Lora:return "RF observations, PHY hypotheses and provisional emitter clusters.";
++    case Page::Drones:return "Reported broadcasts and telemetry. Identity is unauthenticated.";
++    case Page::Security:return "Suspected activity and the coverage needed to interpret it.";
++    case Page::Captures:return "Existing capture and offline review workflows. Results stay separate from live evidence.";
++    default:return "Explicit acquisition controls, display preferences and implemented capabilities.";
++    }
++}
++void configure_font() {
++    // Startup only. Use a standard local font where available; no download or dependency.
++    auto& io=ImGui::GetIO();
++    io.ConfigFlags|=ImGuiConfigFlags_NavEnableKeyboard;
++    const char* path="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
++    if(std::filesystem::exists(path) && io.Fonts->AddFontFromFileTTF(path,16))return;
++    ImFontConfig font;font.SizePixels=16;io.Fonts->AddFontDefault(&font);
++}
++void apply_theme(float scale, bool compact) {
++    ImGuiStyle style;
++    ImGui::StyleColorsDark(&style);
++    style.WindowPadding={16,16}; style.FramePadding={10,compact?4.f:7.f};
++    style.ItemSpacing={10,10};style.ItemInnerSpacing={8,6};style.CellPadding={8,compact?3.f:6.f};
++    style.WindowRounding=8;style.ChildRounding=6;style.FrameRounding=5;style.PopupRounding=7;
++    style.TabRounding=5;style.ScrollbarSize=13;style.WindowBorderSize=0;style.ChildBorderSize=1;
++    auto& c=style.Colors;
++    c[ImGuiCol_Text]={.90f,.93f,.96f,1}; c[ImGuiCol_TextDisabled]={.62f,.69f,.76f,1};
++    c[ImGuiCol_WindowBg]={.065f,.085f,.115f,1};c[ImGuiCol_ChildBg]={.085f,.11f,.15f,1};
++    c[ImGuiCol_PopupBg]={.095f,.125f,.17f,1};c[ImGuiCol_Border]={.20f,.26f,.33f,.7f};
++    c[ImGuiCol_FrameBg]={.13f,.18f,.24f,1};c[ImGuiCol_FrameBgHovered]={.18f,.26f,.34f,1};
++    c[ImGuiCol_Button]={.13f,.23f,.31f,1};c[ImGuiCol_ButtonHovered]={.16f,.34f,.44f,1};
++    c[ImGuiCol_ButtonActive]={.17f,.43f,.54f,1};c[ImGuiCol_Header]={.13f,.27f,.35f,1};
++    c[ImGuiCol_HeaderHovered]={.17f,.35f,.44f,1};c[ImGuiCol_HeaderActive]={.17f,.41f,.52f,1};
++    c[ImGuiCol_CheckMark]={.34f,.79f,.90f,1}; c[ImGuiCol_SliderGrab]=c[ImGuiCol_CheckMark];
++    c[ImGuiCol_TableHeaderBg]={.11f,.17f,.23f,1};c[ImGuiCol_TableRowBgAlt]={1,1,1,.025f};
++    style.ScaleAllSizes(std::clamp(scale,1.f,2.f));
++    style.FontScaleMain=std::clamp(scale,1.f,2.f);
++    ImGui::GetStyle()=style;
++}
++bool section(const char* label,bool primary) {
++    return ImGui::CollapsingHeader(label,primary?ImGuiTreeNodeFlags_DefaultOpen:0);
++}
++void note(const char* text,bool warning) {
++    ImGui::PushStyleColor(ImGuiCol_Text,warning?ImVec4(.98f,.73f,.38f,1):ImVec4(.67f,.76f,.84f,1));
++    ImGui::TextWrapped("%s",text);ImGui::PopStyleColor();
++}
++void draw_workspace(State& s,const Context& c,bool drones,const std::function<void(Page)>& body) {
++    const float scale=s.scale;
++    ImGui::SetNextWindowPos({0,0});ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
++    ImGui::Begin("RF Monitor workspace",nullptr,ImGuiWindowFlags_NoTitleBar|ImGuiWindowFlags_NoMove|
++        ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoCollapse);
++    ImGui::TextUnformatted("RF MONITOR");ImGui::SameLine();
++    ImGui::TextDisabled("/ %s",page_name(s.page));
++    ImGui::SameLine();if(ImGui::Button("Monitoring setup")) {s.setup_open=!s.setup_open;}
++    ImGui::SameLine();if(ImGui::Button("Security")) {s.page=Page::Security;s.security_first=true;}
++    if(s.legacy) {ImGui::SameLine();note("Legacy presentation");}
++    ImGui::TextWrapped("Receiver: %s | %s | Active band: %s | Step: %s | Cycles: %d",
++        c.radio.c_str(),!c.started?"disconnected":!c.connected?"starting / not connected":c.stalled?"RX STALLED":"connected",
++        band_label(c.band).c_str(),c.step.empty()?"not reported":c.step.c_str(),c.cycles);
++    if(!c.error.empty())note(c.error.c_str(),true);
++    if(c.overflow)note("Capture overflow reported: continuity and observation coverage are degraded.",true);
++    if(c.stalled)note("RX stalled: a connected receiver is not evidence of usable samples.",true);
++    if(c.laboratory)note("Nonstandard laboratory codecs are active.",true);
++    ImGui::Separator();
++    const float footer=ImGui::GetTextLineHeightWithSpacing()*2;
++    const bool narrow=ImGui::GetContentRegionAvail().x<1000*scale;
++    if(!s.legacy && narrow) {
++        if(ImGui::BeginCombo("Workspace",page_name(s.page))) {
++            for(int i=0;i<8;++i){auto p=static_cast<Page>(i);if(p==Page::Drones&&!drones)continue;
++                if(ImGui::Selectable(page_name(p),p==s.page)){s.page=p;if(p==Page::Security)s.security_first=true;}}
++            ImGui::EndCombo();
++        }
++    }
++    if(!s.legacy && !narrow) {
++        ImGui::BeginChild("Navigation",{170*scale,-footer},ImGuiChildFlags_Borders);
++        note("WORKSPACES");
++        for(int i=0;i<8;++i) {
++            auto p=static_cast<Page>(i);if(p==Page::Drones&&!drones)continue;
++            ImGui::PushID(i);if(ImGui::Selectable(page_name(p),p==s.page,0,{0,32*scale})) {
++                s.page=p;if(p==Page::Security)s.security_first=true;
++            }ImGui::PopID();
++        }
++        ImGui::Separator();note("Viewing pages does not change acquisition.");
++        ImGui::EndChild();ImGui::SameLine();
++    }
++    ImGui::BeginChild("Page content",{0,-footer},ImGuiChildFlags_None,ImGuiWindowFlags_HorizontalScrollbar);
++    ImGui::SeparatorText(page_name(s.page));note(page_purpose(s.page));
++    body(s.page);
++    ImGui::EndChild();ImGui::Separator();
++    ImGui::TextWrapped("Recording: %s%s | Open incidents (store): %zu | Run: %s",
++        c.recording.empty()?"off":c.recording.c_str(),c.recording_pending?" (configuration changes apply on reconnect)":"",
++        c.incidents,c.run.empty()?"not reported":c.run.c_str());
++    ImGui::End();
++}
++void draw_capabilities(bool drones,bool cyclo) {
++    note("Capabilities describe the current implementation. Integrity checks do not authenticate a sender.");
++    const struct {const char* name;const char* scope;} items[]={
++        {"Acquisition","One selected radio/band at a time. B210 profile up to 56 MSps; X310 software profile up to 20 MSps. Requested rates are not actual hardware readbacks."},
++        {"Wi-Fi channels","2.4 GHz: 1-13. 5 GHz: 36/40/44/48/149/153/157/161/165. No DFS/6 GHz scan plan. Sweep gaps remain."},
++        {"Wi-Fi PHY","1 Mbps DSSS / Barker-11 and legacy 20 MHz OFDM at 6/9/12/18/24/36/48/54 Mbps. No HT/VHT/HE/EHT payload decoding. Encrypted payload remains opaque."},
++        {"Wi-Fi retention","1,000 packet rows; 400 normal / 4,000 extended security burst budget per capture. BSSID is a claimed network/interface; RF clusters are heuristic."},
++        {"LoRa","SF7-12 explicit-header payloads; SF5/6 detection only. BW125/250/500, CR4/5-4/8. 200 hypothesis rows; no unique-aircraft/device claim."},
++        {"LoRa capture / replay","Default 500 kS/s packet listener, 1-30 seconds (default 6), bounded to 32 million samples. Lock skips wideband energy scan. LoRaWAN structure only: no MIC, decryption or replay verification."},
++        {"Security","Suspected disconnect flood, historical beacon replay, experimental connection/EAPOL anomalies. No MIC/key-installation, encrypted PN replay, jamming or LoRa attack detection."},
++        {"Security retention","256 published recent frames / 4,096 internal; 1,000 stored incidents / 200 published. Opt-in default 64 MiB rotating event recording. Missing evidence is not a benign verdict."},
++        {"Identity history","Approximately 1,000 retained readings per entry, with compaction slack to 1,100; not every reading forever. No physical-device attribution from a BSSID or RF cluster."},
++        {"Excluded features","New capture indexing, evidence-bundle export, live tracking/maps, new replay adapters and exact-model ML are outside this interface revamp."}
++    };
++    for(const auto& item:items)if(section(item.name))note(item.scope);
++    if(section("Cyclostationary"))note(cyclo?"Experimental opt-in. Four independent windows up to 65,536 samples each, total 262,144; two-second deadline. No independently validated named family. Offline-only evidence remains labelled offline.":"Not compiled in this build.");
++    if(section("Drones"))note(drones?"DJI and Wi-Fi Remote ID are independent, default-off add-ons. DJI: four distributed 20 ms windows, 2M samples/window; queue 4, 128 rows. Offline DJI: 40 ms / 2M samples. Remote ID: Beacon / supported NAN v0-2, queue 128, 64 sources, 32 message slots/source, per-message stale after 10 s. No Bluetooth or signature verification. Fresh live qualification is pending.":"Drones add-ons are not compiled in this build.");
++}
++}
++
++namespace rfmon::gui {
++void draw_overview(State& ui,const Context& context,const Overview& data,bool drones,const std::function<void()>& draw_map) {
++    const int columns=ImGui::GetContentRegionAvail().x>850*ui.scale?4:2;
++    if(ImGui::BeginTable("Overview summaries",columns,ImGuiTableFlags_SizingStretchSame)) {
++        auto card=[&](const char* name,const std::string& value,const char* detail,Page page){
++            ImGui::TableNextColumn();ImGui::BeginChild(name,{0,150*ui.scale},ImGuiChildFlags_Borders);
++            ImGui::TextDisabled("%s",name);ImGui::TextWrapped("%s",value.c_str());note(detail);
++            if(ImGui::SmallButton("Inspect")){ui.page=page;if(page==Page::Security)ui.security_first=true;}
++            ImGui::EndChild();};
++        card("Acquisition",band_label(context.band),context.connected?"Connected; health above":"Disconnected / starting",Page::Settings);
++        card("Coverage",std::to_string(data.captures)+" Wi-Fi captures","Current run; gaps matter",Page::Security);
++        card("Security",std::to_string(context.incidents)+" open suspected incidents","Store scope; impact unverified",Page::Security);
++        card("Observations",std::to_string(data.groups)+" retained RF groups","Not a physical-device count",band_label(context.band).find("2.4")!=std::string::npos?Page::Wifi24:band_label(context.band).find("5")!=std::string::npos?Page::Wifi5:Page::Lora);
++        ImGui::EndTable();
++    }
++    if(!context.connected)note("No active receiver observations. Open Monitoring setup and explicitly connect.");
++    if(data.queue_loss)note("Coverage degraded by security queue loss; zero incidents is not an all-clear verdict.",true);
++    ImGui::SeparatorText("Current acquisition frequency map");draw_map();
++    if(section("Receiver and processing details")) {
++        ImGui::Text("Processing lane: %s | Wait: %.3f s | High-water jobs: %zu",data.lane_enabled?"enabled":"disabled",data.lane_wait,data.lane_peak);
++        ImGui::Text("Security queue: %zu | Peak: %zu",data.queue_depth,data.queue_peak);
++        note("Actual sample rate / gain readback: not uniformly reported. Inspect retained capture metadata where available.");
++    }
++    if(drones){ImGui::SeparatorText("Drone broadcast add-ons");ImGui::Text("DJI: %s | Wi-Fi Remote ID: %s",data.dji_enabled?"enabled":"off",data.rid_enabled?"enabled":"off");if(ImGui::Button("Inspect Drones"))ui.page=Page::Drones;}
++}
++}
+--- /dev/null
++++ b/src/gui/app_shell.hpp
+@@ -0,0 +1,45 @@
++#pragma once
++#include "imgui.h"
++#include <functional>
++#include <string>
++
++namespace rfmon::gui {
++enum class Page { Overview, Wifi24, Wifi5, Lora, Drones, Security, Captures, Settings };
++struct State {
++    Page page = Page::Overview;
++    bool setup_open = false;
++    bool legacy = false;
++    bool compact = false;
++    float scale = 1.0f;
++    bool security_first = true;
++    bool drones_offline = false;
++};
++// Display-only context: the shell has no receiver, worker or storage access.
++struct Context {
++    std::string radio, band, step, error, recording, run;
++    bool started = false, connected = false, stalled = false, overflow = false;
++    bool recording_pending = false, laboratory = false;
++    size_t incidents = 0;
++    int cycles = 0;
++};
++std::string band_label(const std::string& band);
++const char* page_name(Page page);
++const char* page_purpose(Page page);
++void configure_font();
++void apply_theme(float scale = 1, bool compact = false);
++void draw_workspace(State& state, const Context& context, bool drones_available,
++                    const std::function<void(Page)>& draw_page);
++void draw_capabilities(bool drones_available, bool cyclo_available);
++bool section(const char* label, bool primary = false);
++void note(const char* text, bool warning = false);
++}
++
++namespace rfmon::gui {
++struct Overview {
++    size_t captures=0, groups=0, queue_depth=0, queue_peak=0, lane_peak=0;
++    bool queue_loss=false, lane_enabled=false, dji_enabled=false, rid_enabled=false;
++    double lane_wait=0;
++};
++void draw_overview(State& state,const Context& context,const Overview& overview,bool drones_available,
++                   const std::function<void()>& draw_map);
++}
+--- /dev/null
++++ b/tests/test_gui_shell.cpp
+@@ -0,0 +1,77 @@
++// Exercises production navigation with real mouse/keyboard events, disconnected.
++#include "gui/app_shell.hpp"
++#include "imgui_internal.h"
++#include "backends/imgui_impl_opengl3.h"
++#include <EGL/egl.h>
++#include <EGL/eglext.h>
++#include <GL/gl.h>
++#include <chrono>
++#include <fstream>
++#include <iostream>
++#include <stdexcept>
++#include <vector>
++using namespace rfmon::gui;
++static void require(bool value,const char* why){if(!value)throw std::runtime_error(why);}
++int main(int argc,char** argv) {
++    auto display=eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA,EGL_DEFAULT_DISPLAY,nullptr);
++    require(eglInitialize(display,nullptr,nullptr)&&eglBindAPI(EGL_OPENGL_API),"Offscreen EGL unavailable");
++    EGLint attrs[]={EGL_SURFACE_TYPE,EGL_PBUFFER_BIT,EGL_RENDERABLE_TYPE,EGL_OPENGL_BIT,EGL_RED_SIZE,8,EGL_GREEN_SIZE,8,EGL_BLUE_SIZE,8,EGL_NONE};
++    EGLConfig config;EGLint count;require(eglChooseConfig(display,attrs,&config,1,&count)&&count,"EGL config");
++    EGLint dims[]={EGL_WIDTH,1600,EGL_HEIGHT,1000,EGL_NONE};
++    auto surface=eglCreatePbufferSurface(display,config,dims);auto context=eglCreateContext(display,config,EGL_NO_CONTEXT,nullptr);
++    require(eglMakeCurrent(display,surface,surface,context),"EGL make current");
++    ImGui::CreateContext();auto& io=ImGui::GetIO();io.IniFilename=nullptr;io.DisplaySize={1600,1000};io.DeltaTime=1.f/60;
++    configure_font();apply_theme();ImGui_ImplOpenGL3_Init("#version 130");
++    State state;Context ctx;ctx.radio="USRP X310";ctx.band="Wi-Fi 2.4 GHz";ctx.run="synthetic-display";
++    int commands=0;bool preview=false;ImVec2 command_center;std::string text;
++    auto frame=[&](bool log=false){
++        ImGui_ImplOpenGL3_NewFrame();ImGui::NewFrame();if(log)ImGui::LogToBuffer(0);
++        draw_workspace(state,ctx,true,[&](Page page){
++            ImGui::TextUnformatted("SYNTHETIC UI fixture — receiver disconnected; no RF acquisition");
++            if(!preview) {
++            if(ImGui::Button("Explicit fixture command"))++commands;
++            auto a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();command_center={(a.x+b.x)/2,(a.y+b.y)/2};
++            if(section("Complete retained details",true))ImGui::TextUnformatted("Unavailable values remain unavailable; exact raw evidence retained.");
++            }
++            if(page==Page::Settings)draw_capabilities(true,true);
++            if(page==Page::Overview){Overview data;data.captures=12;data.groups=4;draw_overview(state,ctx,data,true,[]{note("Synthetic fixture: frequency map unavailable; no RF samples acquired.");});}
++        });
++        if(log){text=ImGui::GetCurrentContext()->LogBuffer.c_str();ImGui::LogFinish();}
++        ImGui::Render();require(ImGui::GetCurrentContext()->ErrorCountCurrentFrame==0,"ImGui state error");require(ImGui::GetDrawData()->TotalVtxCount>0,"Empty draw data");
++        glViewport(0,0,int(io.DisplaySize.x),int(io.DisplaySize.y));glClearColor(.065,.085,.115,1);glClear(GL_COLOR_BUFFER_BIT);
++        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());require(glGetError()==GL_NO_ERROR,"OpenGL error");
++    };
++    auto click=[&](ImVec2 pos){io.AddMousePosEvent(pos.x,pos.y);frame();io.AddMouseButtonEvent(0,true);frame();io.AddMouseButtonEvent(0,false);frame();};
++    frame();frame();
++    // The production rail's first row begins after its WORKSPACES label.
++    for(int i=0;i<8;++i) {
++        ImGuiWindow* nav=nullptr;for(auto* w:ImGui::GetCurrentContext()->Windows)if(std::string(w->Name).find("/Navigation_")!=std::string::npos)nav=w;
++        require(nav,"Navigation child missing");
++        const float y=nav->DC.CursorStartPos.y+ImGui::GetTextLineHeightWithSpacing()+i*(32+ImGui::GetStyle().ItemSpacing.y)+16;
++        click({nav->DC.CursorStartPos.x+70,y});
++        require(state.page==static_cast<Page>(i),"Navigation selected wrong page");
++        require(commands==0,"Navigation emitted command");
++    }
++    const auto& style=ImGui::GetStyle();
++    const float setup_x=style.WindowPadding.x+ImGui::CalcTextSize("RF MONITOR").x+style.ItemSpacing.x+ImGui::CalcTextSize("/ Settings").x+style.ItemSpacing.x+(ImGui::CalcTextSize("Monitoring setup").x+2*style.FramePadding.x)/2;
++    click({setup_x,style.WindowPadding.y+ImGui::GetFrameHeight()/2});
++    require(state.setup_open && commands==0,"Monitoring setup must open without a command");
++    click({setup_x,style.WindowPadding.y+ImGui::GetFrameHeight()/2});
++    require(!state.setup_open && commands==0,"Closing setup must not issue command");
++    click(command_center);require(commands==1,"Explicit action must issue exactly one command");
++    ctx.stalled=true;ctx.overflow=true;ctx.error="Synthetic recording failure";frame(true);
++    require(text.find("RX stalled")!=std::string::npos&&text.find("Synthetic recording failure")!=std::string::npos,"Material warnings hidden");
++    require(commands==1&&ctx.band=="Wi-Fi 2.4 GHz","Passive rendering changed acquisition");
++    for(float scale:{1.f,1.25f,1.5f,2.f}) {
++        state.scale=scale;apply_theme(scale,true);io.DisplaySize={1280,800};frame();frame();
++        state.legacy=true;frame();state.legacy=false;
++        require(commands==1,"Scale/layout switch emitted command");
++    }
++    preview=true;ctx.error.clear();ctx.stalled=false;ctx.overflow=false;
++    state.scale=1;apply_theme();io.DisplaySize={1600,1000};state.page=Page::Overview;frame();frame();
++    const auto start=std::chrono::steady_clock::now();for(int i=0;i<120;++i)frame();
++    std::cout<<"Shell software-render average ms/frame: "<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/120<<'\n';
++    if(argc>1){glFinish();std::vector<unsigned char> bytes(1600*1000*3);glPixelStorei(GL_PACK_ALIGNMENT,1);glReadPixels(0,0,1600,1000,GL_RGB,GL_UNSIGNED_BYTE,bytes.data());std::ofstream out(argv[1],std::ios::binary);out<<"P6\n1600 1000\n255\n";for(int y=999;y>=0;--y)out.write(reinterpret_cast<const char*>(bytes.data()+y*1600*3),1600*3);}
++    ImGui_ImplOpenGL3_Shutdown();ImGui::DestroyContext();eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);eglDestroyContext(display,context);eglDestroySurface(display,surface);eglTerminate(display);
++    std::cout<<"Production navigation, warning visibility, explicit command and scale isolation: PASS\n";
++}

@@ -27,7 +27,7 @@ using SecurityCommandFn = std::function<void(const std::string& action, const st
 // the user's choice alone.
 void draw_wifi_security_panel(const wifi_security::SecuritySnapshot& s, const wifi_security::QueueStats& q,
                               const std::string& run_id, const std::string& recording, float height,
-                              const char* select_tab = nullptr, const SecurityCommandFn& command = {});
+                              const char* select_tab = nullptr, const SecurityCommandFn& command = {}, bool inline_inspector = false);
 
 // One-line key fields for a frame (reason/status/SSID/TSF/PN/EAPOL...),
 // shared by the table and tests.

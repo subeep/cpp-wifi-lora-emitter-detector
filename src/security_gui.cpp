@@ -72,7 +72,7 @@ void coverage_tab(const SecuritySnapshot& s, float height) {
                           "length or across restarts are counted as unknown, never as observed.");
     ImGui::TextDisabled("Sampled = received. Analysed = actually examined for bursts: once a capture hits the "
                         "burst cap, the rest of it is never looked at and does not count as observed.");
-    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
+    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
                        ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX;
     if (!ImGui::BeginTable("wifi_security_coverage_v2", 17, flags, ImVec2(0, height - ImGui::GetTextLineHeightWithSpacing()))) return;
     ImGui::TableSetupScrollFreeze(2, 1);
@@ -230,7 +230,7 @@ void frame_details_popup(const ProcessedFrame& p) {
 
 void recent_tab(const SecuritySnapshot& s, float height) {
     static bool mgmt_only = false, hide_control = true;
-    static int selected = -1;
+    static std::optional<IngestKey> selected;
     static ProcessedFrame selected_frame;
     ImGui::Checkbox("Management frames only", &mgmt_only);
     ImGui::SameLine();
@@ -238,7 +238,7 @@ void recent_tab(const SecuritySnapshot& s, float height) {
     ImGui::SameLine();
     ImGui::TextDisabled("| newest %zu shown, newest first; click a row for details", s.recent.size());
     if (s.recent.empty()) { ImGui::TextDisabled("No FCS-valid frames accepted yet."); return; }
-    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
+    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
                        ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX;
     bool open = false;
     if (ImGui::BeginTable("wifi_security_recent", 13, flags, ImVec2(0, height - ImGui::GetFrameHeightWithSpacing()))) {
@@ -258,9 +258,9 @@ void recent_tab(const SecuritySnapshot& s, float height) {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             ImGui::PushID(int(i));
-            if (ImGui::Selectable(time_label(p.event).c_str(), selected == int(i),
+            if (ImGui::Selectable(time_label(p.event).c_str(), selected && *selected == ingest_key(p.event),
                                   ImGuiSelectableFlags_SpanAllColumns)) {
-                selected = int(i);
+                selected = ingest_key(p.event);
                 selected_frame = p;
                 open = true;
             }
@@ -330,7 +330,7 @@ void baselines_tab(const SecuritySnapshot& s, float height, const SecurityComman
         ImGui::EndPopup();
     }
     if (s.baselines.empty()) { ImGui::TextDisabled("No baselines yet: they start with the first contiguous capture."); return; }
-    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
+    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
                        ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX;
     const BaselineMetric shown[] = {BaselineMetric::Frames, BaselineMetric::Deauth, BaselineMetric::Disassoc,
                                     BaselineMetric::Auth, BaselineMetric::ProbeRequest, BaselineMetric::Beacon,
@@ -386,7 +386,7 @@ void baselines_tab(const SecuritySnapshot& s, float height, const SecurityComman
     ImGui::EndTable();
 }
 
-void incidents_tab(const SecuritySnapshot& s, float height) {
+void incidents_tab(const SecuritySnapshot& s, float height, bool inline_inspector) {
     ImGui::TextDisabled("Incident store: coalesced, bounded, versioned records with evidence and coverage limits. "
                         "An incident closes only after quiet ANALYSED air on its channel, never because of a scan gap.");
     ImGui::Text("Open %zu | total %zu | evicted %llu", s.incidents_open, s.incidents_total,
@@ -402,20 +402,29 @@ void incidents_tab(const SecuritySnapshot& s, float height) {
             : "Flood detection disabled. An empty list does not establish absence of attacks.");
         return;
     }
-    static uint64_t selected = 0;
+    static std::map<ImGuiID,uint64_t> selections;
+    auto& selected=selections[ImGui::GetID("incident selection")];
+    static ImGuiTextFilter incident_filter;
+    ImGui::TextDisabled("Right-click table headers for additional columns. Select an incident for all evidence.");
+    incident_filter.Draw("Search retained incidents",280);
+    ImGui::SameLine();if(ImGui::SmallButton("Clear filter"))incident_filter.Clear();
     bool open_details = false;
-    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
+    const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV |
                        ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX;
-    if (!ImGui::BeginTable("wifi_security_incidents", 12, flags, ImVec2(0, height - 2 * ImGui::GetFrameHeightWithSpacing())))
-        return;
+    const bool wide_inspector=inline_inspector && selected && ImGui::GetContentRegionAvail().x>=1100;
+    if(wide_inspector)ImGui::BeginChild("Incident list",ImVec2(ImGui::GetContentRegionAvail().x-480,height),ImGuiChildFlags_None,ImGuiWindowFlags_HorizontalScrollbar);
+    if (!ImGui::BeginTable("wifi_security_incidents", 12, flags, ImVec2(0,wide_inspector?std::max(120.f,height-20):inline_inspector && selected?std::min(height,230.f):height - 2 * ImGui::GetFrameHeightWithSpacing())))
+        {if(wide_inspector)ImGui::EndChild();return;}
     ImGui::TableSetupScrollFreeze(1, 1);
     const char* cols[] = {"#", "Rule", "State", "Severity", "Confidence", "Ch", "Claimed source", "Target",
                           "Observations", "Rate (per analysed s)", "Coverage", "Benign alternatives"};
     const float w[] = {45, 170, 90, 75, 90, 40, 140, 140, 100, 150, 220, 260};
-    for (int i = 0; i < 12; ++i) ImGui::TableSetupColumn(cols[i], ImGuiTableColumnFlags_WidthFixed, w[i]);
+    for (int i = 0; i < 12; ++i) ImGui::TableSetupColumn(cols[i], ImGuiTableColumnFlags_WidthFixed | (i>=9?ImGuiTableColumnFlags_DefaultHide:0), w[i]);
     ImGui::TableHeadersRow();
     for (size_t k = s.incidents.size(); k-- > 0;) {
         const Incident& i = s.incidents[k];
+        const std::string search=i.rule+" "+i.claimed_source+" "+i.claimed_bssid+" "+i.target+" "+std::to_string(i.channel)+" "+(i.open?"open":"closed");
+        if(!incident_filter.PassFilter(search.c_str()))continue;
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         if (ImGui::Selectable(std::to_string(i.id).c_str(), selected == i.id)) { selected = i.id; open_details = true; }
@@ -440,9 +449,11 @@ void incidents_tab(const SecuritySnapshot& s, float height) {
         ImGui::TextUnformatted(alt.empty() ? "--" : alt.c_str());
     }
     ImGui::EndTable();
-    if (open_details) ImGui::OpenPopup("Wi-Fi incident evidence");
-    ImGui::SetNextWindowSize(ImVec2(920,650), ImGuiCond_Appearing);
-    if (ImGui::BeginPopupModal("Wi-Fi incident evidence", nullptr, ImGuiWindowFlags_None)) {
+    if(wide_inspector){ImGui::EndChild();ImGui::SameLine();ImGui::BeginChild("Incident inspector",ImVec2(0,height),ImGuiChildFlags_Borders);}
+    if (open_details && !inline_inspector) ImGui::OpenPopup("Wi-Fi incident evidence");
+    if(!inline_inspector)ImGui::SetNextWindowSize(ImVec2(920,650), ImGuiCond_Appearing);
+    if (inline_inspector ? selected!=0 : ImGui::BeginPopupModal("Wi-Fi incident evidence", nullptr, ImGuiWindowFlags_None)) {
+        if(inline_inspector)ImGui::SeparatorText("Incident evidence inspector");
         auto it = std::find_if(s.incidents.begin(),s.incidents.end(),[&](const auto& i){ return i.id == selected; });
         if (it == s.incidents.end()) ImGui::TextDisabled("Incident no longer retained.");
         else {
@@ -505,9 +516,10 @@ void incidents_tab(const SecuritySnapshot& s, float height) {
                 ImGui::EndChild();
             }
         }
-        if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
+        if (ImGui::Button("Close")) {if(inline_inspector)selected=0;else ImGui::CloseCurrentPopup();}
+        if(!inline_inspector)ImGui::EndPopup();
     }
+    if(wide_inspector)ImGui::EndChild();
 }
 
 }  // namespace
@@ -577,7 +589,14 @@ std::string wifi_security_header_label(const SecuritySnapshot& s) {
 
 void draw_wifi_security_panel(const SecuritySnapshot& s, const QueueStats& q, const std::string& run_id,
                               const std::string& recording, float height, const char* select_tab,
-                              const SecurityCommandFn& command) {
+                              const SecurityCommandFn& command, bool inline_inspector) {
+    ImGui::TextWrapped("Open suspected incidents: %zu | Accepted frames: %llu | Sampled duty: %.1f%% (current run)",s.incidents_open,(unsigned long long)s.frames_accepted,100*s.timeline.duty());
+    if(s.timeline.sampled_s+s.timeline.dead_s<=0)ImGui::TextDisabled("Duty has no observed time denominator yet; the displayed counter is not a coverage verdict.");
+    ImGui::TextWrapped("No incident does not establish a safe network: gaps, eligibility and baseline maturity limit detection.");
+    if(q.events_dropped||q.captures_dropped)ImGui::TextColored(kBad,"QUEUE LOSS: %llu frames / %llu captures",(unsigned long long)q.events_dropped,(unsigned long long)q.captures_dropped);
+    if(!s.storage_error.empty())ImGui::TextWrapped("Recording failed: %s",s.storage_error.c_str());
+    if(!s.persist_error.empty())ImGui::TextWrapped("Persistence warning: %s",s.persist_error.c_str());
+    if(ImGui::CollapsingHeader("Rule coverage and processing diagnostics")) {
     ImGui::TextDisabled("Passive flood, beacon replay and connection/handshake anomalies. Sender and impact unverified.");
     ImGui::Text("Flood rule: %s | evaluated windows %llu | excluded captures %llu", s.flood_enabled ? "enabled (baseline required)" : "disabled", (unsigned long long)s.flood_evaluations,(unsigned long long)s.flood_excluded_captures);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Provisional configuration: %s",s.flood_config.c_str());
@@ -633,11 +652,14 @@ void draw_wifi_security_panel(const SecuritySnapshot& s, const QueueStats& q, co
     else ImGui::TextColored(kDim, "not recording");
     ImGui::SameLine(); ImGui::TextDisabled("| run %s", run_id.c_str());
 
+    }
+    ImGui::PushID(run_id.c_str());
     if (ImGui::BeginTabBar("wifi_security_tabs")) {
         const float h = std::max(120.0f, height - 3.5f * ImGui::GetFrameHeightWithSpacing());
         auto tab_flags = [&](const char* name) {
             return select_tab && std::string(select_tab) == name ? ImGuiTabItemFlags_SetSelected : 0;
         };
+        if (ImGui::BeginTabItem("Incidents", nullptr, tab_flags("Incidents"))) { incidents_tab(s, h, inline_inspector); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Coverage", nullptr, tab_flags("Coverage"))) {
             coverage_tab(s, h - ImGui::GetTextLineHeightWithSpacing());
             ImGui::EndTabItem();
@@ -645,9 +667,10 @@ void draw_wifi_security_panel(const SecuritySnapshot& s, const QueueStats& q, co
         if (ImGui::BeginTabItem("Frame types", nullptr, tab_flags("Frame types"))) { frame_types_tab(s, h); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Recent frames", nullptr, tab_flags("Recent frames"))) { recent_tab(s, h); ImGui::EndTabItem(); }
         if (ImGui::BeginTabItem("Baselines", nullptr, tab_flags("Baselines"))) { baselines_tab(s, h, command); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Incidents", nullptr, tab_flags("Incidents"))) { incidents_tab(s, h); ImGui::EndTabItem(); }
+
         ImGui::EndTabBar();
     }
+    ImGui::PopID();
 }
 
 }  // namespace rfmon

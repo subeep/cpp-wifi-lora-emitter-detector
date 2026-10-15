@@ -43,6 +43,7 @@ using cf = std::complex<float>;
 namespace rfmon {
 struct ScannerTestAccess {
     using Job = Scanner::WifiStepJob;
+    static void observer(Scanner& s, Scanner::WifiIqObserver f, Scanner::WifiFrameObserver frames={}) { s.wifi_iq_observer_=std::move(f); s.wifi_frame_observer_=std::move(frames); }
     static void set_device_factory(Scanner& s, decltype(Scanner::device_factory_) f) { s.device_factory_ = std::move(f); }
     static void raise_stop_flag(Scanner& s) { s.stop_flag_ = true; }
     static bool stop_flag(Scanner& s) { return s.stop_flag_.load(); }
@@ -240,11 +241,12 @@ std::vector<std::string> read_recording(const fs::path& p) {
 
 enum class Mode { Inline, Lane, SlowLane };
 
-Outcome run_mode(Mode mode, const fs::path& root) {
+Outcome run_mode(Mode mode, const fs::path& root, Scanner::WifiIqObserver observer = {}, Scanner::WifiFrameObserver frames = {}) {
     fs::create_directories(root);
     Outcome o;
     {
         Scanner s(root.string());
+        ScannerTestAccess::observer(s,std::move(observer),std::move(frames));
         s.set_wifi_security_recording((root / "rec.ndjson").string());
         ScannerTestAccess::start_monitor(s);
         std::vector<Job> jobs = build_jobs();
@@ -483,6 +485,20 @@ int main() {
     Outcome a = run_mode(Mode::Inline, base / "inline");
     Outcome b = run_mode(Mode::Lane, base / "lane");
     Outcome c = run_mode(Mode::SlowLane, base / "slow");
+
+    size_t observer_calls=0, frame_observer_calls=0;
+    Outcome observer = run_mode(Mode::Lane,base / "observer",[&](const auto& iq,const auto& record) {
+        check(!iq.empty() && record.processed,"observer_gets_completed_capture");
+        ++observer_calls;
+        throw std::runtime_error("optional add-on failure injection");
+    }, [&](const auto& frame) {
+        check(frame.fcs_valid&&!frame.mpdu.empty(),"frame_observer_gets_verified_mpdu");
+        ++frame_observer_calls;
+        throw std::runtime_error("packet observer failure injection");
+    });
+    check(frame_observer_calls>400,"frame_observer_including_security_tail_was_exercised");
+    check(observer_calls>0,"observer_was_exercised");
+    check(a.recording==observer.recording && a.snapshot==observer.snapshot,"observer_failure_preserves_core_outputs");
 
     // The fixtures must actually exercise the paths under test.
     const auto& m = a.raw_monitor;

@@ -1,0 +1,6 @@
+# Versions used for the 13 October 2026 CPU smoke run, Python 3.14.
+# Install torch separately using https://download.pytorch.org/whl/cpu.
+numpy==2.5.4
+scipy==1.18.1
+h5py==3.16.0
+torch==2.14.1+cpu

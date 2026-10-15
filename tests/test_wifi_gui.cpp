@@ -1,6 +1,7 @@
 // Offscreen GUI smoke/interaction test. Renders the actual production Wi-Fi
 // tables with controlled fixtures, without starting Scanner or accessing a radio.
 #include "wifi_gui.hpp"
+#include "gui/app_shell.hpp"
 #include "security_gui.hpp"
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -288,6 +289,45 @@ int main(int argc, char** argv) {
             if(glGetError()!=GL_NO_ERROR)++failures;
         }
     }
+    // Revamped production shell and inline inspectors. The same fixture values
+    // must remain reachable; passive inspection must not issue baseline commands.
+    ImGui_ImplOpenGL3_Shutdown();ImGui::DestroyContext();ImGui::CreateContext();
+    auto& rio=ImGui::GetIO();rio.IniFilename=nullptr;rio.DisplaySize={1600,1000};rio.DeltaTime=1.f/60;
+    gui::configure_font();gui::apply_theme();ImGui_ImplOpenGL3_Init("#version 130");
+    gui::State ui;gui::Context ctx;ctx.radio="USRP X310";ctx.band=BAND_WIFI_2G4;ctx.run="synthetic-revamp";
+    wifi_security::SecuritySnapshot sample;wifi_security::Incident incident;
+    incident.id=9;incident.rule="historical_beacon_replay";incident.rule_version="fixture";
+    incident.claimed_bssid="00:11:22:33:44:55";incident.context={{"original_tsf_us","1000000"},{"newer_tsf_us","1600000"},{"repeated_tsf_us","1000000"}};
+    sample.incidents.push_back(incident);sample.incidents_open=sample.incidents_total=1;
+    int passive_commands=0;
+    for(int scene=0;scene<3;++scene) {
+        std::string rendered;
+        for(int frame=0;frame<7;++frame) {
+            ImGui_ImplOpenGL3_NewFrame();ImGui::NewFrame();ImGui::LogToBuffer(0);
+            ui.page=scene==2?gui::Page::Security:gui::Page::Wifi24;
+            gui::draw_workspace(ui,ctx,true,[&](gui::Page){
+                ImGui::TextUnformatted("SYNTHETIC UI fixture; receiver disconnected; no live evidence.");
+                if(scene==0)draw_wifi_master_table(rows,330,true);
+                if(scene==1)draw_wifi_packet_table(packets,330);
+                if(scene==2)draw_wifi_security_panel(sample,{},ctx.run,"",700,"Incidents",[&](const auto&,const auto&){++passive_commands;},true);
+                if(frame==2) {
+                    const char* table=scene==0?"wifi_master_identity_v2":scene==1?"wifi_packets_identity_v4":"wifi_security_incidents";
+                    for(auto* w:ImGui::GetCurrentContext()->Windows)if(std::string(w->Name).find(table)!=std::string::npos&&w->Active) {
+                        rio.AddMousePosEvent(w->Pos.x+25,w->Pos.y+40);rio.AddMouseButtonEvent(0,true);break;
+                    }
+                }
+            });
+            if(frame==3)rio.AddMouseButtonEvent(0,false);
+            rendered=ImGui::GetCurrentContext()->LogBuffer.c_str();ImGui::LogFinish();ImGui::Render();
+            if(ImGui::GetCurrentContext()->ErrorCountCurrentFrame)++failures;
+            glViewport(0,0,1600,1000);glClearColor(.065,.085,.115,1);glClear(GL_COLOR_BUFFER_BIT);ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());glFinish();
+        }
+        const char* expected=scene==0?"WPS":scene==1?"Selected packet snapshot":"Incident evidence inspector";
+        if(rendered.find(expected)==std::string::npos){std::cerr<<"Revamp inspector missing: "<<expected<<'\n';++failures;}
+        if(glGetError()!=GL_NO_ERROR)++failures;
+        save(scene==0?"-revamp-identities.ppm":scene==1?"-revamp-packets.ppm":"-revamp-incidents.ppm");
+    }
+    if(passive_commands){std::cerr<<"Passive inspection emitted backend command\n";++failures;}
     ImGui_ImplOpenGL3_Shutdown(); ImGui::DestroyContext();
     eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);
     eglDestroyContext(display,context); eglDestroySurface(display,surface); eglTerminate(display);

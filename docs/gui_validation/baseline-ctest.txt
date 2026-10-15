@@ -1,0 +1,107 @@
+Internal ctest changing into directory: /home/sudeep/Documents/newrocktest-cpp/build-gui-revamp
+Test project /home/sudeep/Documents/newrocktest-cpp/build-gui-revamp
+      Start  1: remote_id_monitor
+      Start  2: wifi_remote_id
+      Start  3: dji_decoder
+      Start  4: dji_addon
+ 1/42 Test  #3: dji_decoder ............................***Failed    0.04 sec
+Traceback (most recent call last):
+  File "/home/sudeep/Documents/newrocktest-cpp/tests/test_dji_decoder.py", line 8, in <module>
+    import numpy as np
+ModuleNotFoundError: No module named 'numpy'
+
+      Start  5: lora_receiver
+ 2/42 Test  #2: wifi_remote_id .........................   Passed    0.07 sec
+      Start  6: lora_observation
+ 3/42 Test  #6: lora_observation .......................   Passed    0.02 sec
+      Start  7: wifi_security_frame
+ 4/42 Test  #4: dji_addon ..............................Subprocess aborted***Exception:   0.15 sec
+Traceback (most recent call last):
+  File "/home/sudeep/Documents/newrocktest-cpp/src/drones/python/backend.py", line 27, in <module>
+    import numpy as np
+ModuleNotFoundError: No module named 'numpy'
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  decoder handshake failed
+
+      Start  8: wifi_security_events
+ 5/42 Test  #7: wifi_security_frame ....................   Passed    0.07 sec
+      Start  9: wifi_security_baseline
+ 6/42 Test  #8: wifi_security_events ...................   Passed    0.19 sec
+      Start 10: serial_lane
+ 7/42 Test  #9: wifi_security_baseline .................   Passed    0.21 sec
+      Start 11: scanner_wifi_lane
+ 8/42 Test #10: serial_lane ............................   Passed    0.40 sec
+      Start 12: wifi_security_flood
+ 9/42 Test  #1: remote_id_monitor ......................   Passed    0.75 sec
+      Start 13: wifi_security_beacon_replay
+10/42 Test #13: wifi_security_beacon_replay ............   Passed    0.01 sec
+      Start 14: capture_provenance
+11/42 Test #14: capture_provenance .....................   Passed    0.01 sec
+      Start 15: lora_security
+12/42 Test #12: wifi_security_flood ....................   Passed    0.02 sec
+      Start 16: wifi_security_transactions
+13/42 Test #16: wifi_security_transactions .............   Passed    0.20 sec
+      Start 17: security_replay_cli
+14/42 Test #15: lora_security ..........................   Passed    0.22 sec
+      Start 18: scanner_lora_security
+15/42 Test #18: scanner_lora_security ..................   Passed    0.16 sec
+      Start 19: cyclostationary_panel
+16/42 Test #19: cyclostationary_panel ..................   Passed    0.02 sec
+      Start 20: cyclostationary_math
+17/42 Test #20: cyclostationary_math ...................   Passed    0.06 sec
+      Start 21: cyclostationary_roi
+18/42 Test #21: cyclostationary_roi ....................   Passed    0.02 sec
+      Start 22: cyclostationary_sweeps
+19/42 Test #22: cyclostationary_sweeps .................   Passed    0.13 sec
+      Start 23: cyclostationary_chirp
+20/42 Test #17: security_replay_cli ....................   Passed    0.41 sec
+      Start 24: cyclostationary_evidence
+21/42 Test #23: cyclostationary_chirp ..................   Passed    0.04 sec
+      Start 25: cyclostationary_refinement
+22/42 Test #24: cyclostationary_evidence ...............   Passed    0.04 sec
+      Start 26: cyclostationary_clock
+23/42 Test  #5: lora_receiver ..........................   Passed    1.38 sec
+      Start 27: cyclostationary_burst
+24/42 Test #27: cyclostationary_burst ..................   Passed    0.08 sec
+      Start 28: cyclostationary_background
+25/42 Test #28: cyclostationary_background .............   Passed    0.24 sec
+      Start 29: cyclostationary_waveforms
+26/42 Test #25: cyclostationary_refinement .............   Passed    0.34 sec
+      Start 30: cyclostationary_protocol
+27/42 Test #30: cyclostationary_protocol ...............   Passed    0.01 sec
+      Start 31: cyclostationary_structure
+28/42 Test #26: cyclostationary_clock ..................   Passed    0.38 sec
+      Start 32: cyclostationary_review
+29/42 Test #32: cyclostationary_review .................   Passed    0.00 sec
+      Start 33: cyclostationary_shadow
+30/42 Test #29: cyclostationary_waveforms ..............   Passed    0.45 sec
+      Start 34: cyclostationary_process
+31/42 Test #31: cyclostationary_structure ..............   Passed    0.46 sec
+      Start 35: cyclostationary_link_validation
+32/42 Test #35: cyclostationary_link_validation ........   Passed    0.03 sec
+      Start 36: cyclostationary_marker_recurrence
+33/42 Test #36: cyclostationary_marker_recurrence ......   Passed    0.08 sec
+      Start 37: cyclostationary_link_reference_audit
+34/42 Test #37: cyclostationary_link_reference_audit ...   Passed    0.06 sec
+      Start 38: cyclostationary_reference_corpus
+35/42 Test #38: cyclostationary_reference_corpus .......   Passed    0.05 sec
+      Start 39: cyclostationary_cli
+36/42 Test #33: cyclostationary_shadow .................   Passed    0.78 sec
+      Start 40: cyclostationary_decision
+37/42 Test #40: cyclostationary_decision ...............   Passed    0.00 sec
+      Start 41: cyclostationary_named
+38/42 Test #41: cyclostationary_named ..................   Passed    0.05 sec
+      Start 42: cyclostationary_marker_structure
+39/42 Test #42: cyclostationary_marker_structure .......   Passed    0.04 sec
+40/42 Test #34: cyclostationary_process ................   Passed    0.89 sec
+41/42 Test #39: cyclostationary_cli ....................   Passed    1.03 sec
+42/42 Test #11: scanner_wifi_lane ......................   Passed    7.69 sec
+
+95% tests passed, 2 tests failed out of 42
+
+Total Test time (real) =   8.07 sec
+
+The following tests FAILED:
+	  3 - dji_decoder (Failed)
+	  4 - dji_addon (Subprocess aborted)
+Errors while running CTest

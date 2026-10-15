@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 project(rf_monitor_gui CXX)
 
+# Independent, runtime-disabled DJI broadcast decoder. No additional SDR owner.
+option(RFMON_ENABLE_DJI_DRONEID "Build the optional Drones tab with DJI and Wi-Fi Remote ID decoders" ON)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -66,6 +69,7 @@ file(GLOB APP_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/*.cpp)
 
 add_executable(rf_monitor_gui
   ${APP_SOURCES}
+  src/gui/app_shell.cpp
   ${IMGUI_SOURCES}
 )
 
@@ -310,7 +314,7 @@ target_include_directories(test_wifi_identity PRIVATE ${CMAKE_SOURCE_DIR}/src ${
 find_path(WIFI_EGL_INCLUDE_DIR EGL/egl.h)
 find_library(WIFI_EGL_LIBRARY EGL)
 if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
-  add_executable(test_wifi_gui tests/test_wifi_gui.cpp src/wifi_gui.cpp src/wifi_frame.cpp src/security_gui.cpp
+  add_executable(test_wifi_gui src/gui/app_shell.cpp tests/test_wifi_gui.cpp src/wifi_gui.cpp src/wifi_frame.cpp src/security_gui.cpp
       src/security/wifi_mac_frame.cpp src/security/wifi_frame_event.cpp src/security/wifi_security_io.cpp
       src/security/wifi_security_state.cpp src/security/wifi_security_monitor.cpp
       src/security/wifi_security_baseline.cpp src/security/wifi_security_incidents.cpp src/security/wifi_security_flood.cpp src/security/wifi_security_beacon_replay.cpp src/security/wifi_security_transactions.cpp
@@ -481,6 +485,55 @@ target_include_directories(test_lora_receiver PRIVATE ${CMAKE_SOURCE_DIR}/src ${
 target_compile_definitions(test_lora_receiver PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
 target_link_libraries(test_lora_receiver PRIVATE PkgConfig::KISSFFT)
 enable_testing()
+if(RFMON_ENABLE_DJI_DRONEID)
+  enable_language(C)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i.86")
+    message(FATAL_ERROR "DJI turbo decoder requires x86 SSSE3; disable RFMON_ENABLE_DJI_DRONEID on other platforms")
+  endif()
+  add_library(rfmon_drone_turbo SHARED src/drones/turbo_bridge.c
+    third_party/drone_turbofec/src/turbo_dec.c
+    third_party/drone_turbofec/src/turbo_enc.c
+    third_party/drone_turbofec/src/turbo_rate_match.c)
+  target_include_directories(rfmon_drone_turbo PRIVATE third_party/drone_turbofec/include)
+  target_compile_options(rfmon_drone_turbo PRIVATE -O2 -mssse3)
+  target_compile_definitions(rfmon_drone_turbo PRIVATE HAVE_SSE3)
+  target_link_libraries(rfmon_drone_turbo PRIVATE m)
+  add_library(rfmon_drones STATIC src/drones/detector.cpp src/drones/remote_id.cpp)
+  target_include_directories(rfmon_drones PUBLIC src ${WIFI_JSON_INCLUDE_DIR})
+  target_link_libraries(rfmon_drones PUBLIC Threads::Threads)
+  target_compile_definitions(rfmon_drones PRIVATE DETECTOR_PYTHON="${Python3_EXECUTABLE}"
+    DETECTOR_SCRIPT="${CMAKE_SOURCE_DIR}/src/drones/python/backend.py"
+    DETECTOR_TURBO="$<TARGET_FILE:rfmon_drone_turbo>")
+  add_dependencies(rfmon_drones rfmon_drone_turbo)
+  target_link_libraries(rf_monitor_gui PRIVATE rfmon_drones)
+  target_sources(rf_monitor_gui PRIVATE src/drones/panel.cpp)
+  target_compile_definitions(rf_monitor_gui PRIVATE RFMON_ENABLE_DJI_DRONEID=1)
+  add_executable(wifi_remote_id_inspect tools/wifi_remote_id_inspect.cpp src/drones/remote_id.cpp)
+  target_include_directories(wifi_remote_id_inspect PRIVATE src ${WIFI_JSON_INCLUDE_DIR})
+  target_link_libraries(wifi_remote_id_inspect PRIVATE Threads::Threads)
+  add_executable(test_remote_id_monitor tests/test_remote_id_monitor.cpp src/drones/remote_id.cpp)
+  target_include_directories(test_remote_id_monitor PRIVATE src ${WIFI_JSON_INCLUDE_DIR})
+  target_compile_definitions(test_remote_id_monitor PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
+  target_link_libraries(test_remote_id_monitor PRIVATE Threads::Threads)
+  add_test(NAME remote_id_monitor COMMAND test_remote_id_monitor)
+  add_test(NAME wifi_remote_id COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_wifi_remote_id.py $<TARGET_FILE:wifi_remote_id_inspect>)
+  set_tests_properties(wifi_remote_id PROPERTIES TIMEOUT 60)
+  add_test(NAME dji_decoder COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/test_dji_decoder.py $<TARGET_FILE:rfmon_drone_turbo>)
+  set_tests_properties(dji_decoder PROPERTIES TIMEOUT 180)
+  add_executable(test_dji_addon tests/test_dji_addon.cpp src/drones/panel.cpp
+    ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp ${IMGUI_DIR}/imgui_widgets.cpp)
+  target_include_directories(test_dji_addon PRIVATE ${IMGUI_DIR})
+  target_compile_definitions(test_dji_addon PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
+  target_link_libraries(test_dji_addon PRIVATE rfmon_drones)
+  if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
+    target_sources(test_dji_addon PRIVATE ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
+    target_compile_definitions(test_dji_addon PRIVATE DJI_EGL=1)
+    target_link_libraries(test_dji_addon PRIVATE OpenGL::GL ${WIFI_EGL_LIBRARY} dl)
+  endif()
+  add_test(NAME dji_addon COMMAND test_dji_addon)
+  set_tests_properties(dji_addon PROPERTIES TIMEOUT 120)
+endif()
 add_test(NAME lora_receiver COMMAND test_lora_receiver)
 add_test(NAME lora_observation COMMAND test_lora_observation)
 
@@ -634,4 +687,23 @@ if(RFMON_ENABLE_WIFI_CYCLO_SHADOW)
   target_include_directories(test_cyclo_panel PRIVATE ${CMAKE_SOURCE_DIR}/src ${IMGUI_DIR})
   target_link_libraries(test_cyclo_panel PRIVATE rfmon_cyclo_offline)
   add_test(NAME cyclostationary_panel COMMAND test_cyclo_panel)
+endif()
+
+# UI-only navigation qualification; no Scanner, SDR, worker or persisted store.
+if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
+  add_executable(test_gui_shell tests/test_gui_shell.cpp src/gui/app_shell.cpp
+    ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
+  target_include_directories(test_gui_shell PRIVATE ${CMAKE_SOURCE_DIR}/src ${IMGUI_DIR} ${WIFI_EGL_INCLUDE_DIR})
+  target_link_libraries(test_gui_shell PRIVATE OpenGL::GL ${WIFI_EGL_LIBRARY} dl)
+  add_test(NAME gui_shell COMMAND test_gui_shell)
+endif()
+
+if(TARGET test_wifi_gui)
+  add_test(NAME wifi_gui COMMAND test_wifi_gui)
+  set_tests_properties(wifi_gui PROPERTIES ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1")
+endif()
+if(TARGET test_lora_gui)
+  add_test(NAME lora_gui COMMAND test_lora_gui)
+  set_tests_properties(lora_gui PROPERTIES ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1")
 endif()

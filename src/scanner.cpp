@@ -755,6 +755,7 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                         ev.bandwidth_hz = bw_hz;
                         ev.duration_us = duration_s * 1e6;
                         ev.confidence = result.confidence;
+                        if (wifi_frame_observer_) { try { wifi_frame_observer_(ev); } catch (...) {} }
                         if (security_->submit(std::move(ev))) ++rec.events_submitted;
                         else ++rec.events_rejected_by_queue;
                     }
@@ -903,6 +904,7 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                             }
                             if (fp_opt->gated_out) ev.fp_gate_reason = fp_opt->gate_reason;
                         }
+                        if (wifi_frame_observer_) { try { wifi_frame_observer_(ev); } catch (...) {} }
                         if (security_->submit(std::move(ev))) ++rec.events_submitted;
                         else ++rec.events_rejected_by_queue;
                     }
@@ -991,6 +993,9 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
             rec.processed = true;
             rec.processing_s = std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                                              processing_start).count();
+            // Optional add-on gets read-only IQ after all existing packet work.
+            // It must return promptly; failures never change existing monitor decisions.
+            if (wifi_iq_observer_) { try { wifi_iq_observer_(cap, rec); } catch (...) {} }
             security_->submit(std::move(rec));
             auto srcs = wifi::find_beacon_sources(burst_starts_s, burst_powers_db);
             source_count = std::max(source_count, int(srcs.size()));

@@ -1,0 +1,70 @@
+#pragma once
+#include "broadcast.hpp"
+#include <atomic>
+#include <chrono>
+#include <complex>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
+#include <map>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+namespace drone {
+struct TelemetryField {
+    std::string group, name, value, status;
+};
+struct Observation {
+    std::string protocol, link, evidence, serial, model, source;
+    double frequency{}, power{}, timestamp{}, latitude{}, longitude{}, altitude{};
+    bool confirmed{}, legacy{};
+    double sample_rate{}, carrier_correction_hz{};
+    int64_t sequence{-1};
+    std::string packet_json, position_status{"Unavailable"};
+    std::string transmitter, remote_id_json, mavlink_json;
+    std::vector<TelemetryField> telemetry;
+    uint64_t count{1}, receiver_epoch{};
+    std::chrono::steady_clock::time_point acquired_at{};
+};
+struct Snapshot {
+    std::string status{"Idle"};
+    bool ready{};
+    uint64_t samples{}, dropped{}, candidates{}, rejected{}, decoded{};
+    double processing_ms{}, preprocessing_ms{}, queue_age_ms{}, oldest_queue_ms{}, end_to_end_ms{};
+    size_t queue_depth{};
+    uint64_t discontinuities{}, partial_discarded{}, stop_discarded{}, analysis_errors{};
+    std::vector<Observation> observations;
+    std::map<std::string, BroadcastTrack> tracks; // per validated serial, bounded by kMaxTracks
+};
+constexpr size_t kMaxTracks=64;
+class Detector {
+public:
+    Detector() = default;
+    ~Detector();
+    void start();
+    void stop();
+    bool running() const { return running_; }
+    void submit(const std::complex<float>* data, size_t count, double rate,
+                double frequency, double timestamp, uint64_t epoch, const std::string& source = "IQ");
+    Snapshot snapshot();
+private:
+    struct Chunk {
+        std::vector<std::complex<float>> data;
+        double rate{}, frequency{}, timestamp{};
+        uint64_t epoch{}, receiver_epoch{};
+        std::string source;
+        std::chrono::steady_clock::time_point enqueued;
+    };
+    void run();
+    void status(const std::string& message, bool ready=false);
+    std::atomic<bool> running_{false};
+    std::atomic<uint64_t> dropped_{0}, gap_{0};
+    std::thread thread_;
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    std::deque<Chunk> queue_;
+    Snapshot snapshot_;
+};
+}

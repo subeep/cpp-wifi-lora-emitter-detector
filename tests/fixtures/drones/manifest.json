@@ -1,0 +1,13 @@
+{
+  "source": "RUB-SysSec/DroneSecurity via local Drone_recorder tests/data",
+  "upstream_commit": "9ff819843bee48fb140a0704ec78aff757896dea",
+  "license": "AGPL-3.0",
+  "format": "little-endian complex float32",
+  "sample_rate_hz": 50000000,
+  "test_center_hz": 2444500000,
+  "note": "Published recorded fixtures, not fresh local hardware validation. Center metadata follows the inherited test setup.",
+  "sha256": {
+    "dji_mavic_air_2.fc32": "623fa40f190d3fd859ec2fd62b379ad9a01a0485db3179ae29ac2e3c7a070450",
+    "dji_mini2.fc32": "5a17913cb11cde2919347054700345c9e5595eaff7818980d332b8ac8910bc55"
+  }
+}

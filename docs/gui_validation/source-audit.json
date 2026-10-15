@@ -1,0 +1,19 @@
+{
+  "unchanged_backend_audit": "PASS",
+  "changed_source_files": [
+    "src/wifi_gui.hpp",
+    "src/main.cpp",
+    "src/security_gui.cpp",
+    "src/wifi_gui.cpp",
+    "src/security_gui.hpp",
+    "src/lora_gui.cpp",
+    "src/drones/panel.hpp",
+    "src/drones/panel.cpp"
+  ],
+  "new_source_files": [
+    "src/gui/app_shell.cpp",
+    "src/gui/app_shell.hpp"
+  ],
+  "radio_operated": false,
+  "original_binary_overwritten": false
+}

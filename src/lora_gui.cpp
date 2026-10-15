@@ -4,6 +4,9 @@
 #include "imgui.h"
 #include <future>
 #include <chrono>
+#include <map>
+#include <sstream>
+#include <iomanip>
 
 namespace rfmon {
 void draw_lora_security_panel(const lora_security::Snapshot& s) {
@@ -43,6 +46,14 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
         return;
     }
 
+    struct View { ImGuiTextFilter filter; bool crc_only=false; std::optional<LoraPacketRow> selected; };
+    static std::map<ImGuiID,View> views;
+    auto& view=views[ImGui::GetID("LoRa retained view")];
+    if(ImGui::IsKeyChordPressed(ImGuiMod_Ctrl|ImGuiKey_F))ImGui::SetKeyboardFocusHere();
+    view.filter.Draw("Search retained hypotheses",280);
+    ImGui::Checkbox("CRC valid only",&view.crc_only);ImGui::SameLine();
+    if(ImGui::SmallButton("Clear filters")){view.filter.Clear();view.crc_only=false;}
+    ImGui::TextDisabled("Right-click headers for every column. Select a time for a complete frozen hypothesis inspector.");
     size_t headers=0, verified_count=0, partial=0, failed=0;
     for (const auto& row : packets) {
         headers += row.header_valid;
@@ -53,52 +64,52 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
     ImGui::Text("Retained observations: %zu | Valid headers: %zu | CRC valid: %zu | Partial: %zu | CRC failed: %zu",
                 packets.size(), headers, verified_count, partial, failed);
     ImGui::TextDisabled("SF/BW/polarity hypotheses; counts are not unique transmitters or delivery rates.");
-    static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
+    static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable |
                                    ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
                                    ImGuiTableFlags_ScrollX;
-    ImVec2 outer_size(0.0f, height);
+    ImVec2 outer_size(0.0f,view.selected?std::min(height,240.f):height);
     if (!ImGui::BeginTable("lora_packets", 31, flags, outer_size)) return;
 
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 80.0f);
     ImGui::TableSetupColumn("Decode outcome", ImGuiTableColumnFlags_WidthFixed, 170.0f);
-    ImGui::TableSetupColumn("Decoder", ImGuiTableColumnFlags_WidthFixed, 235.0f);
+    ImGui::TableSetupColumn("Decoder", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 235.0f);
     ImGui::TableSetupColumn("Header", ImGuiTableColumnFlags_WidthFixed, 85.0f);
     ImGui::TableSetupColumn("Freq (MHz)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
     ImGui::TableSetupColumn("SF", ImGuiTableColumnFlags_WidthFixed, 40.0f);
     ImGui::TableSetupColumn("BW guess (kHz)", ImGuiTableColumnFlags_WidthFixed, 110.0f);
     ImGui::TableSetupColumn("CR", ImGuiTableColumnFlags_WidthFixed, 40.0f);
-    ImGui::TableSetupColumn("LDRO", ImGuiTableColumnFlags_WidthFixed, 55.0f);
-    ImGui::TableSetupColumn("Sync observed", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-    ImGui::TableSetupColumn("Header len", ImGuiTableColumnFlags_WidthFixed, 85.0f);
+    ImGui::TableSetupColumn("LDRO", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 55.0f);
+    ImGui::TableSetupColumn("Sync observed", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 100.0f);
+    ImGui::TableSetupColumn("Header len", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 85.0f);
     ImGui::TableSetupColumn("Payload CRC", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-    ImGui::TableSetupColumn("CFO (bins)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+    ImGui::TableSetupColumn("CFO (bins)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 90.0f);
     // --- RF fingerprint (see fingerprint.hpp) - Tier-1 "stable core"
     // parameters, only populated on a "Detected" row (see
     // run_lora_listen_step()). SNR doubles as the gate-reason column
     // when extraction was rejected, since that's the most common gate.
-    ImGui::TableSetupColumn("SNR (dB)", ImGuiTableColumnFlags_WidthFixed, 110.0f);
+    ImGui::TableSetupColumn("SNR (dB)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 110.0f);
     // Fit-quality covariates (source spec §5/§1.6) - what the
     // LORA_EVM_CEILING_PCT/LORA_SYNC_CORR_FLOOR gate uses to reject a
     // wrong-hypothesis match that still had plenty of raw SNR behind
     // it. Shown even on a gated row when they were actually computed.
-    ImGui::TableSetupColumn("EVM (%)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-    ImGui::TableSetupColumn("Sync corr", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-    ImGui::TableSetupColumn("CFO (ppm)", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-    ImGui::TableSetupColumn("IRR (dB)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("IQ eps", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("IQ phi (deg)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-    ImGui::TableSetupColumn("DC (dBc)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("DC ang (deg)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+    ImGui::TableSetupColumn("EVM (%)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 90.0f);
+    ImGui::TableSetupColumn("Sync corr", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 90.0f);
+    ImGui::TableSetupColumn("CFO (ppm)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 90.0f);
+    ImGui::TableSetupColumn("IRR (dB)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0f);
+    ImGui::TableSetupColumn("IQ eps", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0f);
+    ImGui::TableSetupColumn("IQ phi (deg)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 100.0f);
+    ImGui::TableSetupColumn("DC (dBc)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0f);
+    ImGui::TableSetupColumn("DC ang (deg)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 100.0f);
     ImGui::TableSetupColumn("Payload", ImGuiTableColumnFlags_WidthFixed, 360.0f);
-    ImGui::TableSetupColumn("IQ polarity", ImGuiTableColumnFlags_WidthFixed, 95.0f);
-    ImGui::TableSetupColumn("Preamble peak", ImGuiTableColumnFlags_WidthFixed, 105.0f);
-    ImGui::TableSetupColumn("SFD peak", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-    ImGui::TableSetupColumn("CFO estimate (Hz)", ImGuiTableColumnFlags_WidthFixed, 130.0f);
-    ImGui::TableSetupColumn("Drift (Hz/symbol)", ImGuiTableColumnFlags_WidthFixed, 135.0f);
-    ImGui::TableSetupColumn("Capture offset (s)", ImGuiTableColumnFlags_WidthFixed, 135.0f);
-    ImGui::TableSetupColumn("FEC mismatches", ImGuiTableColumnFlags_WidthFixed, 120.0f);
-    ImGui::TableSetupColumn("LoRaWAN structure", ImGuiTableColumnFlags_WidthFixed, 220.0f);
+    ImGui::TableSetupColumn("IQ polarity", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 95.0f);
+    ImGui::TableSetupColumn("Preamble peak", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 105.0f);
+    ImGui::TableSetupColumn("SFD peak", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 90.0f);
+    ImGui::TableSetupColumn("CFO estimate (Hz)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 130.0f);
+    ImGui::TableSetupColumn("Drift (Hz/symbol)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 135.0f);
+    ImGui::TableSetupColumn("Capture offset (s)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 135.0f);
+    ImGui::TableSetupColumn("FEC mismatches", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 120.0f);
+    ImGui::TableSetupColumn("LoRaWAN structure", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 220.0f);
     ImGui::TableHeadersRow();
 
     ImVec4 dim(0.55f, 0.55f, 0.58f, 1.0f);
@@ -107,10 +118,14 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
 
     for (auto it = packets.rbegin(); it != packets.rend(); ++it) {
         const auto& d = *it;
+        std::string search=d.time+" "+d.status+" "+d.decoder+" "+d.payload_hex+" "+std::to_string(d.sf)+" "+std::to_string(d.freq_mhz);
+        if(!view.filter.PassFilter(search.c_str())||(view.crc_only&&d.crc!=LoraPacketRow::Crc::Valid))continue;
         bool verified = d.crc == LoraPacketRow::Crc::Valid;
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::TextUnformatted(d.time.c_str());
+        ImGui::PushID(static_cast<int>(std::distance(packets.rbegin(),it)));
+        if(ImGui::Selectable(d.time.c_str(),false))view.selected=d;
+        ImGui::PopID();
         ImGui::TableNextColumn();
         ImGui::TextColored(verified ? good : d.crc == LoraPacketRow::Crc::Failed ? bad : dim, "%s", d.status.c_str());
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", d.detail.c_str());
@@ -222,6 +237,30 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
         } else ImGui::TextDisabled("Unclassified");
     }
     ImGui::EndTable();
+    if(view.selected) {
+        const auto& d=*view.selected;
+        ImGui::SeparatorText("Selected LoRa hypothesis snapshot");
+        ImGui::TextWrapped("%s | %s | %s | CRC: %s",d.time.c_str(),d.status.c_str(),d.decoder.c_str(),lora_crc_label(d.crc));
+        ImGui::TextWrapped("%s",d.detail.c_str());
+        if(d.fp_gate_reason)ImGui::TextWrapped("RF fingerprint gate: %s",d.fp_gate_reason->c_str());
+        if(ImGui::Button("Close hypothesis details"))view.selected.reset();
+        else {
+            if(ImGui::CollapsingHeader("PHY, payload and decoder evidence",ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::Text("Frequency %.17g MHz | SF %d | BW %.17g kHz | CFO %d bins",d.freq_mhz,d.sf,d.bandwidth_khz,d.cfo_bins);
+                ImGui::Text("Header valid: %s | Payload complete: %s | LDRO ambiguous: %s | Analysis limited: %s",d.header_valid?"yes":"no",d.payload_complete?"yes":"no",d.ldro_ambiguous?"yes":"no",d.analysis_limited?"yes":"no");
+                auto field=[](const char* name,const auto& value){if(value){std::ostringstream out;out<<std::setprecision(17)<<*value;ImGui::TextWrapped("%s: %s",name,out.str().c_str());}else ImGui::TextDisabled("%s: unavailable",name);};
+                field("CR code",d.cr);field("Header length bytes",d.payload_len);field("CRC validity",d.crc_valid);field("LDRO",d.ldro);field("Sync observation",d.sync_word);field("Sync check skipped (lab)",d.sync_check_skipped);field("Inverted IQ",d.inverted_iq);
+                field("Preamble peak ratio",d.preamble_peak_ratio);field("SFD peak ratio",d.sfd_peak_ratio);field("CFO Hz",d.cfo_hz);field("Drift Hz/symbol",d.drift_hz_per_symbol);field("Capture offset s",d.capture_offset_s);field("FEC disagreements",d.fec_disagreements);
+                field("Decoder sample start",d.decoder_sample_start);field("Decoder sample end",d.decoder_sample_end);ImGui::Text("Start uncertainty: %zu samples",d.start_uncertainty_samples);
+                ImGui::TextWrapped("Payload hex: %s",d.payload_hex.c_str());field("Payload text",d.payload_repr);field("LoRaWAN candidate",d.lorawan_candidate);field("LoRaWAN detail (MIC unverified)",d.lorawan_detail);
+            }
+            if(ImGui::CollapsingHeader("Complete RF fingerprint measurements")) {
+                auto field=[](const char* name,const std::optional<double>& v){if(v)ImGui::Text("%s: %.17g",name,*v);else ImGui::TextDisabled("%s: unavailable",name);};
+                field("CFO ppm",d.fp_cfo_ppm);field("IRR dB",d.fp_irr_db);field("IQ epsilon",d.fp_iq_eps);field("IQ phase degrees",d.fp_iq_phi_deg);field("DC dBc",d.fp_dc_dbc);field("DC angle degrees",d.fp_dc_ang_deg);field("SNR dB",d.fp_snr_db);field("EVM percent",d.fp_evm_pct);field("Sync correlation",d.fp_sync_corr);
+            }
+        }
+    }
+
 }
 
 void draw_lora_replay_panel() {
