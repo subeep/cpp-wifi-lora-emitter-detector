@@ -38,10 +38,20 @@ inline bool has_rf_review(const WifiEnrolmentInfo& e) {
     for(const auto& p:e.archived_profiles)if(p.review)return true;
     return false;
 }
+// Each profile sample represents a distinct usable capture, not a packet.
+// Do not sum across contexts: gain/channel/session changes are not corroboration.
+inline bool has_repeated_identity_evidence(const WifiEnrolmentInfo& e) {
+    for (const auto* profiles : {&e.profiles, &e.archived_profiles})
+        for (const auto& p : *profiles)
+            if (p.captures >= 3 && p.last_ts >= p.first_ts &&
+                p.last_ts - p.first_ts >= 10) return true;
+    return false;
+}
 inline const char* enrolment_label(const WifiEnrolmentInfo& e) {
+    if(!has_repeated_identity_evidence(e)) return "CANDIDATE / INSUFFICIENT EVIDENCE";
     if(e.policy=="approved") return "APPROVED";
     if(e.policy=="disallowed") return "DISALLOWED";
     if(e.policy=="acknowledged") return "UNAPPROVED";
-    return e.imported ? "REVIEW REQUIRED" : "NEW DEVICE";
+    return e.imported ? "REVIEW REQUIRED" : "NEW OBSERVED INTERFACE";
 }
 }

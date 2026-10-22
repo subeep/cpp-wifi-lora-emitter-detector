@@ -196,17 +196,21 @@ void draw_wifi_packet_table(const std::vector<WifiPacketRow>& packets, float hei
 void draw_wifi_master_table(const std::vector<wifi_master::WifiMasterRow>& rows, float height, bool inline_inspector, const std::function<bool(wifi_master::EnrolmentCommand)>& command, int band) {
     if (rows.empty()) { ImGui::TextDisabled("No Wi-Fi identities or fingerprints recorded yet."); return; }
     static std::string selected;
-    struct MasterView { ImGuiTextFilter search; int filter=0; bool all_bands=false, clusters=false; std::string message, edit_key, pending_key, pending_action; char alias[129]={}, note[1025]={}; };
+    struct MasterView { ImGuiTextFilter search; int filter=0; bool all_bands=false, clusters=false, candidates=false; std::string message, edit_key, pending_key, pending_action; char alias[129]={}, note[1025]={}; };
     static std::map<ImGuiID,MasterView> views;auto& v=views[ImGui::GetID("enrolment view")];
     v.search.Draw("Search master list",240);ImGui::SameLine();
     ImGui::Combo("Review filter",&v.filter,"All\0Needs attention\0Approved\0Unapproved\0Disallowed\0");
-    ImGui::Checkbox("All Wi-Fi bands",&v.all_bands);ImGui::SameLine();ImGui::Checkbox("Include anonymous RF clusters",&v.clusters);
+    if(band){ImGui::Checkbox("All Wi-Fi bands",&v.all_bands);ImGui::SameLine();}ImGui::Checkbox("Include anonymous RF clusters",&v.clusters);
+    ImGui::Checkbox("Include unconfirmed candidates",&v.candidates);
+    ImGui::TextWrapped("Default: repeated observations in 3 usable captures spanning 10 seconds within one receiver context. Historical inventory, not devices currently online.");
     ImGui::TextDisabled("Claimed interfaces, not unique physical devices. Red means unreviewed/unapproved, not proven malicious.");
-    size_t fresh=0,unapproved=0,approved=0,changed=0;
+    size_t fresh=0,unapproved=0,approved=0,changed=0,confirmed=0,candidates=0;
     for(const auto& r:rows)if(r.enrolment){const auto& e=*r.enrolment;
+        if(!wifi_master::has_repeated_identity_evidence(e)){++candidates;continue;}++confirmed;
         fresh+=e.policy=="unreviewed"&&!e.imported;unapproved+=e.policy!="approved";approved+=e.policy=="approved";
         changed+=e.digital_review||wifi_master::has_rf_review(e);}
-    ImGui::Text("All Wi-Fi: %zu new | %zu unapproved | %zu approved | %zu changes to review",fresh,unapproved,approved,changed);
+    ImGui::Text("All Wi-Fi: %zu repeatedly observed interfaces | %zu unconfirmed candidates",confirmed,candidates);
+    ImGui::Text("Repeated observations: %zu new | %zu unapproved | %zu approved | %zu changes to review",fresh,unapproved,approved,changed);
     if(!v.message.empty())ImGui::TextWrapped("%s",v.message.c_str());
     auto submit=[&](const std::string& action,const std::string& key){
         if(command){v.message=command({key,action,v.alias,v.note})?"Command queued; saved status appears above when committed.":"Command queue full; action was NOT accepted.";}
@@ -215,6 +219,7 @@ void draw_wifi_master_table(const std::vector<wifi_master::WifiMasterRow>& rows,
     auto attention=[](const auto& r){return r.enrolment && (r.enrolment->policy!="approved" || r.enrolment->digital_review || wifi_master::has_rf_review(*r.enrolment));};
     for(const auto& r:rows){
         if(!r.key_is_mac&&!v.clusters)continue;
+        if(r.key_is_mac&&!v.candidates&&(!r.enrolment||!wifi_master::has_repeated_identity_evidence(*r.enrolment)))continue;
         if(band&&!v.all_bands){bool match=r.enrolment?(band==24?r.enrolment->seen_24>0:r.enrolment->seen_5>0):(band==24?r.last_channel_hz>=2400e6&&r.last_channel_hz<2500e6:r.last_channel_hz>=5000e6&&r.last_channel_hz<6000e6);if(!match)continue;}
         const std::string policy=r.enrolment?r.enrolment->policy:"unreviewed";
         if((v.filter==1&&!attention(r))||(v.filter==2&&policy!="approved")||(v.filter==3&&policy=="approved")||(v.filter==4&&policy!="disallowed"))continue;
@@ -249,11 +254,17 @@ void draw_wifi_master_table(const std::vector<wifi_master::WifiMasterRow>& rows,
         while(clipper.Step())for(int ri=clipper.DisplayStart;ri<clipper.DisplayEnd;++ri){const auto& row=*visible[ri];
             ImGui::TableNextRow(0,ImGui::GetTextLineHeightWithSpacing()*3); ImGui::TableNextColumn();
             // Red is an unreviewed/unapproved identity, never a claim of malice.
-            ImGui::PushStyleColor(ImGuiCol_Text, row.key_is_mac && (!row.enrolment || row.enrolment->policy!="approved") ? ImVec4(1.f,.35f,.35f,1) : ImVec4(.85f,.90f,.94f,1));
+            const bool candidate=row.key_is_mac && (!row.enrolment || !wifi_master::has_repeated_identity_evidence(*row.enrolment));
+            ImGui::PushStyleColor(ImGuiCol_Text, candidate ? ImVec4(1.f,.72f,.3f,1) : row.key_is_mac && (!row.enrolment || row.enrolment->policy!="approved") ? ImVec4(1.f,.35f,.35f,1) : ImVec4(.85f,.90f,.94f,1));
             if (ImGui::Selectable(row.device_key.c_str(), selected == row.device_key)) {
                 selected = row.device_key; open_details = true;
             }
             ImGui::PopStyleColor();
+            if(row.enrolment){
+                if(row.enrolment->seen_24)ImGui::TextColored(ImVec4(.3f,.8f,1,1),"2.4 GHz");
+                if(row.enrolment->seen_5){if(row.enrolment->seen_24)ImGui::SameLine();ImGui::TextColored(ImVec4(.8f,.6f,1,1),"5 GHz");}
+            }
+            ImGui::TextDisabled("Latest %.0f MHz",row.last_channel_hz/1e6);
             ImGui::TableNextColumn();
             if(row.enrolment){const auto& e=*row.enrolment;
                 ImGui::TextUnformatted(wifi_master::enrolment_label(e));

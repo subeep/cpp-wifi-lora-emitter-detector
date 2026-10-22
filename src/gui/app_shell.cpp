@@ -4,6 +4,7 @@
 
 namespace rfmon::gui {
 std::string band_label(const std::string& band) {
+    if(band=="wifi_both")return "Wi-Fi 2.4 + 5 GHz sweep";
     if(band=="wifi_2g4")return "Wi-Fi 2.4 GHz";
     if(band=="wifi_5g")return "Wi-Fi 5 GHz";
     if(band=="sub_ghz_ism")return "LoRa / Sub-GHz ISM";
@@ -11,8 +12,8 @@ std::string band_label(const std::string& band) {
 }
 const char* page_name(Page p) {
     switch(p) {
-    case Page::Overview:return "Overview"; case Page::Wifi24:return "Wi-Fi 2.4 GHz";
-    case Page::Wifi5:return "Wi-Fi 5 GHz"; case Page::Lora:return "LoRa";
+    case Page::Overview:return "Overview"; case Page::Wifi24:return "Wi-Fi";
+    case Page::Wifi5:return "Wi-Fi"; case Page::Lora:return "LoRa";
     case Page::Drones:return "Drones"; case Page::Security:return "Security";
     case Page::Captures:return "Captures"; default:return "Settings";
     case Page::ModelInference:return "Model Inference";
@@ -88,7 +89,7 @@ void draw_workspace(State& s,const Context& c,bool drones,const std::function<vo
     const bool narrow=ImGui::GetContentRegionAvail().x<1000*scale;
     if(!s.legacy && narrow) {
         if(ImGui::BeginCombo("Workspace",page_name(s.page))) {
-            for(int i=0;i<int(Page::Count);++i){auto p=static_cast<Page>(i);if(p==Page::Drones&&!drones)continue;
+            for(int i=0;i<int(Page::Count);++i){auto p=static_cast<Page>(i);if(p==Page::Wifi5)continue;if(p==Page::Drones&&!drones)continue;
                 if(ImGui::Selectable(page_name(p),p==s.page)){s.page=p;if(p==Page::Security)s.security_first=true;}}
             ImGui::EndCombo();
         }
@@ -97,7 +98,7 @@ void draw_workspace(State& s,const Context& c,bool drones,const std::function<vo
         ImGui::BeginChild("Navigation",{170*scale,-footer},ImGuiChildFlags_Borders);
         note("WORKSPACES");
         for(int i=0;i<int(Page::Count);++i) {
-            auto p=static_cast<Page>(i);if(p==Page::Drones&&!drones)continue;
+            auto p=static_cast<Page>(i);if(p==Page::Wifi5)continue;if(p==Page::Drones&&!drones)continue;
             ImGui::PushID(i);if(ImGui::Selectable(page_name(p),p==s.page,0,{0,32*scale})) {
                 s.page=p;if(p==Page::Security)s.security_first=true;
             }ImGui::PopID();
@@ -146,7 +147,7 @@ void draw_overview(State& ui,const Context& context,const Overview& data,bool dr
         card("Acquisition",band_label(context.band),context.connected?"Connected; health above":"Disconnected / starting",Page::Settings);
         card("Coverage",std::to_string(data.captures)+" Wi-Fi captures","Current run; gaps matter",Page::Security);
         card("Security",std::to_string(context.incidents)+" open suspected incidents","Store scope; impact unverified",Page::Security);
-        card("Observations",std::to_string(data.groups)+" retained RF groups","Not a physical-device count",band_label(context.band).find("2.4")!=std::string::npos?Page::Wifi24:band_label(context.band).find("5")!=std::string::npos?Page::Wifi5:Page::Lora);
+        card("Observations",std::to_string(data.groups)+" retained RF groups","Not a physical-device count",band_label(context.band).find("2.4")!=std::string::npos?Page::Wifi24:band_label(context.band).find("5")!=std::string::npos?Page::Wifi24:Page::Lora);
         ImGui::EndTable();
     }
     if(!context.connected)note("No active receiver observations. Open Monitoring setup and explicitly connect.");

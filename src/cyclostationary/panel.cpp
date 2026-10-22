@@ -165,7 +165,7 @@ void draw_shadow_panel(const std::shared_ptr<const ShadowResult>& result,
         ImGui::TextWrapped("Worker faults %llu | Timeouts %llu | Invalid replies %llu. See diagnostics when a current measurement is available.",
             (unsigned long long)stats.failures,(unsigned long long)stats.worker_timeouts,(unsigned long long)stats.protocol_errors);
     if (!stats.enabled) { ImGui::TextDisabled("Analysis is disabled. Enable it to sample future Wi-Fi captures."); return; }
-    if (!result || result->epoch != stats.epoch || result->capture.band_ghz != active_band_ghz) {
+    if (!result || result->epoch != stats.epoch || (active_band_ghz != 0 && result->capture.band_ghz != active_band_ghz)) {
         ImGui::TextDisabled("Waiting for a measurement from the current band."); return;
     }
     const auto& r = *result;

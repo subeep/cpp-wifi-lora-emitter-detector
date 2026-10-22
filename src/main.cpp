@@ -522,6 +522,7 @@ int main() {
             {"LoRa (Sub-GHz)", BAND_SUB_GHZ},
             {"Wi-Fi 2.4GHz", BAND_WIFI_2G4},
             {"Wi-Fi 5GHz", BAND_WIFI_5G},
+            {"Wi-Fi both bands", BAND_WIFI_BOTH},
         };
         for (size_t i = 0; i < modes.size(); ++i) {
             bool selected = active_band == modes[i].second;
@@ -691,13 +692,23 @@ int main() {
             bool enabled=scanner.wifi_cyclo_stats().enabled;
             if(ImGui::Checkbox("Enable optional DSP analysis",&enabled))scanner.set_wifi_cyclo_enabled(enabled);
             gui::note("Experimental; sampled independent windows, not full-channel coverage. Named identity remains unvalidated.",true);
-            cyclo::draw_shadow_panel(scanner.wifi_cyclo_snapshot(),scanner.wifi_cyclo_stats(),band==BAND_WIFI_2G4?2:5);
+            cyclo::draw_shadow_panel(scanner.wifi_cyclo_snapshot(),scanner.wifi_cyclo_stats(),band==BAND_WIFI_BOTH?0:band==BAND_WIFI_2G4?2:5);
 #else
             gui::note("Experimental cyclostationary analysis is not compiled in this build.");
 #endif
         };
-        auto draw_wifi = [&](const std::string& band) {
-            ImGui::PushID(band.c_str());
+        auto draw_wifi = [&](const std::string&) {
+            static std::string wifi_mode = BAND_WIFI_2G4;
+            if(active_band==BAND_WIFI_2G4 || active_band==BAND_WIFI_5G || active_band==BAND_WIFI_BOTH)wifi_mode=active_band;
+            ImGui::PushID("unified_wifi");
+            ImGui::TextUnformatted("Receive mode");ImGui::SameLine();
+            for(const auto& mode : std::vector<std::pair<const char*,std::string>>{{"2.4 GHz only",BAND_WIFI_2G4},{"5 GHz only",BAND_WIFI_5G},{"Both bands",BAND_WIFI_BOTH}}){
+                if(ImGui::RadioButton(mode.first,wifi_mode==mode.second)){wifi_mode=mode.second;scanner.set_wifi_fixed_channel(std::nullopt);monitor_band(wifi_mode);}
+                ImGui::SameLine();
+            }
+            ImGui::NewLine();
+            const std::string band=wifi_mode;
+            if(band==BAND_WIFI_BOTH)gui::note("Sequential sweeps: 2.4 GHz then 5 GHz; not simultaneous reception. 5 GHz plan: 5.18-5.24 and 5.745-5.825 GHz.");
             if(band!=active_band) {
                 gui::note(("Viewing retained "+gui::band_label(band)+" observations; the receiver is monitoring "+gui::band_label(active_band)+".").c_str(),true);
                 if(ImGui::Button("Monitor this band"))monitor_band(band);
@@ -705,10 +716,17 @@ int main() {
             if(ImGui::Button("Security workspace")){ui.page=gui::Page::Security;ui.security_first=true;}
             ImGui::SameLine();gui::note("Security uses the complete run, not this filtered view.");
             if(ImGui::BeginTabBar("Wi-Fi views")) {
-                if(ImGui::BeginTabItem("RF observations")){draw_rf(band);ImGui::EndTabItem();}
+                if(ImGui::BeginTabItem("RF observations")){if(band==BAND_WIFI_BOTH){
+                    const float width=std::max(250.f,(ImGui::GetContentRegionAvail().x-12)/2);
+                    for(const auto& b:{BAND_WIFI_2G4,BAND_WIFI_5G}){
+                        if(b==BAND_WIFI_5G)ImGui::SameLine();
+                        ImGui::BeginChild(b,ImVec2(width,0),ImGuiChildFlags_Borders);
+                        ImGui::TextUnformatted(gui::band_label(b).c_str());draw_rf(b);ImGui::EndChild();
+                    }
+                }else draw_rf(band);ImGui::EndTabItem();}
                 if(ImGui::BeginTabItem("Packets")){
                     std::vector<WifiPacketRow> viewed;
-                    for(const auto& row:wifi_rows)if((band==BAND_WIFI_2G4 && row.freq_mhz>=2400 && row.freq_mhz<2500)||
+                    for(const auto& row:wifi_rows)if(band==BAND_WIFI_BOTH || (band==BAND_WIFI_2G4 && row.freq_mhz>=2400 && row.freq_mhz<2500)||
                         (band==BAND_WIFI_5G && row.freq_mhz>=5000 && row.freq_mhz<6000))viewed.push_back(row);
                     gui::note("Search retained rows only. Maximum 1,000 rows across the packet tail; not exhaustive RF coverage.");
                     draw_wifi_packet_table(viewed,std::max(180.f,ImGui::GetContentRegionAvail().y-110));ImGui::EndTabItem();
@@ -720,7 +738,7 @@ int main() {
                     if(eh.dropped_batches)gui::note(("INVENTORY INCOMPLETE: "+std::to_string(eh.dropped_batches)+" enrolment batches dropped").c_str(),true);
                     ImGui::Text("Enrolment queue: %zu | %s",eh.queued,eh.command_result.c_str());
                     draw_wifi_master_table(wifi_identities,std::max(180.f,ImGui::GetContentRegionAvail().y-100),true,
-                        [&](wifi_master::EnrolmentCommand c){return scanner.wifi_enrolment_command(std::move(c));},band==BAND_WIFI_2G4?24:5);ImGui::EndTabItem();
+                        [&](wifi_master::EnrolmentCommand c){return scanner.wifi_enrolment_command(std::move(c));},0);ImGui::EndTabItem();
                 }
                 if(ImGui::BeginTabItem("Experimental link analysis")){draw_cyclo(band);ImGui::EndTabItem();}
                 if(ImGui::BeginTabItem("Coverage & limits")){gui::draw_capabilities(drones_available,cyclo_available);ImGui::EndTabItem();}
@@ -787,7 +805,7 @@ int main() {
             if(new_wifi_count){ImGui::TextColored(ImVec4(1,.35f,.35f,1),"NEW WI-FI DEVICES: %zu awaiting review",size_t(new_wifi_count));
                 if(ImGui::Button("Review Wi-Fi master list")){
                     const auto first=std::find_if(wifi_identities.begin(),wifi_identities.end(),[](const auto& r){return r.enrolment&&r.enrolment->policy=="unreviewed"&&!r.enrolment->imported;});
-                    ui.page=first!=wifi_identities.end()&&first->enrolment->seen_24==0?gui::Page::Wifi5:gui::Page::Wifi24;
+                    ui.page=gui::Page::Wifi24;
                 }}
             const auto enrollment_health=scanner.wifi_enrolment_health();
             if(enrollment_health.dropped_batches)gui::note("Wi-Fi inventory input was dropped; coverage is incomplete.",true);
@@ -861,6 +879,7 @@ int main() {
 
     scanner.stop();
 
+    ml::release_preview_texture();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();

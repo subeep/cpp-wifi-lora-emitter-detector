@@ -1197,6 +1197,7 @@ void Scanner::run() {
     std::string last_band_seen;
     int band_cycle_count = 0;
 
+    bool next_wifi_5g = false;
     while (!stop_flag_.load()) {
         std::string band;
         double threshold;
@@ -1213,9 +1214,15 @@ void Scanner::run() {
                 gain_dirty_ = false;
             }
         }
-        if (band != last_band_seen) {
+        const std::string requested_band = band;
+        if (band == BAND_WIFI_BOTH) {
+            band = next_wifi_5g ? BAND_WIFI_5G : BAND_WIFI_2G4;
+            next_wifi_5g = !next_wifi_5g;
+            fixed_channel.reset(); // Both always sweeps both complete channel plans.
+        } else next_wifi_5g = false;
+        if (requested_band != last_band_seen) {
             band_cycle_count = 0;
-            last_band_seen = band;
+            last_band_seen = requested_band;
         }
         // Sub-GHz/LoRa never overlaps Wi-Fi processing: finish every queued
         // Wi-Fi step (and its status marker) before a non-Wi-Fi cycle starts.
@@ -1264,7 +1271,7 @@ void Scanner::run() {
                 // cycle's steps and let the outer loop pick up the new
                 // band fresh next iteration.
                 std::lock_guard<std::mutex> lock(config_mutex_);
-                if (active_band_ != band || wifi_fixed_channel_ != fixed_channel) break;
+                if (active_band_ != requested_band || (requested_band != BAND_WIFI_BOTH && wifi_fixed_channel_ != fixed_channel)) break;
             }
 
             {

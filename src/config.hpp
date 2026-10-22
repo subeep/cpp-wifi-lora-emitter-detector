@@ -36,6 +36,7 @@ struct ScanStep {
 constexpr const char* BAND_SUB_GHZ = "sub_ghz_ism";
 constexpr const char* BAND_WIFI_2G4 = "wifi_2g4";
 constexpr const char* BAND_WIFI_5G = "wifi_5g";
+constexpr const char* BAND_WIFI_BOTH = "wifi_both";
 
 // --- Sub-GHz ISM band (India) ---
 // WPC de-licensed 865-867 MHz band used by LoRaWAN IN865, with a few

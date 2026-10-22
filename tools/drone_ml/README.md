@@ -10,6 +10,16 @@ finished on 22 October 2026; the new model was not promoted. See the
 [integration, results, commands and limits](../../docs/DRONE_ML_LIVE_INTEGRATION.md).
 It does not currently supply validated drone/model identification.
 
+The Model Inference tab now keeps candidate rankings in diagnostic details and explicitly
+reports undetermined drone presence. An optional bounded recorder saves exact inference
+inputs for review; `input_audit` replays them with integrity/parity checks. See
+[presence recovery, Mini 2 findings and capture instructions](../../docs/DRONE_PRESENCE_RECOVERY.md).
+No background/presence model is trained or enabled by this update.
+
+The next baseline adds dispersed capture sampling and a review-gated binary presence
+trainer. See [presence data, architecture, commands and remaining qualification](../../docs/DRONE_PRESENCE_BASELINE.md).
+Fresh reviewed sessions are still required; the initial readiness check found zero.
+
 ## What is implemented
 
 - `audit`: inventory the five explicit SDA dataset directories, list ZIP members,

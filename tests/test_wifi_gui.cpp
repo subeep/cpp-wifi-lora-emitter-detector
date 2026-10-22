@@ -47,6 +47,9 @@ int main(int argc, char** argv) {
     row.identity=b;
     auto enrol=std::make_shared<wifi_master::WifiEnrolmentInfo>();
     enrol->role="AP / network interface";enrol->observations=12;enrol->seen_24=row.last_seen_ts;
+    wifi_master::RfProfileSummary evidence;
+    evidence.captures=3;evidence.first_ts=100;evidence.last_ts=110;
+    enrol->profiles.push_back(evidence);
     enrol->last_source="SYNTHETIC/run1/capture12/100/OFDM";
     enrol->history.push_back({1,row.last_seen_ts,"Discovered","Synthetic GUI identity; not live evidence",enrol->last_source});enrol->history_total=1;
     row.enrolment=enrol;rows.push_back(row);
@@ -338,7 +341,7 @@ int main(int argc, char** argv) {
         }
         const char* expected=scene==0?"Automatic trusted adaptation":scene==1?"Selected packet snapshot":"Incident evidence inspector";
         if(rendered.find(expected)==std::string::npos){std::cerr<<"Revamp inspector missing: "<<expected<<'\n';++failures;}
-        if(scene==0 && (rendered.find("NEW DEVICE")==std::string::npos || rendered.find("Approve / enrol")==std::string::npos)){
+        if(scene==0 && (rendered.find("NEW OBSERVED INTERFACE")==std::string::npos || rendered.find("Approve / enrol")==std::string::npos)){
             std::cerr<<"Enrolment state/actions missing from real inspector\n";++failures;
         }
         if(glGetError()!=GL_NO_ERROR)++failures;

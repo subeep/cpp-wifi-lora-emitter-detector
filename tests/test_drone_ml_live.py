@@ -7,10 +7,12 @@ import threading
 import unittest
 import numpy as np
 import torch
-from tools.drone_ml.live_worker import receive,receive_exact,serve
+from tools.drone_ml.live_worker import receive,receive_exact,serve,stft_preview
 from tools.drone_ml.predict import InferenceEngine
 from tools.drone_ml.model import SpectrogramCNN
-from tools.drone_ml.preprocess import STFTConfig
+from tools.drone_ml.preprocess import STFTConfig,spectrogram
+from tools.drone_ml.input_audit import audit_session
+from tools.drone_ml.common import sha256
 
 
 class LiveTests(unittest.TestCase):
@@ -28,7 +30,7 @@ class LiveTests(unittest.TestCase):
             a,b=socket.socketpair();a.settimeout(10)
             errors=[]
             def run():
-                try:serve(b,model)
+                try:serve(b,model,str(Path(tmp)/'audit'),'background_observation','synthetic test only')
                 except EOFError:pass
                 except Exception as e:errors.append(e)
                 finally:b.close()
@@ -47,6 +49,38 @@ class LiveTests(unittest.TestCase):
                 self.assertEqual(got['request']['capture_seq'],header['capture_seq'])
                 self.assertIsNone(got['accepted_class'])
                 self.assertFalse(got['score_is_calibrated_probability'])
+                self.assertEqual(got['presence_status'],'unclassified_rf')
+                self.assertIsNone(got['drone_present'])
+                self.assertEqual(got['audit']['saved'],1)
+                audit_dir=Path(got['audit']['path'])
+                np.testing.assert_array_equal(np.fromfile(audit_dir/'0000.cf32',dtype='<c8'),iq)
+                self.assertFalse(json.loads((audit_dir/'session.json').read_text())['training_eligible'])
+                replay=audit_session(InferenceEngine(model),audit_dir,sha256(model))
+                self.assertTrue(replay['rows'][0]['replay_matches_saved'])
+                self.assertTrue(replay['session_replay_matches_saved'])
+                # New supervisors opt in; legacy requests above received only JSON.
+                header['want_stft_preview']='true'
+                raw=json.dumps(header).encode()
+                a.sendall(struct.pack('<I',len(raw))+raw+iq.tobytes())
+                visible=response()
+                count=struct.unpack('<I',receive_exact(a,4))[0]
+                self.assertEqual(count,160000)
+                pixels=np.frombuffer(receive_exact(a,count),dtype=np.uint8).reshape(256,625)
+                info=visible['stft_preview']
+                image=spectrogram(iq,20e6,STFTConfig(duration_seconds=.008,hop=256))
+                restored=info['db_min']+pixels.astype(float)*(info['db_max']-info['db_min'])/255
+                np.testing.assert_allclose(restored,image,atol=(info['db_max']-info['db_min'])/510+1e-5)
+                self.assertEqual(visible['class_scores'],got['class_scores'])
+                # Invalid IQ clears the preview; no obsolete pixels or extra frame.
+                a.sendall(struct.pack('<I',len(raw))+raw+np.zeros_like(iq).tobytes())
+                invalid=response()
+                self.assertEqual(invalid['presence_status'],'insufficient_evidence')
+                self.assertNotIn('stft_preview',invalid)
+                # Same-size corruption must not silently replay as valid evidence.
+                with (audit_dir/'0000.cf32').open('r+b') as f:
+                    f.write(b'\x00\x00\x00\x00')
+                with self.assertRaisesRegex(ValueError,'integrity mismatch'):
+                    audit_session(InferenceEngine(model),audit_dir,sha256(model))
             finally:a.close();t.join(10)
             self.assertFalse(t.is_alive());self.assertEqual(errors,[])
 
@@ -61,5 +95,13 @@ class LiveTests(unittest.TestCase):
                     a.sendall(struct.pack('<I',len(raw))+raw)
                     with self.assertRaises(ValueError):receive(b)
                 finally:a.close();b.close()
+
+    def test_stft_display_encoding_rejects_invalid_data(self):
+        cfg=STFTConfig(duration_seconds=.008,hop=256)
+        for data in (np.zeros((256,10)),np.full((256,625),np.nan)):
+            with self.assertRaises(ValueError):stft_preview(data,cfg)
+        info,pixels=stft_preview(np.full((256,625),-30.),cfg)
+        self.assertGreater(info['db_max'],info['db_min'])
+        self.assertEqual(len(pixels),160000)
 
 if __name__=='__main__':unittest.main()

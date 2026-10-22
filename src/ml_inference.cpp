@@ -42,6 +42,9 @@ struct Client {
         if(!error)error=posix_spawn_file_actions_addclosefrom_np(&actions,4);
         for(int i=0;i<3&&!error;++i)error=posix_spawn_file_actions_addopen(&actions,i,"/dev/null",i?O_WRONLY:O_RDONLY,0);
         std::vector<std::string> args={o.python,"-u",o.script,"--ipc-fd","3","--model",o.model};
+        if(!o.audit_root.empty()) {
+            args.insert(args.end(),{"--audit-root",o.audit_root,"--audit-context",o.audit_context,"--audit-notes",o.audit_notes});
+        }
         std::vector<char*> argv;for(auto& a:args)argv.push_back(a.data());argv.push_back(nullptr);
         if(!error)error=posix_spawn(&pid,o.python.c_str(),&actions,nullptr,argv.data(),environ);
         if(!init)posix_spawn_file_actions_destroy(&actions);
@@ -76,10 +79,10 @@ struct Client {
         if(!n||n>262144)throw std::runtime_error("Invalid ML response size");
         std::string text(n,'\0');transfer(text.data(),n,false,deadline);return text;
     }
-    void request(std::string text,std::vector<std::complex<float>>& iq,Clock::time_point deadline) {
+    void request(std::string text,std::complex<float>* iq,size_t samples,Clock::time_point deadline) {
         uint32_t n=text.size();if(!n||n>8192)throw std::runtime_error("Oversized capture metadata");
         header(n,true,deadline);transfer(text.data(),n,true,deadline);
-        transfer(iq.data(),iq.size()*sizeof(iq[0]),true,deadline);
+        transfer(iq,samples*sizeof(iq[0]),true,deadline);
     }
 };
 std::string source_key(const wifi_security::CaptureRecord& c) {
@@ -95,15 +98,18 @@ bool Inference::start(Options options) {
     if(enabled_)return false;
     if(thread_.joinable())thread_.join();
     if(options.python.empty()||options.python[0]!='/'||options.script.empty()||options.script[0]!='/'||
-       options.model.empty()||options.model[0]!='/'||options.deadline_ms<100||options.deadline_ms>60000) {
+       options.model.empty()||options.model[0]!='/'||options.deadline_ms<100||options.deadline_ms>60000||
+       (!options.audit_root.empty()&&options.audit_root[0]!='/')||options.audit_notes.size()>1024) {
         std::lock_guard<std::mutex> l(mutex_);
-        state_.state="Failed";state_.error="Use absolute model, Python and worker paths and a valid deadline";
+        state_.state="Failed";state_.error="Use absolute model, Python, worker and audit paths, bounded notes and a valid deadline";
         return false;
     }
     {
         std::lock_guard<std::mutex> l(mutex_);
         state_.state="Loading";state_.error.clear();state_.model_hash.clear();state_.classes.clear();
+        state_.audit_status="disabled";state_.audit_path.clear();state_.audit_error.clear();state_.audit_saved=0;
         queued_=false;source_key_.clear();last_submit_={};
+        dispersed_intervals_=options.dispersed_intervals;
         for(auto& r:state_.history)r.current=false;
     }
     ++generation_;enabled_=true;ready_=false;
@@ -150,10 +156,15 @@ void Inference::observe(const std::vector<std::complex<float>>& iq,const wifi_se
             for(auto& r:state_.history)r.current=false;
         }
         if(queued_||Clock::now()-last_submit_<std::chrono::milliseconds(500)){++dropped_;return;}
-        pending_.iq.assign(iq.begin(),iq.begin()+n);
+        pending_.selection=select_intervals(iq.size(),n,dispersed_intervals_,max_samples);
+        const auto& selection=pending_.selection;
+        pending_.iq.resize(selection.count*n);
+        for(size_t i=0;i<selection.count;++i)
+            std::copy_n(iq.begin()+selection.offsets[i],n,pending_.iq.begin()+i*n);
         pending_.capture=c;pending_.generation=generation_;
         pending_.submitted=Clock::now();last_submit_=pending_.submitted;
-        queued_=true;++state_.submitted;state_.submitted_samples+=n;wake_.notify_one();
+        queued_=true;++state_.submitted_jobs;state_.submitted+=selection.count;
+        state_.submitted_samples+=selection.count*n;wake_.notify_one();
     }catch(...){++invalid_;}
 }
 Snapshot Inference::snapshot() const {
@@ -180,6 +191,9 @@ void Inference::run(Options options) {
             std::lock_guard<std::mutex> l(mutex_);
             state_.model_hash=hello.get<std::string>("model_sha256");
             state_.architecture=hello.get<std::string>("architecture");
+            state_.audit_status=hello.get<std::string>("audit.status","disabled");
+            state_.audit_path=hello.get<std::string>("audit.path","");
+            state_.audit_error=hello.get<std::string>("audit.error","");
             for(auto& x:hello.get_child("classes"))state_.classes+=x.second.get_value<std::string>()+"\n";
             state_.state="Waiting for compatible Wi-Fi data";
         }
@@ -194,26 +208,61 @@ void Inference::run(Options options) {
                 state_.state="Running";
             }
             const auto& c=working_.capture;
-            Tree meta;meta.put("schema","rfmon.ml.iq.v1");meta.put("samples",working_.iq.size());
-            meta.put("sample_rate_hz",c.sample_rate_hz);meta.put("offset_samples",0);
+            for(size_t interval=0;interval<working_.selection.count;++interval) {
+            if(!enabled_)break;
+            if(working_.generation!=generation_){std::lock_guard<std::mutex> l(mutex_);++state_.stale;break;}
+            const auto samples=working_.selection.samples;
+            const auto sample_offset=working_.selection.offsets[interval];
+            Tree meta;meta.put("schema","rfmon.ml.iq.v1");meta.put("samples",samples);
+            meta.put("want_stft_preview",true);
+            meta.put("sample_rate_hz",c.sample_rate_hz);meta.put("offset_samples",sample_offset);
+            meta.put("interval_index",interval);meta.put("interval_count",working_.selection.count);
+            meta.put("selection","disjoint_capture_intervals_v1");
+            meta.put("device_time_anchor","capture_first_sample; add offset_samples / sample_rate_hz");
             meta.put("capture_seq",c.capture_seq);meta.put("radio_session",c.radio_session);
             meta.put("generation",working_.generation);meta.put("run_id",c.run_id);
             meta.put("center_hz",c.actual_rf_hz?c.actual_rf_hz+c.actual_dsp_hz:c.capture_center_hz);
             meta.put("device",c.device);meta.put("source",c.source);meta.put("band",c.band);
             meta.put("clock_domain",int(c.clock));meta.put("device_time_ns",c.device_time_ns);
             meta.put("host_before_ns",c.host_before_ns);meta.put("host_after_ns",c.host_after_ns);
+            meta.put("requested_rate_hz",c.requested_rate_hz);meta.put("requested_center_hz",c.capture_center_hz);
+            meta.put("actual_rf_hz",c.actual_rf_hz);meta.put("actual_dsp_hz",c.actual_dsp_hz);
+            meta.put("channel",c.channel);meta.put("antenna",c.antenna);
+            if(c.gain_db)meta.put("gain_db",*c.gain_db);
+            meta.put("capture_samples",c.samples_received);meta.put("contiguous",c.contiguous());
             auto deadline=Clock::now()+std::chrono::milliseconds(options.deadline_ms);
-            client.request(encode(meta),working_.iq,deadline);
+            client.request(encode(meta),working_.iq.data()+interval*samples,samples,deadline);
             auto raw=client.receive(deadline);auto t=parse(raw);
             if(t.get<std::string>("schema","")!="rfmon.ml.result.v1")
                 throw std::runtime_error(t.get<std::string>("error","Invalid model result"));
             if(t.get<uint64_t>("request.capture_seq")!=c.capture_seq||
                t.get<uint64_t>("request.generation")!=working_.generation||
+               t.get<uint64_t>("request.offset_samples")!=sample_offset||
                t.get<std::string>("request.run_id")!=c.run_id)throw std::runtime_error("Mismatched model result");
             Result result;result.raw=raw;result.status=t.get<std::string>("status");
             result.candidate=t.get<std::string>("candidate","");
-            result.accepted=t.get<std::string>("accepted_class","");
-            if(result.accepted=="null")result.accepted.clear();
+            if(auto preview=t.get_child_optional("stft_preview")) {
+                auto p=std::make_shared<StftPreview>();
+                p->rows=preview->get<int>("rows");p->cols=preview->get<int>("cols");
+                p->db_min=preview->get<double>("db_min");p->db_max=preview->get<double>("db_max");
+                p->rate_hz=preview->get<double>("rate_hz");p->duration_seconds=preview->get<double>("duration_seconds");
+                p->nfft=preview->get<int>("nfft");p->hop=preview->get<int>("hop");
+                if(preview->get<std::string>("schema","")!="rfmon.ml.stft.v1"||
+                   preview->get<std::string>("encoding","")!="u8_frequency_time"||
+                   preview->get<std::string>("scaling","")!="source_unit_rms_log_power_before_checkpoint_normalization"||
+                   p->rows!=256||p->cols!=625||preview->get<int>("bytes")!=160000||
+                   !std::isfinite(p->db_min)||!std::isfinite(p->db_max)||p->db_max<=p->db_min||
+                   p->rate_hz!=20e6||p->duration_seconds!=.008||p->nfft!=256||p->hop!=256)
+                    throw std::runtime_error("Invalid STFT preview contract");
+                if(!t.get_optional<double>("selected_offset_hz"))
+                    throw std::runtime_error("Missing STFT frequency provenance");
+                auto pixels=client.receive(deadline);
+                if(pixels.size()!=160000)throw std::runtime_error("Invalid STFT preview length");
+                p->pixels.assign(pixels.begin(),pixels.end());result.stft=std::move(p);
+            }
+            // Defense in depth: this integration has no qualified live policy,
+            // even if an alternate worker sends a non-null accepted identity.
+            result.accepted.clear();
             if(auto reason=t.get_child_optional("reason")) {
                 result.reason=reason->get_value<std::string>();
                 for(auto& r:*reason)result.reason+=r.second.get_value<std::string>()+" ";
@@ -231,16 +280,25 @@ void Inference::run(Options options) {
             if(!std::isfinite(result.processing_ms)||result.processing_ms<0)throw std::runtime_error("Invalid latency");
             result.total_ms=std::chrono::duration<double,std::milli>(Clock::now()-working_.submitted).count();
             result.capture=c.capture_seq;result.session=c.radio_session;result.run=c.run_id;
+            result.offset_samples=sample_offset;result.interval_index=interval;result.interval_count=working_.selection.count;
             result.source=c.source;result.band=c.band;result.device=c.device;result.rate=c.sample_rate_hz;
             result.center=meta.get<double>("center_hz");result.generation=working_.generation;
             result.completed=Clock::now();result.current=true;
             std::lock_guard<std::mutex> l(mutex_);
+            state_.audit_status=t.get<std::string>("audit.status",state_.audit_status);
+            state_.audit_path=t.get<std::string>("audit.path",state_.audit_path);
+            state_.audit_error=t.get<std::string>("audit.error",state_.audit_error);
+            state_.audit_saved=t.get<uint64_t>("audit.saved",state_.audit_saved);
             if(!enabled_||result.generation!=generation_){++state_.stale;continue;}
             result.model_hash=state_.model_hash;result.architecture=state_.architecture;
             ++state_.processed;
+            // Only the latest observation retains display pixels. Snapshot
+            // copies share this immutable buffer; history never copies grids.
+            if(!state_.history.empty())state_.history.front().stft.reset();
             state_.history.insert(state_.history.begin(),std::move(result));
             if(state_.history.size()>history_limit)state_.history.pop_back();
             state_.state="Waiting for compatible Wi-Fi data";
+            }
         }
     }catch(const std::exception& e) {
         std::lock_guard<std::mutex> l(mutex_);

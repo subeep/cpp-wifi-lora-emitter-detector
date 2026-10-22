@@ -29,6 +29,21 @@ EnrolmentBatch batch(uint64_t seq,const std::string& name="lab",double cfo=1,boo
 WifiMasterRow row(WifiEnrolment& e){e.flush();auto rows=e.snapshot();for(auto& r:rows)if(r.device_key==address)return r;throw std::runtime_error("missing row");}
 void send(WifiEnrolment& e,const std::string& action){check(e.command({address,action,"Office","test operator note"}),"command admitted");e.flush();}
 int main(){
+    {
+        WifiEnrolmentInfo info;
+        check(!has_repeated_identity_evidence(info),"empty identity is candidate");
+        info.policy="approved";
+        check(!has_repeated_identity_evidence(info),"operator approval cannot fabricate received evidence");
+        RfProfileSummary p;p.captures=100;p.first_ts=100;p.last_ts=101;info.profiles.push_back(p);
+        check(!has_repeated_identity_evidence(info),"short observation flood cannot confirm identity");
+        info.profiles[0].captures=2;info.profiles[0].last_ts=120;
+        info.profiles.push_back(info.profiles[0]);
+        check(!has_repeated_identity_evidence(info),"separate contexts cannot combine to meet evidence threshold");
+        info.profiles[0].captures=3;
+        check(has_repeated_identity_evidence(info),"three captures over ten seconds corroborate interface");
+        info.archived_profiles=info.profiles;info.profiles.clear();
+        check(has_repeated_identity_evidence(info),"historical corroboration survives context retirement");
+    }
     const auto root=fs::temp_directory_path()/("rf-enrolment-"+std::to_string(getpid()));fs::create_directories(root);
     const auto live=(root/"live").string();
     {

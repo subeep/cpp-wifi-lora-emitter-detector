@@ -25,7 +25,13 @@ int main(int argc,char** argv) {
     configure_font();apply_theme();ImGui_ImplOpenGL3_Init("#version 130");
     rfmon::ml::Inference inference;
     State state;Context ctx;ctx.radio="USRP X310";ctx.band="Wi-Fi 2.4 GHz";ctx.run="synthetic-display";
-    int commands=0;bool preview=false;ImVec2 command_center;std::string text;
+    int commands=0;bool preview=false,stft_mode=false;ImVec2 command_center;std::string text;
+    rfmon::ml::Result stft_result;auto stft=std::make_shared<rfmon::ml::StftPreview>();
+    stft->db_min=-100;stft->db_max=20;stft->pixels.resize(256*625);
+    for(int f=0;f<256;++f)for(int t=0;t<625;++t)
+        stft->pixels[f*625+t]=(std::abs(f-(90+t/5))<3|| (t>450&&t<500&&f>30&&f<210))?235:20;
+    stft_result.stft=stft;stft_result.center=2440e6;stft_result.capture=42;stft_result.current=true;
+    stft_result.completed=std::chrono::steady_clock::now();
     auto frame=[&](bool log=false){
         ImGui_ImplOpenGL3_NewFrame();ImGui::NewFrame();if(log)ImGui::LogToBuffer(0);
         draw_workspace(state,ctx,true,[&](Page page){
@@ -36,7 +42,10 @@ int main(int argc,char** argv) {
             if(section("Complete retained details",true))ImGui::TextUnformatted("Unavailable values remain unavailable; exact raw evidence retained.");
             }
             if(page==Page::Settings)draw_capabilities(true,true);
-            if(page==Page::ModelInference)rfmon::ml::draw_panel(inference,false,"wifi_2g4");
+            if(page==Page::ModelInference) {
+                if(stft_mode)rfmon::ml::draw_stft_preview(stft_result);
+                else rfmon::ml::draw_panel(inference,false,"wifi_2g4");
+            }
             if(page==Page::Overview){Overview data;data.captures=12;data.groups=4;draw_overview(state,ctx,data,true,[]{note("Synthetic fixture: frequency map unavailable; no RF samples acquired.");});}
         });
         if(log){text=ImGui::GetCurrentContext()->LogBuffer.c_str();ImGui::LogFinish();}
@@ -47,10 +56,12 @@ int main(int argc,char** argv) {
     auto click=[&](ImVec2 pos){io.AddMousePosEvent(pos.x,pos.y);frame();io.AddMouseButtonEvent(0,true);frame();io.AddMouseButtonEvent(0,false);frame();};
     frame();frame();
     // The production rail's first row begins after its WORKSPACES label.
+    int navigation_row=0;
     for(int i=0;i<int(Page::Count);++i) {
+        if(static_cast<Page>(i)==Page::Wifi5)continue; // unified Wi-Fi workspace
         ImGuiWindow* nav=nullptr;for(auto* w:ImGui::GetCurrentContext()->Windows)if(std::string(w->Name).find("/Navigation_")!=std::string::npos)nav=w;
         require(nav,"Navigation child missing");
-        const float y=nav->DC.CursorStartPos.y+ImGui::GetTextLineHeightWithSpacing()+i*(32+ImGui::GetStyle().ItemSpacing.y)+16;
+        const float y=nav->DC.CursorStartPos.y+ImGui::GetTextLineHeightWithSpacing()+navigation_row++*(32+ImGui::GetStyle().ItemSpacing.y)+16;
         click({nav->DC.CursorStartPos.x+70,y});
         require(state.page==static_cast<Page>(i),"Navigation selected wrong page");
         require(commands==0,"Navigation emitted command");
@@ -73,10 +84,16 @@ int main(int argc,char** argv) {
         require(commands==1,"Scale/layout switch emitted command");
     }
     preview=true;ctx.error.clear();ctx.stalled=false;ctx.overflow=false;
+    stft_mode=true;state.page=Page::ModelInference;frame(true);
+    require(text.find("Colour range")!=std::string::npos,"STFT preview missing");
+    stft_result.current=false;frame(true);
+    require(text.find("Historical / stale")!=std::string::npos,"STFT staleness hidden");
+    stft_result.current=true;
     state.scale=1;apply_theme();io.DisplaySize={1600,1000};state.page=argc>2?Page::ModelInference:Page::Overview;frame();frame();
     const auto start=std::chrono::steady_clock::now();for(int i=0;i<120;++i)frame();
     std::cout<<"Shell software-render average ms/frame: "<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/120<<'\n';
     if(argc>1){glFinish();std::vector<unsigned char> bytes(1600*1000*3);glPixelStorei(GL_PACK_ALIGNMENT,1);glReadPixels(0,0,1600,1000,GL_RGB,GL_UNSIGNED_BYTE,bytes.data());std::ofstream out(argv[1],std::ios::binary);out<<"P6\n1600 1000\n255\n";for(int y=999;y>=0;--y)out.write(reinterpret_cast<const char*>(bytes.data()+y*1600*3),1600*3);}
+    rfmon::ml::release_preview_texture();
     ImGui_ImplOpenGL3_Shutdown();ImGui::DestroyContext();eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);eglDestroyContext(display,context);eglDestroySurface(display,surface);eglTerminate(display);
     std::cout<<"Production navigation, warning visibility, explicit command and scale isolation: PASS\n";
 }

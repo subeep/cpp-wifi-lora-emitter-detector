@@ -13,6 +13,20 @@ cd /home/sudeep/Documents/newrocktest-cpp
 ./build-ml-inference/rf_monitor_gui
 ```
 
+The tab also displays a **Live model STFT** for each completed inference interval:
+256 frequency bins by 625 time frames, covering 8 ms of the selected 20 MSps view.
+The preview uses the actual pre-checkpoint-normalization log-power array, with an
+8-bit display encoding; it does not recompute the FFT or modify model inputs/scores.
+Frequency is vertical (MHz), time is horizontal (ms), and hover shows bin values.
+The colour scale is per interval, in source-RMS-normalized relative dB, not dBm.
+It refreshes on processed intervals (at most two capture jobs/s, up to three intervals/job);
+stale/retuned/stopped observations are labelled historical, and invalid IQ has no preview.
+Only the latest result retains its 160,000-byte display grid; immutable snapshots
+share it, and the GPU texture updates only when a new grid arrives. A separate bounded
+binary IPC frame is requested explicitly, so an already-running older GUI remains
+compatible with the updated worker. Recording/replay keeps exact IQ for full-precision
+reconstruction; display bytes are not training data. Restart the GUI to load UI changes.
+
 Open **Model Inference**, then **Start Inference**. This loads the selected model in a
 separate Python process and waits for existing Wi-Fi capture data. It does not connect,
 retune or start the receiver. Connect/monitor through the existing controls when wanted.
@@ -29,7 +43,8 @@ The original build directories/executables were not replaced.
 ## What the tab displays
 
 - Start/Stop Inference, checkpoint and Python runtime paths, worker state and errors.
-- Decision status, separate candidate and accepted-identity fields, top three score bars.
+- Undetermined presence / insufficient evidence, with candidate rankings in collapsed diagnostics.
+- Optional exact-IQ audit recording and first/middle/end capture sampling; both keep exact interval provenance.
 - Scores explicitly labelled **uncalibrated known-class softmax**; no drone-presence or
   unknown-drone probability is invented. Current live acceptance is disabled.
 - Capture/session/run/source/receiver provenance, RF centre, selected model view, native
@@ -57,7 +72,12 @@ copy, at most twice per second. If busy, it skips optional work and increments c
 This avoids waiting on inference, but copying and resource contention still have measurable
 cost: live on/off impact qualification is pending.
 
-The current model takes the first contiguous 8 ms of an eligible capture. Captures must
+By default, the add-on selects up to three disjoint 8 ms intervals spread across an eligible
+capture, within the existing per-job sample budget; a stopped-state checkbox restores
+first-window-only sampling. Each interval is processed separately and carries its original
+sample offset, interval index/count and capture-time anchor. These are not independent
+votes or continuous temporal context. See [presence baseline and review-gated training](DRONE_PRESENCE_BASELINE.md).
+Captures must
 provide at least that many samples, have finite integer sample rate in the supported
 20–500 MSps input range and no recorded overflow, timeout or exception. The upper input
 limit derives from the bounded per-job allocation; it does not change USRP settings.

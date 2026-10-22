@@ -570,10 +570,47 @@ void sample_rate_checks(const fs::path& base) {
     }
 }
 
+struct BothBandsRadio : CaptureDevice {
+    Scanner* scanner;
+    std::vector<double>* centers;
+    size_t limit;
+    CaptureResult capture_detailed(double hz,double rate,double,double,bool) override {
+        centers->push_back(hz);
+        CaptureResult r;r.sample_rate_hz=rate;r.samples.resize(256);
+        r.timing.requested_samples=256;r.timing.device_time_valid=true;
+        r.timing.device_time_ns=int64_t(centers->size())*1000000000;
+        if(centers->size()>=limit)ScannerTestAccess::raise_stop_flag(*scanner);
+        return r;
+    }
+    void set_gain(std::optional<double>) override {}
+};
+void test_both_bands(const fs::path& base) {
+    Scanner scanner((base/"both-bands").string());
+    scanner.set_active_band(BAND_WIFI_BOTH);
+    scanner.set_wifi_fixed_channel(36); // Both must ignore a stale channel lock.
+    std::vector<double> centers,expected;
+    for(const auto& band:{BAND_WIFI_2G4,BAND_WIFI_5G})
+        for(const auto& step:scan_plan_for_band(band))
+            for(int i=0;i<SUB_CAPTURES_PER_STEP;++i)expected.push_back(step.center_hz);
+    expected.push_back(scan_plan_for_band(BAND_WIFI_2G4).front().center_hz);
+    ScannerTestAccess::set_device_factory(scanner,[&](const DeviceProfile&,std::optional<double>){
+        auto radio=std::make_unique<BothBandsRadio>();radio->scanner=&scanner;
+        radio->centers=&centers;radio->limit=expected.size();return radio;
+    });
+    scanner.start();
+    auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(15);
+    while(!ScannerTestAccess::stop_flag(scanner)&&std::chrono::steady_clock::now()<deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    scanner.stop();
+    check(centers.size()>=expected.size() && std::equal(expected.begin(),expected.end(),centers.begin()),
+          "both_bands_sweep_complete_plans_then_repeat_despite_stale_lock");
+}
+
 }  // namespace
 
 int main() {
     const fs::path base = fs::temp_directory_path() / ("scanner-lane-test-" + std::to_string(::getpid()));
+    test_both_bands(base);
     Outcome a = run_mode(Mode::Inline, base / "inline");
     Outcome b = run_mode(Mode::Lane, base / "lane");
     Outcome c = run_mode(Mode::SlowLane, base / "slow");

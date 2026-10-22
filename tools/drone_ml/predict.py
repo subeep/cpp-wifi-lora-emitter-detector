@@ -37,16 +37,21 @@ class InferenceEngine:
         self.model.load_state_dict(self.checkpoint['state_dict'])
         self.model.eval()
 
-    def predict_iq(self, iq, rate, offset=0):
+    def predict_iq(self, iq, rate, offset=0, *, include_stft=False):
         if type(offset) is not int or offset < 0:
             raise ValueError('invalid IQ interval offset')
         try:
             image, metadata = spectrogram(iq, rate, self.config, return_metadata=True)
         except ValueError as e:
             return dict(status='insufficient_evidence', reason=str(e), accepted_class=None)
-        return self._predict_image(image, dict(input_kind='iq',
+        result = self._predict_image(image, dict(input_kind='iq',
                                   selected_offset_hz=metadata['selected_offset_hz'],
                                   source_interval_samples=[offset, offset + len(iq)]))
+        if include_stft:
+            # The very same pre-normalization array, not a second FFT or a
+            # separately selected frequency view. Removed before serialization.
+            result['_stft_image'] = image
+        return result
 
     def predict_fft(self, frames, metadata):
         # Incompatible FFT contracts are caller errors, not classifier decisions.
