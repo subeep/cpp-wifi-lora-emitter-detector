@@ -41,10 +41,11 @@ class InferenceEngine:
         if type(offset) is not int or offset < 0:
             raise ValueError('invalid IQ interval offset')
         try:
-            image = spectrogram(iq, rate, self.config)
+            image, metadata = spectrogram(iq, rate, self.config, return_metadata=True)
         except ValueError as e:
             return dict(status='insufficient_evidence', reason=str(e), accepted_class=None)
         return self._predict_image(image, dict(input_kind='iq',
+                                  selected_offset_hz=metadata['selected_offset_hz'],
                                   source_interval_samples=[offset, offset + len(iq)]))
 
     def predict_fft(self, frames, metadata):
@@ -63,7 +64,7 @@ class InferenceEngine:
             activity = assess(image, checkpoint['activity_policy'])
             if not activity['eligible']:
                 return dict(status='insufficient_evidence', reason='structured_rf_proxy_below_threshold',
-                            activity=activity, accepted_class=None)
+                            activity=activity, accepted_class=None, **context)
         norm = checkpoint['normalization']
         if not np.isfinite([norm['mean'], norm['scale']]).all() or norm['scale'] <= 0:
             raise ValueError('invalid checkpoint normalization')
@@ -73,6 +74,11 @@ class InferenceEngine:
         best = int(probabilities.argmax())
         result = dict(status='development_prediction_only', accepted_class=None,
                       candidate=checkpoint['classes'][best], softmax_score=float(probabilities[0, best]),
+                      top_candidates=[dict(label=checkpoint['classes'][int(k)],score=float(probabilities[0,k]))
+                                      for k in np.argsort(probabilities[0])[::-1][:3]],
+                      class_scores=[dict(label=label,score=float(probabilities[0,k]))
+                                    for k,label in enumerate(checkpoint['classes'])],
+                      score_kind='uncalibrated_known_class_softmax',
                       score_is_calibrated_probability=False, **context,
                       model_validated_for_live_use=False)
         if checkpoint.get('policy_blockers') and checkpoint['policy'] is None:

@@ -1,0 +1,142 @@
+{
+  "passed": true,
+  "phases": [
+    {
+      "active_band": "wifi_2g4",
+      "connected": true,
+      "cycles": 3,
+      "dsp": {
+        "busy": 0,
+        "current_result": true,
+        "enabled": true,
+        "epoch": 2,
+        "failures": 0,
+        "measured": 12,
+        "protocol_errors": 0,
+        "result_band": 2,
+        "result_epoch": 2,
+        "timeouts": 0
+      },
+      "error": "",
+      "lora_captures": 0,
+      "name": "wifi24_dsp",
+      "rf_rows": 6,
+      "rx_stalled": false,
+      "step": "2.4GHz Wi-Fi ch 1 (2412 MHz)",
+      "wifi_tail": 1000
+    },
+    {
+      "active_band": "wifi_5g",
+      "connected": true,
+      "cycles": 3,
+      "dsp": {
+        "busy": 0,
+        "current_result": true,
+        "enabled": true,
+        "epoch": 4,
+        "failures": 0,
+        "measured": 27,
+        "protocol_errors": 0,
+        "result_band": 5,
+        "result_epoch": 4,
+        "timeouts": 0
+      },
+      "error": "",
+      "lora_captures": 0,
+      "name": "wifi5_gain_change",
+      "rf_rows": 3,
+      "rx_stalled": false,
+      "step": "5GHz Wi-Fi ch 36 (5180 MHz)",
+      "wifi_tail": 1000
+    },
+    {
+      "active_band": "sub_ghz_ism",
+      "connected": true,
+      "cycles": 4,
+      "dsp": {
+        "busy": 0,
+        "current_result": false,
+        "enabled": true,
+        "epoch": 6,
+        "failures": 0,
+        "measured": 27,
+        "protocol_errors": 0,
+        "result_band": 0,
+        "result_epoch": 0,
+        "timeouts": 0
+      },
+      "error": "",
+      "lora_captures": 4,
+      "name": "lora_rate_change",
+      "rf_rows": 0,
+      "rx_stalled": false,
+      "step": "LoRa PHY listen @ 865.000000 MHz (locked)",
+      "wifi_tail": 1000
+    },
+    {
+      "active_band": "wifi_2g4",
+      "connected": true,
+      "cycles": 2,
+      "dsp": {
+        "busy": 0,
+        "current_result": false,
+        "enabled": false,
+        "epoch": 9,
+        "failures": 0,
+        "measured": 27,
+        "protocol_errors": 0,
+        "result_band": 0,
+        "result_epoch": 0,
+        "timeouts": 0
+      },
+      "error": "",
+      "lora_captures": 5,
+      "name": "wifi24_dsp_disabled",
+      "rf_rows": 9,
+      "rx_stalled": false,
+      "step": "2.4GHz Wi-Fi ch 6 (2437 MHz)",
+      "wifi_tail": 1000
+    },
+    {
+      "active_band": "wifi_2g4",
+      "connected": true,
+      "cycles": 2,
+      "dsp": {
+        "busy": 0,
+        "current_result": false,
+        "enabled": false,
+        "epoch": 10,
+        "failures": 0,
+        "measured": 27,
+        "protocol_errors": 0,
+        "result_band": 0,
+        "result_epoch": 0,
+        "timeouts": 0
+      },
+      "error": "",
+      "lora_captures": 5,
+      "name": "stop_start",
+      "rf_rows": 9,
+      "rx_stalled": false,
+      "step": "2.4GHz Wi-Fi ch 6 (2437 MHz)",
+      "wifi_tail": 1000
+    }
+  ],
+  "enrolment_error": "",
+  "enrolment_drops": 0,
+  "security": {
+    "frames_accepted": 19038,
+    "captures_ingested": 64,
+    "queue_events_dropped": 0,
+    "queue_captures_dropped": 0,
+    "incidents_total": 0,
+    "storage_error": ""
+  },
+  "lora": {
+    "captures": 5,
+    "events": 0,
+    "excluded": 0,
+    "input_loss": 0,
+    "usable_s": 10.0
+  }
+}

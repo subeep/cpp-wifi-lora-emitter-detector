@@ -1,0 +1,102 @@
+{
+  "schema": "rfmon.labelled_lora_validation.v1",
+  "passed": true,
+  "originals_unchanged": true,
+  "source_sha256": {
+    "/home/sudeep/Documents/newrocktest-cpp/tests/fixtures/lora_sx1262/capture-1790061256825496286-0/iq.cf32_le": "e7a34ff74b306934016e9eda424cee182b112e9f1027c09789132b601a5c4f4a",
+    "/home/sudeep/Documents/newrocktest-cpp/tests/fixtures/lora_sx1262/capture-1790061256825496286-0/manifest.json": "ca82927e8717f9c00bc4751ead43eb504dde260e4f51d1661ec13f3d35bbcf3c",
+    "/home/sudeep/Documents/newrocktest-cpp/tests/fixtures/lora_sx1262/capture-1790061256915056249-0/iq.cf32_le": "360768d7332ee3a21f2c9af972c6c7821ed988221775def09b69bd413987f358",
+    "/home/sudeep/Documents/newrocktest-cpp/tests/fixtures/lora_sx1262/capture-1790061256915056249-0/manifest.json": "2e1df937e2c8aeebd4066eb6bcf52c42c5ea2534265277b37e829d598c9144c4",
+    "/home/sudeep/Documents/newrocktest-cpp/tests/fixtures/lora_sx1262/capture-1790061257005581306-0/iq.cf32_le": "ae4eeeb83d4f04fee84523e2fb4ec3a543e928f25c32f6febf2b914c9019d287",
+    "/home/sudeep/Documents/newrocktest-cpp/tests/fixtures/lora_sx1262/capture-1790061257005581306-0/manifest.json": "399a40f819894898c334dff3b648393fa25c574eda80ab7786e7f24d890047bb"
+  },
+  "tool_sha256": "9060e086c356d00bb06ee04a0d1915b3a9c9756d819c3cdef675b213a648457b",
+  "scope": "development regression; same-source variants are not independent encounters",
+  "noise_definition": "added noise power relative to whole-recording mean signal power; not measured packet SNR",
+  "cases": [
+    {
+      "recording": "capture-1790061256825496286-0",
+      "variant": "received",
+      "exact_payload_crc_and_phy": true,
+      "valid_crc_wrong_payload_rows": 0,
+      "hypothesis_rows": 1
+    },
+    {
+      "recording": "capture-1790061256825496286-0",
+      "variant": "cfo_plus_1khz",
+      "exact_payload_crc_and_phy": true,
+      "valid_crc_wrong_payload_rows": 0,
+      "hypothesis_rows": 1
+    },
+    {
+      "recording": "capture-1790061256825496286-0",
+      "variant": "added_noise_20db",
+      "exact_payload_crc_and_phy": true,
+      "valid_crc_wrong_payload_rows": 0,
+      "hypothesis_rows": 1
+    },
+    {
+      "recording": "capture-1790061256825496286-0",
+      "variant": "added_noise_10db",
+      "exact_payload_crc_and_phy": true,
+      "valid_crc_wrong_payload_rows": 0,
+      "hypothesis_rows": 1
+    },
+    {
+      "recording": "capture-1790061256915056249-0",
+      "variant": "received",
+      "exact_payload_crc_and_phy": true,
+      "valid_crc_wrong_payload_rows": 0,
+      "hypothesis_rows": 1
+    },
+    {
+      "recording": "capture-1790061256915056249-0",
+      "variant": "cfo_plus_1khz",
+      "exact_payload_crc_and_phy": true,
+      "valid_crc_wrong_payload_rows": 0,
+      "hypothesis_rows": 1
+    },
+    {
+      "recording": "capture-1790061256915056249-0",
+      "variant": "added_noise_20db",
+      "exact_payload_crc_and_phy": true,
+      "valid_crc_wrong_payload_rows": 0,
+      "hypothesis_rows": 1
+    },
+    {
+      "recording": "capture-1790061256915056249-0",
+      "variant": "added_noise_10db",
+      "exact_payload_crc_and_phy": true,
+      "valid_crc_wrong_payload_rows": 0,
+      "hypothesis_rows": 1
+    },
+    {
+      "recording": "capture-1790061257005581306-0",
+      "variant": "received",
+      "exact_payload_crc_and_phy": true,
+      "valid_crc_wrong_payload_rows": 0,
+      "hypothesis_rows": 1
+    },
+    {
+      "recording": "capture-1790061257005581306-0",
+      "variant": "cfo_plus_1khz",
+      "exact_payload_crc_and_phy": false,
+      "valid_crc_wrong_payload_rows": 0,
+      "hypothesis_rows": 1
+    },
+    {
+      "recording": "capture-1790061257005581306-0",
+      "variant": "added_noise_20db",
+      "exact_payload_crc_and_phy": true,
+      "valid_crc_wrong_payload_rows": 0,
+      "hypothesis_rows": 1
+    },
+    {
+      "recording": "capture-1790061257005581306-0",
+      "variant": "added_noise_10db",
+      "exact_payload_crc_and_phy": true,
+      "valid_crc_wrong_payload_rows": 0,
+      "hypothesis_rows": 1
+    }
+  ]
+}

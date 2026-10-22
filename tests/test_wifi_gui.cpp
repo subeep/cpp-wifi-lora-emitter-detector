@@ -44,7 +44,12 @@ int main(int argc, char** argv) {
     b.ciphers="CCMP-128 (group: CCMP-128)"; b.pmf="Capable";
     b.standards="HT (802.11n), VHT (802.11ac)"; b.wps_present=true;
     b.wps_manufacturer="Example Corp"; b.wps_model_name="Model A"; b.wps_model_number="42"; b.wps_device_name="Lab AP";
-    row.identity=b; rows.push_back(row);
+    row.identity=b;
+    auto enrol=std::make_shared<wifi_master::WifiEnrolmentInfo>();
+    enrol->role="AP / network interface";enrol->observations=12;enrol->seen_24=row.last_seen_ts;
+    enrol->last_source="SYNTHETIC/run1/capture12/100/OFDM";
+    enrol->history.push_back({1,row.last_seen_ts,"Discovered","Synthetic GUI identity; not live evidence",enrol->last_source});enrol->history_total=1;
+    row.enrolment=enrol;rows.push_back(row);
     row.device_key="02:00:00:00:00:02"; row.vendor="Locally administered"; row.vendor_source="No vendor inference";
     row.identity->ssid=""; row.identity->wps_model_name=""; row.identity->wps_manufacturer="";
     row.identity->wps_device_name=""; row.identity->wps_model_number=""; row.identity->wps_present=false;
@@ -299,15 +304,16 @@ int main(int argc, char** argv) {
     incident.id=9;incident.rule="historical_beacon_replay";incident.rule_version="fixture";
     incident.claimed_bssid="00:11:22:33:44:55";incident.context={{"original_tsf_us","1000000"},{"newer_tsf_us","1600000"},{"repeated_tsf_us","1000000"}};
     sample.incidents.push_back(incident);sample.incidents_open=sample.incidents_total=1;
-    int passive_commands=0;
+    int passive_commands=0, enrolment_commands=0;
+    std::string enrolment_action;
     for(int scene=0;scene<3;++scene) {
         std::string rendered;
-        for(int frame=0;frame<7;++frame) {
+        for(int frame=0;frame<(scene==0?9:7);++frame) {
             ImGui_ImplOpenGL3_NewFrame();ImGui::NewFrame();ImGui::LogToBuffer(0);
             ui.page=scene==2?gui::Page::Security:gui::Page::Wifi24;
             gui::draw_workspace(ui,ctx,true,[&](gui::Page){
                 ImGui::TextUnformatted("SYNTHETIC UI fixture; receiver disconnected; no live evidence.");
-                if(scene==0)draw_wifi_master_table(rows,330,true);
+                if(scene==0)draw_wifi_master_table(rows,620,true,[&](const auto& c){++enrolment_commands;enrolment_action=c.action;return true;});
                 if(scene==1)draw_wifi_packet_table(packets,330);
                 if(scene==2)draw_wifi_security_panel(sample,{},ctx.run,"",700,"Incidents",[&](const auto&,const auto&){++passive_commands;},true);
                 if(frame==2) {
@@ -317,16 +323,28 @@ int main(int argc, char** argv) {
                     }
                 }
             });
+            if(scene==0 && frame==4 && enrolment_commands){std::cerr<<"Passive enrolment inspection issued a command\n";++failures;}
+            if(scene==0 && frame==5)for(auto* w:ImGui::GetCurrentContext()->Windows)
+                if(w->Active&&std::string(w->Name).find("Identity inspector")!=std::string::npos){
+                    // Fixed 1600x1000 fixture: real mouse activation of the
+                    // visible Acknowledge button, verified by the command type.
+                    rio.AddMousePosEvent(w->Pos.x+70,w->Pos.y+293);rio.AddMouseButtonEvent(0,true);break;
+                }
+            if(scene==0&&frame==6)rio.AddMouseButtonEvent(0,false);
             if(frame==3)rio.AddMouseButtonEvent(0,false);
             rendered=ImGui::GetCurrentContext()->LogBuffer.c_str();ImGui::LogFinish();ImGui::Render();
             if(ImGui::GetCurrentContext()->ErrorCountCurrentFrame)++failures;
             glViewport(0,0,1600,1000);glClearColor(.065,.085,.115,1);glClear(GL_COLOR_BUFFER_BIT);ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());glFinish();
         }
-        const char* expected=scene==0?"WPS":scene==1?"Selected packet snapshot":"Incident evidence inspector";
+        const char* expected=scene==0?"Automatic trusted adaptation":scene==1?"Selected packet snapshot":"Incident evidence inspector";
         if(rendered.find(expected)==std::string::npos){std::cerr<<"Revamp inspector missing: "<<expected<<'\n';++failures;}
+        if(scene==0 && (rendered.find("NEW DEVICE")==std::string::npos || rendered.find("Approve / enrol")==std::string::npos)){
+            std::cerr<<"Enrolment state/actions missing from real inspector\n";++failures;
+        }
         if(glGetError()!=GL_NO_ERROR)++failures;
         save(scene==0?"-revamp-identities.ppm":scene==1?"-revamp-packets.ppm":"-revamp-incidents.ppm");
     }
+    if(enrolment_commands!=1||enrolment_action!="acknowledge"){std::cerr<<"Explicit acknowledge control failed or emitted another action\n";++failures;}
     if(passive_commands){std::cerr<<"Passive inspection emitted backend command\n";++failures;}
     ImGui_ImplOpenGL3_Shutdown(); ImGui::DestroyContext();
     eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);

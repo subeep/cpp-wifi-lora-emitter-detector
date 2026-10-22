@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "wifi_fingerprint.hpp"
+#include "wifi_enrolment_types.hpp"
 
 namespace rfmon::wifi_master {
 
@@ -85,6 +86,8 @@ struct WifiMasterRow {
     double monitored_channel_hz = 0;
     std::string vendor;
     std::string vendor_source;
+    std::shared_ptr<const WifiEnrolmentInfo> enrolment;
+    std::vector<std::string> related_incidents; // GUI association from published security tail, not persisted
 
 };
 
@@ -96,6 +99,9 @@ public:
     // from the device key: a permanent meta line followed by reading
     // lines - same shape as lora_master.hpp's, only the key changes).
     explicit WifiMasterList(std::string dir);
+    ~WifiMasterList();
+    bool writable() const { return lock_fd_ >= 0; }
+    std::string record_transmitter(const std::string& mac, double hz, int64_t ts, const std::string& phy);
 
     // Returns the persistent key; rejects gated-out readings. Records an accepted fingerprint
     // reading. `mac`, when present, is used as the EXACT device key
@@ -132,6 +138,7 @@ private:
         uint64_t identity_count = 0;
         double monitored_channel_hz = 0;
         size_t identity_lines = 0;
+        bool transmitter_seen = false;
         std::deque<WifiMasterReading> readings;  // newest at the back
     };
 
@@ -152,6 +159,7 @@ private:
     std::string storage_error_;
 
     std::string dir_;
+    int lock_fd_ = -1;
     mutable std::mutex mutex_;
     std::vector<Device> devices_;
     int next_fp_id_ = 1;

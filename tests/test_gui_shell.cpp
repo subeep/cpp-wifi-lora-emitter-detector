@@ -1,5 +1,6 @@
 // Exercises production navigation with real mouse/keyboard events, disconnected.
 #include "gui/app_shell.hpp"
+#include "ml_panel.hpp"
 #include "imgui_internal.h"
 #include "backends/imgui_impl_opengl3.h"
 #include <EGL/egl.h>
@@ -22,6 +23,7 @@ int main(int argc,char** argv) {
     require(eglMakeCurrent(display,surface,surface,context),"EGL make current");
     ImGui::CreateContext();auto& io=ImGui::GetIO();io.IniFilename=nullptr;io.DisplaySize={1600,1000};io.DeltaTime=1.f/60;
     configure_font();apply_theme();ImGui_ImplOpenGL3_Init("#version 130");
+    rfmon::ml::Inference inference;
     State state;Context ctx;ctx.radio="USRP X310";ctx.band="Wi-Fi 2.4 GHz";ctx.run="synthetic-display";
     int commands=0;bool preview=false;ImVec2 command_center;std::string text;
     auto frame=[&](bool log=false){
@@ -34,6 +36,7 @@ int main(int argc,char** argv) {
             if(section("Complete retained details",true))ImGui::TextUnformatted("Unavailable values remain unavailable; exact raw evidence retained.");
             }
             if(page==Page::Settings)draw_capabilities(true,true);
+            if(page==Page::ModelInference)rfmon::ml::draw_panel(inference,false,"wifi_2g4");
             if(page==Page::Overview){Overview data;data.captures=12;data.groups=4;draw_overview(state,ctx,data,true,[]{note("Synthetic fixture: frequency map unavailable; no RF samples acquired.");});}
         });
         if(log){text=ImGui::GetCurrentContext()->LogBuffer.c_str();ImGui::LogFinish();}
@@ -44,7 +47,7 @@ int main(int argc,char** argv) {
     auto click=[&](ImVec2 pos){io.AddMousePosEvent(pos.x,pos.y);frame();io.AddMouseButtonEvent(0,true);frame();io.AddMouseButtonEvent(0,false);frame();};
     frame();frame();
     // The production rail's first row begins after its WORKSPACES label.
-    for(int i=0;i<8;++i) {
+    for(int i=0;i<int(Page::Count);++i) {
         ImGuiWindow* nav=nullptr;for(auto* w:ImGui::GetCurrentContext()->Windows)if(std::string(w->Name).find("/Navigation_")!=std::string::npos)nav=w;
         require(nav,"Navigation child missing");
         const float y=nav->DC.CursorStartPos.y+ImGui::GetTextLineHeightWithSpacing()+i*(32+ImGui::GetStyle().ItemSpacing.y)+16;
@@ -52,6 +55,8 @@ int main(int argc,char** argv) {
         require(state.page==static_cast<Page>(i),"Navigation selected wrong page");
         require(commands==0,"Navigation emitted command");
     }
+    require(!inference.snapshot().enabled,"Navigation started inference");
+    state.page=Page::Settings;frame();
     const auto& style=ImGui::GetStyle();
     const float setup_x=style.WindowPadding.x+ImGui::CalcTextSize("RF MONITOR").x+style.ItemSpacing.x+ImGui::CalcTextSize("/ Settings").x+style.ItemSpacing.x+(ImGui::CalcTextSize("Monitoring setup").x+2*style.FramePadding.x)/2;
     click({setup_x,style.WindowPadding.y+ImGui::GetFrameHeight()/2});
@@ -68,7 +73,7 @@ int main(int argc,char** argv) {
         require(commands==1,"Scale/layout switch emitted command");
     }
     preview=true;ctx.error.clear();ctx.stalled=false;ctx.overflow=false;
-    state.scale=1;apply_theme();io.DisplaySize={1600,1000};state.page=Page::Overview;frame();frame();
+    state.scale=1;apply_theme();io.DisplaySize={1600,1000};state.page=argc>2?Page::ModelInference:Page::Overview;frame();frame();
     const auto start=std::chrono::steady_clock::now();for(int i=0;i<120;++i)frame();
     std::cout<<"Shell software-render average ms/frame: "<<std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count()/120<<'\n';
     if(argc>1){glFinish();std::vector<unsigned char> bytes(1600*1000*3);glPixelStorei(GL_PACK_ALIGNMENT,1);glReadPixels(0,0,1600,1000,GL_RGB,GL_UNSIGNED_BYTE,bytes.data());std::ofstream out(argv[1],std::ios::binary);out<<"P6\n1600 1000\n255\n";for(int y=999;y>=0;--y)out.write(reinterpret_cast<const char*>(bytes.data()+y*1600*3),1600*3);}

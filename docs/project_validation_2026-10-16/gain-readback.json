@@ -1,0 +1,8 @@
+{
+  "requested_gain_db": 20.3,
+  "recorded_configured_gain_db": [
+    20.0
+  ],
+  "captures": 8,
+  "all_captures_have_gain": true
+}

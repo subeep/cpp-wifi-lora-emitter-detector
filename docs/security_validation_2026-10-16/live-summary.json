@@ -1,0 +1,118 @@
+{
+  "frames_accepted": 246492,
+  "captures_ingested": 172,
+  "incidents_total": 0,
+  "incidents_open": 0,
+  "queue_events_dropped": 0,
+  "queue_captures_dropped": 0,
+  "input_lines_rejected": 0,
+  "storage_error": "",
+  "persist_error": "",
+  "recorded_bytes": 173392972,
+  "coverage": [
+    {
+      "analysed_s": 166.19175800000005,
+      "band": "wifi_5g",
+      "burst_cap_captures": 50,
+      "bursts": 521006,
+      "bursts_beyond_identity_limit": 357295,
+      "captures": 172,
+      "channel": 36,
+      "contiguous_s": 172.0,
+      "dead_s": 7.596850905000005,
+      "device_time_captures": 172,
+      "dsss_attempts": 0,
+      "dsss_fcs_valid": 0,
+      "dsss_not_attempted": 0,
+      "events_rejected_by_queue": 0,
+      "failed_captures": 0,
+      "frames_accepted": 246492,
+      "host_only_captures": 0,
+      "ofdm_attempts": 412396,
+      "ofdm_fcs_valid": 246492,
+      "overflow_captures": 0,
+      "processing_s": 32.89235392999999,
+      "sampled_s": 172.0
+    }
+  ],
+  "flood": {
+    "config": "{\"active_captures\":2,\"enabled\":true,\"floor\":10.0,\"gap_s\":1.0,\"max_frames_per_capture\":1024,\"max_groups\":128,\"max_pending\":64,\"max_profiles\":16,\"max_units\":4096,\"max_window_captures\":128,\"min_ap_targets\":2,\"min_baseline_s\":30.0,\"min_units\":20,\"min_windows\":3,\"multiplier\":4.0,\"release_s\":5.0,\"repeat_guard_s\":0.01,\"version\":2,\"window_mode\":\"rolling_whole_captures\",\"window_s\":2.0}",
+    "enabled": true,
+    "evaluations": 100,
+    "excluded_captures": 50
+  },
+  "beacon_replay": {
+    "config": "{\"bytes\":2048,\"delay_s\":0.5,\"enabled\":true,\"frames\":512,\"gap_s\":2.0,\"history\":16,\"identities\":64,\"pending\":64,\"profiles\":8,\"retention_s\":60.0,\"v\":1}",
+    "enabled": true,
+    "evaluated": 1589,
+    "excluded_captures": 50,
+    "forgotten": 1015
+  },
+  "transactions": {
+    "cryptographic_validation": false,
+    "enabled": true,
+    "evaluated": 0,
+    "excluded_captures": 50,
+    "history": 8,
+    "history_evictions": 0,
+    "max_frame_bytes": 2048,
+    "max_frames": 256,
+    "max_gap_s": 1.0,
+    "max_links": 128,
+    "max_pending": 32,
+    "max_profiles": 8,
+    "min_delay_s": 0.5,
+    "policy": "historical_answered_transaction_v1",
+    "retention_s": 30.0,
+    "unsupported": 0
+  },
+  "frames_by_type": {
+    "Ctrl/Ack": 15816,
+    "Ctrl/Beamforming report poll": 187,
+    "Ctrl/Block ack": 66309,
+    "Ctrl/Block ack request": 145,
+    "Ctrl/CF-End": 227,
+    "Ctrl/CTS": 98415,
+    "Ctrl/RTS": 52913,
+    "Ctrl/Trigger": 76,
+    "Ctrl/VHT/HE NDP announcement": 7868,
+    "Data/Data": 268,
+    "Data/Null": 727,
+    "Data/QoS data": 16,
+    "Data/QoS null": 898,
+    "Mgmt/Action no ack": 372,
+    "Mgmt/Beacon": 2087,
+    "Mgmt/Probe request": 26,
+    "Mgmt/Probe response": 142
+  },
+  "frames_by_phy": {
+    "OFDM": 246492
+  },
+  "baselines": [
+    {
+      "channel": 36,
+      "learned_analysed_s": 30.0,
+      "captures_excluded": 50,
+      "holders": []
+    }
+  ],
+  "enrolment": {
+    "dropped_batches": 0,
+    "queued_after_stop": 0,
+    "restart_equal": true,
+    "storage_error": "",
+    "reload_error": ""
+  },
+  "retained_files": {
+    "events.ndjson.1": {
+      "bytes": 33554804,
+      "sha256": "9994e15faafa3d0dd7b3735bf5c0649f63fa3d340433941b9605f1028e86c954"
+    },
+    "events.ndjson": {
+      "bytes": 5619525,
+      "sha256": "e264e569ddb3c80393569acaeec7727bf574b1c925e808894a31654c9160ad86"
+    }
+  },
+  "retained_capture_records": 51,
+  "full_session_replay_possible": false
+}

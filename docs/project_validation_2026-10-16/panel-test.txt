@@ -1,0 +1,1 @@
+cyclostationary panel disabled/waiting/measured/gap/stale states passed

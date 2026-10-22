@@ -100,12 +100,13 @@ def fft_frames(iq, source_rate, config=STFTConfig()):
     return fft, metadata
 
 
-def spectrogram(iq, source_rate, config=STFTConfig()):
-    fft, _ = fft_frames(iq, source_rate, config)
+def spectrogram(iq, source_rate, config=STFTConfig(), return_metadata=False):
+    fft, metadata = fft_frames(iq, source_rate, config)
     hann = np.hanning(config.nfft + 1)[:-1]
     power = np.abs(fft) ** 2 / np.sum(hann ** 2)
     image = np.maximum(10 * np.log10(np.maximum(power, 10 ** (config.floor_db / 10))), config.floor_db)
     if not np.isfinite(image).all():
         raise ValueError('nonfinite STFT')
     # No colour maps, axes, labels, image resize or frequency/time warping.
-    return image.T.astype(np.float32)
+    image = image.T.astype(np.float32)
+    return (image, metadata) if return_metadata else image

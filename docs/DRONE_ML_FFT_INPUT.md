@@ -1,5 +1,10 @@
 # Standalone IQ and FFT inference interface
 
+Update, 21 October 2026: an optional live IQ adapter and native Model Inference tab are
+now implemented. See [the integration report](DRONE_ML_LIVE_INTEGRATION.md). The original
+13 October standalone scope below is historical; FFT hardware-producer compatibility
+and live scientific qualification remain unverified.
+
 Implemented 13 October 2026. This component is experimental and optional. It lives in
 `tools/drone_ml/`; the C++ application does not import, launch or depend on it. No receiver,
 GUI, scanner, cyclostationary, decoder, security or CMake changes are part of this work.

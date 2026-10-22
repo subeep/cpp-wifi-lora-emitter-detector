@@ -1,0 +1,1 @@
+PASS: 101 symbol vectors, 96 normal/inverted synchronization cases, 0 real CRC-valid captures, multiple frames, truncation and negative controls

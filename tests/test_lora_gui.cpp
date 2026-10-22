@@ -9,6 +9,7 @@
 #include <GL/gl.h>
 #include <fstream>
 #include <iostream>
+#include <set>
 using namespace rfmon;
 int main(int argc, char** argv) {
     EGLDisplay display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, nullptr);
@@ -31,6 +32,7 @@ int main(int argc, char** argv) {
         else { r.decoder="LoRa explicit PHY"; r.sync_word=0x34; r.ldro=false; r.ldro_ambiguous=i!=4; r.cr=1; r.payload_len=3;
                set_lora_integrity(r,i!=1,i!=2,i==4);
                if (r.payload_complete) { r.payload_hex="01 02 03"; r.payload_repr="..."; } }
+        if(i>0){r.reception_id="synthetic-capture/reception-"+std::to_string(i);r.reception_hypotheses=1;}
         rows.push_back(r);
     }
     if (argc>2) {
@@ -48,6 +50,7 @@ int main(int argc, char** argv) {
     wan.inverted_iq=true;wan.preamble_peak_ratio=.93;wan.sfd_peak_ratio=.92;wan.cfo_hz=-123.5;
     wan.drift_hz_per_symbol=.25;wan.capture_offset_s=.125;wan.fec_disagreements=0;
     rows.push_back(wan);
+    std::set<std::string> expected_groups;for(const auto& row:rows)if(!row.reception_id.empty())expected_groups.insert(row.reception_id);
     for (int frame=0;frame<3;++frame) {
         if (argc>3 && frame>0) {
             for(auto* window : ImGui::GetCurrentContext()->Windows)
@@ -63,10 +66,12 @@ int main(int argc, char** argv) {
         lora_security::ProfileCoverage profile;profile.center_hz=866900000;profile.rate_hz=500000;
         profile.gain_db=20;profile.sampled_s=6;profile.usable_s=2;security.coverage["synthetic-display"]=profile;
         ImGui::SetNextItemOpen(true,ImGuiCond_Always);draw_lora_security_panel(security);
-        draw_lora_packet_table(rows,180);
+        ImGui::LogToBuffer(0);draw_lora_packet_table(rows,180);
+        const std::string displayed=ImGui::GetCurrentContext()->LogBuffer.c_str();ImGui::LogFinish();
+        if(displayed.find("Retained reception groups: "+std::to_string(expected_groups.size()))==std::string::npos)return 1;
         ImGui::SetNextItemOpen(true,ImGuiCond_Always); draw_lora_replay_panel();
         ImGui::End(); ImGui::Render();
-        if (ImGui::GetDrawData()->TotalVtxCount<=0) return 1;
+        if (ImGui::GetDrawData()->TotalVtxCount<=0 || ImGui::GetCurrentContext()->ErrorCountCurrentFrame) return 1;
         glViewport(0,0,1800,650); glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData()); glFinish();
         if (glGetError()!=GL_NO_ERROR) return 1;

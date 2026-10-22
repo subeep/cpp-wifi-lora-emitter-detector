@@ -39,6 +39,7 @@ int main(int argc,char** argv) {
     auto draw = [&](const std::shared_ptr<const rfmon::cyclo::ShadowResult>& r, rfmon::cyclo::ShadowStats stats, int band, bool expanded=false) {
         ImGui::NewFrame(); ImGui::SetNextWindowPos(ImVec2(0, 0)); ImGui::SetNextWindowSize(io.DisplaySize);
         ImGui::Begin(argc==2?"Cyclostationary GUI - synthetic measurement preview":"Cyclostationary panel verification");
+        ImGui::GetStateStorage()->SetInt(ImGui::GetID("Detailed measurements"),expanded);
         ImGui::GetStateStorage()->SetInt(ImGui::GetID("Expanded cyclic and waveform measurements"),expanded);
         ImGui::GetStateStorage()->SetInt(ImGui::GetID("General timing and short-code structure"),expanded);
         ImGui::GetStateStorage()->SetInt(ImGui::GetID("General linear sweep measurements"),expanded);
@@ -161,7 +162,13 @@ int main(int argc,char** argv) {
     if(rendered_text.find("Joint symbol structure: compatible")==std::string::npos) {
         std::cerr<<"joint structure evidence missing from GUI\n";return 1;
     }
-    if(argc==2)export_draw(argv[1]);
+    if(argc==2){
+        // Illustrative spectrum for visual QA only; never a live measurement.
+        double sum=0;auto& power=result->tiles[0].spectral.power_fraction;
+        for(std::size_t i=0;i<power.size();++i){const double x=double(i)/power.size();power[i]=.002+std::exp(-std::pow((x-.38)/.10,2))+ .6*std::exp(-std::pow((x-.68)/.04,2));sum+=power[i];}
+        for(auto& p:power)p/=sum;
+        draw(result,stats,2,false);export_draw(argv[1]);
+    }
     result->capture.band_ghz=5;result->capture.capture_center_hz=5181.5e6;const auto measured5=draw(result,stats,5);
     if(rendered_text.find("Wi-Fi observed in this window")!=std::string::npos) {
         std::cerr<<"cross-band protocol evidence rendered\n";return 1;

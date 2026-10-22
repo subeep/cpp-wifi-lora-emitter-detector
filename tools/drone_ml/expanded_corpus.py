@@ -5,6 +5,9 @@ import hashlib
 import io
 import json
 import os
+import subprocess
+import selectors
+import time
 from pathlib import Path
 import zipfile
 import h5py
@@ -46,7 +49,40 @@ def window_starts(total,n,windows):
     return [int(x) for x in a]
 
 
-def source_windows(row, windows=12):
+def rar_intervals(path, member, starts, count):
+    """Stream spaced IQ windows without materializing an entire archive member."""
+    if (type(count) is not int or not 1<=count<=4_000_000 or not starts or
+            any(type(s) is not int or s<0 for s in starts) or
+            any(b<a+count for a,b in zip(starts,starts[1:]))):
+        raise ValueError('invalid archive intervals')
+    p=subprocess.Popen(['unrar','p','-inul',str(path),member],
+                       stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+    cursor=0; deadline=time.monotonic()+120
+    try:
+        with selectors.DefaultSelector() as sel:
+            sel.register(p.stdout,selectors.EVENT_READ)
+            def read_bytes(n, keep):
+                nonlocal cursor
+                result=bytearray()
+                while n:
+                    if time.monotonic()>deadline:raise TimeoutError('archive stream deadline')
+                    if not sel.select(.2):continue
+                    chunk=os.read(p.stdout.fileno(),min(n,131072))
+                    if not chunk:raise ValueError('short archive stream')
+                    cursor+=len(chunk);n-=len(chunk)
+                    if keep:result.extend(chunk)
+                return result
+            for start in starts:
+                read_bytes(start*8-cursor,False)
+                yield start,np.frombuffer(read_bytes(count*8,True),dtype='<c8').copy()
+    finally:
+        if p.poll() is None:p.terminate()
+        try:p.wait(timeout=2)
+        except subprocess.TimeoutExpired:p.kill();p.wait()
+        p.stdout.close()
+
+
+def source_windows(row, windows=12, full_rfuav=False):
     """Yield bounded, spaced windows. No joining records or sweep dwell intervals."""
     path=Path(row['source']);n=round(row['rate_hz']*CONFIG.duration_seconds)
     if not 1<=n<=4_000_000 or not os.statvfs(path).f_flag & os.ST_RDONLY or stamp(path)!=row['source_stat']:
@@ -81,6 +117,11 @@ def source_windows(row, windows=12):
                 v=d[0,start:start+n]
                 yield start,v['real'].astype(np.float64)+1j*v['imag'],extra
     elif adapter=='rfuav':
+        if full_rfuav:
+            for start,iq in rar_intervals(path,row['member'],starts(row['total_samples']),n):
+                yield start,iq,dict(member_crc_verified=False,streamed_spaced_intervals=True)
+            if stamp(path)!=row['source_stat']:raise ValueError('source changed during extraction')
+            return
         # Read a bounded prefix once, with enough spacing for twelve 8 ms intervals.
         count=min(row['total_samples'],round(row['rate_hz']*.16))
         raw=rar_bytes(path,row['member'],limit=count*8,prefix=True)
@@ -106,8 +147,10 @@ class ShardWriter:
         self.images=[]
 
 
-def prepare(review_path,output,windows=12):
-    if not 4<=windows<=24: raise ValueError('windows must be 4..24')
+def prepare(review_path,output,windows=12,full_rfuav=False,calibration_windows=None):
+    if not 4<=windows<=48: raise ValueError('windows must be 4..48')
+    if calibration_windows is not None and not 4<=calibration_windows<=48:
+        raise ValueError('invalid calibration window budget')
     review_path=Path(review_path).resolve();review=json.loads(review_path.read_text())
     if review['schema']!='rfmon.drone_ml.expanded_review.v1': raise ValueError('invalid review')
     split_path=review_path.parent/'split_plan.json'
@@ -123,7 +166,8 @@ def prepare(review_path,output,windows=12):
         if row['partition']=='train' and row['model_eligible']:
             sums[0]+=float(np.sum(image,dtype=np.float64));sums[1]+=float(np.sum(image.astype(np.float64)**2));sums[2]+=image.size
     for position,r in enumerate(rows):
-        for start,iq,extra in source_windows(r,windows):
+        budget=windows if r['partition']=='train' or calibration_windows is None else calibration_windows
+        for start,iq,extra in source_windows(r,budget,full_rfuav):
             if not np.isfinite(iq).all():
                 rejected.append(dict(recording_id=r['recording_id'],start=start,reason='nonfinite_IQ'));continue
             rawhash=hashlib.sha256(np.asarray(iq,dtype='<c8').tobytes()).hexdigest()
@@ -168,7 +212,8 @@ def prepare(review_path,output,windows=12):
         review_sha256=sha256(review_path),split_sha256=sha256(split_path),
         source_stats_preserved=True,held_test_iq_read=False,release_validation_eligible=False,
         negative_truth_available=False,rejected=rejected,
-        original_by_dataset=dict(source_counts),windows_per_source=windows)
+        original_by_dataset=dict(source_counts),windows_per_source=windows,full_rfuav=full_rfuav,
+        calibration_windows=calibration_windows)
     write_json(out/'corpus.json',manifest)
     return manifest
 

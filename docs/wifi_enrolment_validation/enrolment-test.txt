@@ -1,0 +1,85 @@
+23/50 Testing: wifi_enrolment
+23/50 Test: wifi_enrolment
+Command: "/home/sudeep/Documents/newrocktest-cpp/build-wifi-enrolment/test_wifi_enrolment"
+Directory: /home/sudeep/Documents/newrocktest-cpp/build-wifi-enrolment
+"wifi_enrolment" start time: Oct 16 11:01 IST
+Output:
+----------------------------------------------------------
+PASS capture admitted
+PASS new identity unreviewed
+PASS digital identity and same-burst RF saved
+PASS single discovery event
+PASS duplicate capture idempotent
+PASS duplicate burst idempotent
+PASS command admitted
+PASS acknowledge is not approve
+PASS command admitted
+PASS explicit approval saved
+PASS command admitted
+PASS operator label saved
+PASS command admitted
+PASS insufficient captures cannot create reference
+PASS one RF sample per independent capture
+PASS command admitted
+PASS explicit reference accepted
+PASS persistent reference divergence latches review
+PASS divergence cannot replace reference
+PASS name change retained and flagged
+PASS hidden SSID does not erase name
+PASS command admitted
+PASS digital change review separate
+PASS digital acknowledgement does not clear RF review
+PASS identity retained despite rejected RF
+PASS nonfinite RF excluded
+PASS unusable capture excluded from profile, not inventory
+PASS DSSS IQ estimates unavailable, separate context
+PASS receiver session split, no automatic baseline merge
+PASS per-band observation history
+PASS offline input cannot mutate live enrolment
+PASS command admitted
+PASS disallowed persists as monitoring policy
+PASS second writer read-only
+PASS second writer cannot append
+PASS policy and notes survive restart
+PASS reference and review survive restart
+PASS discovered identity never becomes imported on restart
+PASS command admitted
+PASS approval does not clear conflict
+PASS command admitted
+PASS failed commit cannot grant/revoke policy
+PASS failed command remains uncommitted after restart
+PASS legacy identities require review, never autoapproved
+PASS legacy import does not fabricate discovery alerts
+PASS legacy source backed up before write
+PASS client transmitter discovered without fabricated SSID
+PASS destination address is not enrolled
+PASS invalid FCS cannot create identity
+PASS mismatched capture provenance rejected
+PASS beacon BSSID cannot acquire another transmitter RF
+PASS new receiver contexts continue updating with bounded summary archival
+PASS oversized batch rejected with visible loss
+PASS client-only record survives restart
+PASS packet flood has one-capture profile weight
+PASS raw RF retention remains bounded
+PASS command admitted
+PASS changes do not erase approval or review warning
+PASS bounded history and independent-capture window
+PASS unsupported commands rejected before queue
+PASS compaction/restart preserves policy and counts
+PASS command admitted
+PASS command admitted
+PASS archive fixture starts with a latched RF warning
+PASS archiving a context cannot hide its RF warning
+PASS returning context restores accepted reference and warning with correct deviation
+PASS command admitted
+PASS RF acknowledgement preserves accepted reference
+PASS old receiver session rejected after a newer session
+PASS damaged policy fails closed with visible warning
+70 checks, 0 failures
+<end of output>
+Test time =   0.37 sec
+----------------------------------------------------------
+Test Passed.
+"wifi_enrolment" end time: Oct 16 11:01 IST
+"wifi_enrolment" time elapsed: 00:00:00
+----------------------------------------------------------

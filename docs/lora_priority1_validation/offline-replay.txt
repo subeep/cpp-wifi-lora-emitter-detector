@@ -1,0 +1,12 @@
+Source: live-cropped:data/lora_m2/sx1262-validation/capture-1790061126454567560-0
+Samples: 80001
+Actual rate: 500000
+Requested center: 8.88e+08
+Overflow: no
+Reception group: offline:tests/fixtures/lora_sx1262/capture-1790061256825496286-0/reception-1 (1 source hypotheses)
+IQ=normal preamble=0.981346 SFD=0.982406 CFO_Hz=-122.07 drift_Hz/symbol=0 offset_s=0.041984 FEC_mismatches=0
+SF7 BW=125 kHz | LoRa explicit PHY | Payload / CRC valid | CRC=Valid
+Payload CRC matches this decoder. Protocol and device identity not established. Sample offset 5248; preamble drift 0.000000 bins/symbol. Observed sync 0x12.
+HEX: 41 75 74 6f 20 38 38 38 4d 48 7a 20 23 31 32
+1 hypothesis results (not a unique packet count)
+1 conservative capture-local reception groups (not unique devices or delivery rate)

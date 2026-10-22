@@ -1,0 +1,173 @@
+{
+  "ch1": {
+    "captures": 44,
+    "channels": [
+      1
+    ],
+    "received_samples": 880000000,
+    "frames": 1601,
+    "phy_frames": {
+      "DSSS": 1034,
+      "OFDM": 567
+    },
+    "overflows": 0,
+    "timeouts": 0,
+    "exceptions": 0,
+    "short_captures": 0,
+    "burst_cap_reached": 0,
+    "security_queue_rejections": 0,
+    "max_processing_s": 0.249319107,
+    "incidents_total": 0
+  },
+  "ch6": {
+    "captures": 56,
+    "channels": [
+      6
+    ],
+    "received_samples": 1120000000,
+    "frames": 1498,
+    "phy_frames": {
+      "OFDM": 1410,
+      "DSSS": 88
+    },
+    "overflows": 0,
+    "timeouts": 0,
+    "exceptions": 0,
+    "short_captures": 0,
+    "burst_cap_reached": 0,
+    "security_queue_rejections": 0,
+    "max_processing_s": 0.213018333,
+    "connected": true,
+    "dropped_batches": 0,
+    "queued_after_stop": 0,
+    "receiver_error": "",
+    "reload_error": "",
+    "restart_equal": true,
+    "storage_error": "",
+    "interfaces": 14,
+    "observations": 1244,
+    "rf_accepted": 53,
+    "rf_rejected": 412,
+    "profiles": 10,
+    "all_new": true,
+    "incidents_total": 0
+  },
+  "sweep24": {
+    "captures": 68,
+    "channels": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13
+    ],
+    "received_samples": 1360000000,
+    "frames": 2581,
+    "phy_frames": {
+      "DSSS": 982,
+      "OFDM": 1599
+    },
+    "overflows": 0,
+    "timeouts": 0,
+    "exceptions": 0,
+    "short_captures": 0,
+    "burst_cap_reached": 0,
+    "security_queue_rejections": 0,
+    "max_processing_s": 0.208730989,
+    "connected": true,
+    "dropped_batches": 0,
+    "queued_after_stop": 0,
+    "receiver_error": "",
+    "reload_error": "",
+    "restart_equal": true,
+    "storage_error": "",
+    "interfaces": 44,
+    "observations": 1941,
+    "rf_accepted": 290,
+    "rf_rejected": 365,
+    "profiles": 31,
+    "all_new": true,
+    "incidents_total": 0
+  },
+  "sweep5": {
+    "captures": 56,
+    "channels": [
+      36,
+      40,
+      44,
+      48,
+      149,
+      153,
+      157,
+      161,
+      165
+    ],
+    "received_samples": 1120000000,
+    "frames": 29097,
+    "phy_frames": {
+      "OFDM": 29097
+    },
+    "overflows": 0,
+    "timeouts": 0,
+    "exceptions": 0,
+    "short_captures": 0,
+    "burst_cap_reached": 1,
+    "security_queue_rejections": 0,
+    "max_processing_s": 0.393444054,
+    "connected": true,
+    "dropped_batches": 0,
+    "queued_after_stop": 0,
+    "receiver_error": "",
+    "reload_error": "",
+    "restart_equal": true,
+    "storage_error": "",
+    "interfaces": 28,
+    "observations": 21477,
+    "rf_accepted": 686,
+    "rf_rejected": 5227,
+    "profiles": 38,
+    "all_new": true,
+    "incidents_total": 0
+  },
+  "soak1": {
+    "captures": 116,
+    "channels": [
+      1
+    ],
+    "received_samples": 2320000000,
+    "frames": 5625,
+    "phy_frames": {
+      "DSSS": 2947,
+      "OFDM": 2678
+    },
+    "overflows": 0,
+    "timeouts": 0,
+    "exceptions": 0,
+    "short_captures": 0,
+    "burst_cap_reached": 0,
+    "security_queue_rejections": 0,
+    "max_processing_s": 0.206164418,
+    "connected": true,
+    "dropped_batches": 0,
+    "queued_after_stop": 0,
+    "receiver_error": "",
+    "reload_error": "",
+    "restart_equal": true,
+    "storage_error": "",
+    "interfaces": 34,
+    "observations": 4428,
+    "rf_accepted": 1174,
+    "rf_rejected": 833,
+    "profiles": 20,
+    "all_new": true,
+    "incidents_total": 0
+  }
+}

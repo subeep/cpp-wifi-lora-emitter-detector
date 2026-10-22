@@ -130,6 +130,7 @@ void Scanner::start() {
 void Scanner::stop() {
     stop_flag_ = true;
     if (thread_.joinable()) thread_.join();
+    wifi_master_.flush();
 #ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
     cyclo_shadow_.set_enabled(false);
 #endif
@@ -345,8 +346,11 @@ std::vector<wifi_master::WifiMasterRow> Scanner::wifi_master_snapshot() const {
 }
 
 std::vector<WifiPacketRow> Scanner::wifi_packets() const {
-    std::lock_guard<std::mutex> lock(wifi_log_mutex_);
-    return wifi_packet_log_;
+    std::vector<WifiPacketRow> rows;
+    {std::lock_guard<std::mutex> lock(wifi_log_mutex_);rows=wifi_packet_log_;}
+    const auto associations=wifi_master_.associations();
+    for(auto& r:rows)if(r.master_key.empty()){auto it=associations.find(r.enrolment_source);if(it!=associations.end())r.master_key=it->second;}
+    return rows;
 }
 
 std::map<int, int> Scanner::wifi_source_counts(const std::string& band) const {
@@ -504,13 +508,8 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
 
     std::string ts = current_time_hhmmss();
 
-    auto push_row = [&](LoraPacketRow row) {
-        std::lock_guard<std::mutex> lock(lora_log_mutex_);
-        lora_packet_log_.push_back(std::move(row));
-        if (lora_packet_log_.size() > static_cast<size_t>(LORA_PACKET_LOG_MAX)) {
-            lora_packet_log_.erase(lora_packet_log_.begin());
-        }
-    };
+    std::vector<LoraPacketRow> display_rows;
+    auto push_row = [&](LoraPacketRow row) {display_rows.push_back(std::move(row));};
 
     for (double bw_hz : LORA_LISTEN_BW_LIST_HZ) {
         double ratio = actual_rate / bw_hz;
@@ -602,6 +601,14 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
             }
         }
     }
+    if(!skip_sync_check)annotate_lora_receptions(display_rows,actual_rate,
+        provenance.run_id+"/session-"+std::to_string(provenance.radio_session)+"/capture-"+std::to_string(provenance.capture_seq));
+    {
+        std::lock_guard<std::mutex> lock(lora_log_mutex_);
+        for(auto& row:display_rows)lora_packet_log_.push_back(std::move(row));
+        if(lora_packet_log_.size()>size_t(LORA_PACKET_LOG_MAX))
+            lora_packet_log_.erase(lora_packet_log_.begin(),lora_packet_log_.end()-LORA_PACKET_LOG_MAX);
+    }
     lora_security_->submit(lora_security::make_batch(provenance,iq_raw.size(),security_rows,skip_sync_check));
 }
 
@@ -685,6 +692,7 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
         for (size_t ci = 0; ci < captures.size(); ++ci) {
             const auto& cap = captures[ci];
             wifi_security::CaptureRecord& rec = capture_records[ci];
+            wifi_master::EnrolmentBatch enrolment_batch;
             const auto processing_start = std::chrono::steady_clock::now();
             // Detect up to the security limit; the first
             // WIFI_MAX_BURSTS_PER_CAPTURE keep the full identity /
@@ -755,6 +763,7 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                         ev.bandwidth_hz = bw_hz;
                         ev.duration_us = duration_s * 1e6;
                         ev.confidence = result.confidence;
+                        enrolment_batch.observations.push_back({ev, {}});
                         if (wifi_frame_observer_) { try { wifi_frame_observer_(ev); } catch (...) {} }
                         if (security_->submit(std::move(ev))) ++rec.events_submitted;
                         else ++rec.events_rejected_by_queue;
@@ -794,8 +803,7 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                         packet_identity = ofdm_decode.beacon;
                         fp_mac = packet_identity->bssid;
                         decoded_beacons[*fp_mac] = *packet_identity;
-                        master_key = wifi_master_.record_identity(*packet_identity,
-                            real_channel_hz, packet_ts, "OFDM");
+                        master_key = packet_identity->bssid;
                     }
                 }
 
@@ -859,7 +867,7 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                         fp_mac = dec.beacon->bssid;
                         packet_identity = dec.beacon;
                         // Persist verified identity even if RF extraction fails its gates.
-                        master_key = wifi_master_.record_identity(*dec.beacon, real_channel_hz, packet_ts);
+                        master_key = dec.beacon->bssid;
                     }
                     if (dec.preamble_found && !dec.sync_symbols.empty()) {
                         fp_opt = wifi_fingerprint::extract_dsss_fingerprint(real_channel_hz,
@@ -867,13 +875,14 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                     }
                 }
 
-                if (fp_opt.has_value() && !fp_opt->gated_out) {
-                    master_key = wifi_master_.record_reading(fp_mac,
-                                                 result.mod == wifi::ModClass::DSSS
-                                                     ? "DSSS"
-                                                     : "OFDM",
-                                                 real_channel_hz, bw_hz, *fp_opt,
-                                                 packet_ts);
+                // Anonymous RF clusters stay separate from claimed transmitter identities.
+                // Their asynchronous cluster assignment is visible in the master list;
+                // packet rows do not invent a cluster key before the consumer assigns it.
+                if (fp_opt && !fp_opt->gated_out && !ofdm_decode.fcs_valid &&
+                    !(dsss_decode && dsss_decode->fcs_valid)) {
+                    enrolment_batch.anonymous.push_back({result.mod == wifi::ModClass::DSSS ? "DSSS" : "OFDM",
+                        real_channel_hz, bw_hz, packet_ts, *fp_opt,
+                        wifi_master::enrolment_observation_key(rec.run_id,rec.radio_session,rec.capture_seq,b.start,result.mod==wifi::ModClass::DSSS?"DSSS":"OFDM")});
                 }
 
                 // Security monitor input: every FCS-valid MPDU from
@@ -904,6 +913,7 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                             }
                             if (fp_opt->gated_out) ev.fp_gate_reason = fp_opt->gate_reason;
                         }
+                        enrolment_batch.observations.push_back({ev, fp_opt});
                         if (wifi_frame_observer_) { try { wifi_frame_observer_(ev); } catch (...) {} }
                         if (security_->submit(std::move(ev))) ++rec.events_submitted;
                         else ++rec.events_rejected_by_queue;
@@ -949,6 +959,7 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                     }
                 }
                 row.master_key = std::move(master_key);
+                row.enrolment_source=wifi_master::enrolment_observation_key(rec.run_id,rec.radio_session,rec.capture_seq,b.start,row.modulation);
                 if (fp_opt.has_value()) {
                     row.fp_cfo_ppm = fp_opt->cfo_ppm;
                     row.fp_dc_dbc = fp_opt->dc_dbc;
@@ -996,6 +1007,8 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
             // Optional add-on gets read-only IQ after all existing packet work.
             // It must return promptly; failures never change existing monitor decisions.
             if (wifi_iq_observer_) { try { wifi_iq_observer_(cap, rec); } catch (...) {} }
+            enrolment_batch.capture = rec;
+            wifi_master_.submit(std::move(enrolment_batch));
             security_->submit(std::move(rec));
             auto srcs = wifi::find_beacon_sources(burst_starts_s, burst_powers_db);
             source_count = std::max(source_count, int(srcs.size()));
@@ -1365,6 +1378,8 @@ void Scanner::run() {
                 }
                 {
                     std::lock_guard<std::mutex> lock(status_mutex_);
+                    // A locked LoRa cycle has no wideband step to publish this.
+                    status_.active_band = band;
                     status_.active_step_label = "LoRa PHY listen @ " +
                                                  std::to_string(freq_hz / 1e6) + " MHz" +
                                                  (locked_freq.has_value() ? " (locked)" : "");

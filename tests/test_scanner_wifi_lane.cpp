@@ -48,7 +48,7 @@ struct ScannerTestAccess {
     static void raise_stop_flag(Scanner& s) { s.stop_flag_ = true; }
     static bool stop_flag(Scanner& s) { return s.stop_flag_.load(); }
     static void start_monitor(Scanner& s) { s.security_->start(); }
-    static void stop_monitor(Scanner& s) { s.security_->stop(); }
+    static void stop_monitor(Scanner& s) { s.security_->stop(); s.flush_wifi_enrolment(); }
     static void lane_job(Scanner& s, Job& j) { s.run_wifi_lane_job(j); }
     // Today's inline path, as run() executes it with the lane disabled.
     static void inline_job(Scanner& s, Job& j) {

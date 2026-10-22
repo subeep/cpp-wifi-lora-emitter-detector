@@ -512,7 +512,9 @@ std::vector<std::complex<float>> modulate(const std::vector<uint8_t>& payload,
 
     auto encode_fec_run = [&](int rdd, size_t count) {
         for (size_t i = 0; i < count; ++i, ++dOfs) {
-            uint8_t byte = bytes[dOfs >> 1];
+            // The final FEC block may contain padding nibbles beyond payload
+            // and CRC. Encode zero padding instead of reading past the bytes.
+            uint8_t byte = (dOfs >> 1) < bytes.size() ? bytes[dOfs >> 1] : uint8_t(0);
             uint8_t nibble = (dOfs & 1) ? (byte >> 4) : (byte & 0xf);
             codewords[cOfs++] = encode_fec_nibble_sx(nibble, rdd);
         }

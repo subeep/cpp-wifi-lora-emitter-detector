@@ -1,0 +1,8 @@
+Internal ctest changing into directory: /home/sudeep/Documents/newrocktest-cpp/build-gui-revamp
+Test project /home/sudeep/Documents/newrocktest-cpp/build-gui-revamp
+    Start 1: remote_id_monitor
+1/1 Test #1: remote_id_monitor ................   Passed    0.73 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =   0.73 sec

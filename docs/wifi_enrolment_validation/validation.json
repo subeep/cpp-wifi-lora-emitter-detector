@@ -1,0 +1,33 @@
+{
+  "date": "2026-10-16",
+  "build": "build-wifi-enrolment",
+  "ctest": {
+    "passed": 50,
+    "failed": 0,
+    "seconds": 22.28
+  },
+  "gui": "offscreen EGL/Mesa; synthetic fixtures; explicit acknowledgement tested",
+  "hardware_used": false,
+  "automatic_trusted_adaptation": false,
+  "source_sha256": {
+    ".gitignore": "ca31bd48fecaa258eb2cc618f7594da852d4225806ea6238836877544ce236da",
+    "CMakeLists.txt": "c4f626c476108f97bbd646f337c3d1f2a21488eeb7984cf1c5d68f4d379f38c8",
+    "src/wifi_master.hpp": "c10e6592e796b1587d190ec2fd48acf21d6f6c42d3ac77a1f6092e91376d565c",
+    "src/wifi_master.cpp": "838a79f64940eebd856e599b19448dfcca6512d4ebeff7134edfe240aa1fe2bc",
+    "src/wifi_enrolment_types.hpp": "8e9ea4de65df1b5957e7a67e8bbb7acc51ae6cf9f4d0e1e7ee5d91157c465530",
+    "src/wifi_enrolment.hpp": "7752cd2e201327cf6ddb899cedf15f5f0f2694223c616ca61429a7e569c2a9cf",
+    "src/wifi_enrolment.cpp": "fc5e842b0a2044f3476cf47acbec6c1443c5e7424ca56adf7e2dabb852e549ca",
+    "src/wifi_gui.hpp": "a9cf3edeb05f7077ff95ad1b95eed93658214c7491509703998814caf4e37a5f",
+    "src/wifi_gui.cpp": "150fa86cfc573c7b5b3df22090fba363aaa7ba6657a2534f67a870f1a006bf71",
+    "src/scanner.hpp": "5575d47c9bcce54868adf6196c320228f38fe7289c23573287adbf56ca36f281",
+    "src/scanner.cpp": "27c9949704e2156c7b23304f010713399a975cdb2640c2d60dc9057f04a1a5a0",
+    "src/main.cpp": "987a98993f763b714aed9bc3ab297bfed6c67c9a4739ddaca685fffb724a38fc",
+    "tests/test_wifi_enrolment.cpp": "dcd7d8646a184aee87738dd588b8946a00742f27e9907045654ac9649ee96fc7",
+    "tests/test_wifi_gui.cpp": "9af8d8af51a3d055345ba1de3d724047bfbe14fa2b5108df6aacddf00b97177d",
+    "tests/test_scanner_wifi_lane.cpp": "a247643ac132eba5ac9369a68e469cc5a06443121dfe0ede254c9eeed824f8e0"
+  },
+  "enrolment_checks": {
+    "passed": 70,
+    "failed": 0
+  }
+}

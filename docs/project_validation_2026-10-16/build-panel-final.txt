@@ -1,0 +1,18 @@
+[  7%] Built target rfmon_drone_turbo
+[ 30%] Built target rfmon_cyclo_core
+[ 30%] Built target rfmon_cyclo_transport
+[ 30%] Built target rfmon_drones
+[ 38%] Built target wifi_cyclo_worker
+[ 46%] Built target rfmon_cyclo_offline
+Consolidate compiler generated dependencies of target rf_monitor_gui
+[ 46%] Building CXX object CMakeFiles/rf_monitor_gui.dir/src/cyclostationary/panel.cpp.o
+[ 46%] Linking CXX executable rf_monitor_gui
+[100%] Built target rf_monitor_gui
+[ 50%] Built target rfmon_cyclo_core
+[ 50%] Built target rfmon_cyclo_transport
+[ 66%] Built target wifi_cyclo_worker
+[ 83%] Built target rfmon_cyclo_offline
+Consolidate compiler generated dependencies of target test_cyclo_panel
+[100%] Building CXX object CMakeFiles/test_cyclo_panel.dir/src/cyclostationary/panel.cpp.o
+[100%] Linking CXX executable test_cyclo_panel
+[100%] Built target test_cyclo_panel

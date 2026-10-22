@@ -1,0 +1,7 @@
+Source: live
+Samples: 1000000
+Actual rate: 500000
+Requested center: 8.65e+08
+Overflow: no
+0 hypothesis results (not a unique packet count)
+0 conservative capture-local reception groups (not unique devices or delivery rate)

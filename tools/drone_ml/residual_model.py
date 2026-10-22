@@ -6,6 +6,17 @@ from torch.nn import functional as F
 ARCHITECTURE = 'rf_stft_residual_v1'
 
 
+class DeviceCompatibleAveragePool(nn.AdaptiveAvgPool2d):
+    """Non-overlapping equivalent for the fixed CUDA shape, with deterministic gradients."""
+    def forward(self,x):
+        if x.is_cuda:
+            # The fixed 256x625 input produces a 16x40 final feature map.
+            if x.shape[-2:]!=(16,40) or self.output_size!=(2,4):
+                raise ValueError('unexpected CUDA pooling shape')
+            return F.avg_pool2d(x,kernel_size=(8,10),stride=(8,10))
+        return super().forward(x)
+
+
 class ResidualBlock(nn.Module):
     def __init__(self, incoming, outgoing, stride=1):
         super().__init__()
@@ -27,7 +38,7 @@ class RFResidualCNN(nn.Module):
         self.stage2=nn.Sequential(ResidualBlock(32,64,2),ResidualBlock(64,64))
         self.stage3=nn.Sequential(ResidualBlock(64,128,2),ResidualBlock(128,128))
         self.stage4=nn.Sequential(ResidualBlock(128,192,2),ResidualBlock(192,192))
-        self.pool=nn.AdaptiveAvgPool2d((2,4))
+        self.pool=DeviceCompatibleAveragePool((2,4))
         self.embedding=nn.Sequential(nn.Flatten(),nn.Linear(192*2*4,128),nn.LayerNorm(128),nn.SiLU())
         self.dropout=nn.Dropout(.2)
         self.classifier=nn.Linear(128,classes,bias=False)

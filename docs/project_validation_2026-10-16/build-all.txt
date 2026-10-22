@@ -1,0 +1,57 @@
+[  1%] Built target test_lora_phy
+[  4%] Built target rfmon_cyclo_core
+[  4%] Built target test_dsp
+[  5%] Built target rfmon_drone_turbo
+[  5%] Built target test_lora_phy_std
+[  5%] Built target test_wifi_frame
+[  6%] Built target test_wifi_phy
+[  6%] Built target test_wifi_dsss_rx
+[  7%] Built target test_fingerprint
+[  7%] Built target test_wifi_stress
+[  8%] Built target test_wifi_fingerprint
+[  9%] Built target test_wifi_master
+[ 10%] Built target test_lora_master
+[ 11%] Built target test_registry
+[ 11%] Built target test_wifi_identity
+[ 11%] Building CXX object CMakeFiles/sf_estimator_spike.dir/tools/sf_estimator_spike.cpp.o
+[ 11%] Building CXX object CMakeFiles/test_wifi_gui.dir/tests/test_wifi_gui.cpp.o
+[ 12%] Built target test_bench_tx
+[ 12%] Building CXX object CMakeFiles/wifi_test_bench.dir/src/bench/bench_main.cpp.o
+[ 13%] Building CXX object CMakeFiles/test_wifi_gui.dir/src/wifi_gui.cpp.o
+[ 14%] Building CXX object CMakeFiles/wifi_test_bench.dir/src/bench/bench_capture.cpp.o
+[ 15%] Building CXX object CMakeFiles/sf_estimator_spike.dir/src/sdr_capture.cpp.o
+[ 15%] Linking CXX executable sf_estimator_spike
+[ 16%] Built target sf_estimator_spike
+[ 16%] Building CXX object CMakeFiles/test_lora_observation.dir/tests/test_lora_observation.cpp.o
+[ 16%] Building CXX object CMakeFiles/wifi_test_bench.dir/src/bench/bench_gui.cpp.o
+[ 16%] Building CXX object CMakeFiles/wifi_test_bench.dir/src/sdr_capture.cpp.o
+[ 18%] Building CXX object CMakeFiles/test_lora_observation.dir/src/lora_capture.cpp.o
+[ 18%] Linking CXX executable test_wifi_gui
+[ 20%] Built target test_wifi_gui
+[ 20%] Building CXX object CMakeFiles/test_lora_gui.dir/tests/test_lora_gui.cpp.o
+[ 21%] Linking CXX executable wifi_test_bench
+[ 23%] Built target wifi_test_bench
+[ 23%] Building CXX object CMakeFiles/lora_replay.dir/tools/lora_replay.cpp.o
+[ 23%] Building CXX object CMakeFiles/lora_replay.dir/src/lora_capture.cpp.o
+[ 24%] Building CXX object CMakeFiles/lora_capture_cli.dir/tools/lora_capture_cli.cpp.o
+[ 24%] Building CXX object CMakeFiles/test_lora_gui.dir/src/lora_gui.cpp.o
+[ 24%] Building CXX object CMakeFiles/lora_capture_cli.dir/src/lora_capture.cpp.o
+[ 24%] Linking CXX executable test_lora_observation
+[ 24%] Built target test_lora_observation
+[ 24%] Building CXX object CMakeFiles/lora_capture_crop.dir/tools/lora_capture_crop.cpp.o
+[ 24%] Building CXX object CMakeFiles/test_lora_gui.dir/src/lora_capture.cpp.o
+[ 24%] Building CXX object CMakeFiles/lora_capture_crop.dir/src/lora_capture.cpp.o
+[ 25%] Linking CXX executable lora_replay
+[ 25%] Built target lora_replay
+[ 26%] Building CXX object CMakeFiles/wifi_capture_cli.dir/tools/wifi_capture_cli.cpp.o
+[ 26%] Building CXX object CMakeFiles/lora_capture_cli.dir/src/sdr_capture.cpp.o
+[ 26%] Building CXX object CMakeFiles/test_lora_gui.dir/src/security/lora_security.cpp.o
+[ 26%] Building CXX object CMakeFiles/wifi_capture_cli.dir/src/sdr_capture.cpp.o
+[ 27%] Linking CXX executable lora_capture_crop
+[ 27%] Built target lora_capture_crop
+[ 28%] Building CXX object CMakeFiles/wifi_ofdm_replay.dir/tools/wifi_ofdm_replay.cpp.o
+[ 28%] Linking CXX executable lora_capture_cli
+[ 28%] Built target lora_capture_cli
+[ 29%] Built target test_wifi_ofdm
+[ 29%] Building CXX object CMakeFiles/test_lora_receiver.dir/tests/test_lora_receiver.cpp.o
+[ 29%] Building CXX object CMakeFiles/wifi_capture_cli.dir/src/wifi_iq_capture.cpp.o

@@ -26,6 +26,8 @@ struct Packet {
 };
 struct Diagnostics {
     int preamble_candidates = 0, sfd_candidates = 0, aligned_candidates = 0, headers_rejected = 0;
+    int unverified_payload_recoveries = 0;
+    bool packet_limit_reached = false;
 };
 struct Options {
     bool try_inverted_iq = true;

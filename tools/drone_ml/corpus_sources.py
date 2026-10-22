@@ -105,7 +105,9 @@ def unit_partition(model, unit):
     return 'test_locked'
 
 
-def inspect(root, inventory_path, output):
+def inspect(root, inventory_path, output, leuven_members=4, rfuav_packs=3):
+    if not 1 <= leuven_members <= 32 or not 1 <= rfuav_packs <= 16:
+        raise ValueError('invalid review sampling budget')
     root,output = Path(root).resolve(),Path(output).resolve()
     if root == output or root in output.parents or not os.statvfs(root).f_flag & os.ST_RDONLY:
         raise ValueError('requires read-only sources and separate output')
@@ -167,14 +169,14 @@ def inspect(root, inventory_path, output):
                 if 'RC' in path.name and path.name!='SJRC_pro.zip': raise ValueError('controller_only_not_aircraft_model_training')
                 # Bounded representative membership fixed before signal inspection. All members stay one unit group.
                 members=[x for x in base['members'] if x['name'].endswith('.mat')]
-                chosen=[members[i] for i in np.unique(np.linspace(0,len(members)-1,min(4,len(members)),dtype=int))]
+                chosen=[members[i] for i in np.unique(np.linspace(0,len(members)-1,min(leuven_members,len(members)),dtype=int))]
                 for member in chosen:
                     if member['bytes']>512*1024*1024: raise ValueError('oversized MAT member')
                     add(base,adapter='leuven',member=member['name'],member_bytes=member['bytes'],member_crc32=member['crc32'],
                         label=label,partition='train',split_group='unresolved_physical_unit:'+label,validation_support='none',
                         physical_unit=None,receiver='publisher_Leuven_X310',day=None,role='controller_only' if 'RC' in path.name else 'video_or_combined_context',
                         rate_hz=100000000,center_hz=2440000000,total_samples=None,label_evidence='local_publisher_README_and_archive_name')
-                decision.update(use='train',reason='four_members_per_archive_all_sessions_conservatively_grouped')
+                decision.update(use='train',reason=f'up_to_{leuven_members}_members_all_sessions_conservatively_grouped')
             elif ds=='RFUAV':
                 names=rar_bytes(path).decode('utf-8').splitlines()
                 xmls=sorted(n for n in names if n.endswith('.xml'))
@@ -190,7 +192,8 @@ def inspect(root, inventory_path, output):
                 elif path.stem=='DJI MINI4 PRO':
                     decision['reason']='cross_dataset_aircraft_identity_unresolved_keep_DRFF_holdouts_isolated'
                 elif path.stem in RFUAV:
-                    for x in inspected[:3]:
+                    chosen=[inspected[i] for i in np.unique(np.linspace(0,len(inspected)-1,min(rfuav_packs,len(inspected)),dtype=int))] if inspected else []
+                    for x in chosen:
                         member=x['member'][:-4]+'_0-1s.iq';m=x['metadata'];rate=int(m['SampleRate'])
                         if member not in names or rate!=m['SampleRate'] or not 20000000<=rate<=200000000:
                             raise ValueError('unsupported IQ member or sample rate')
@@ -199,7 +202,7 @@ def inspect(root, inventory_path, output):
                             validation_support='none',physical_unit=None,receiver=m['DeviceType'],day=None,role='drone_controller_context',
                             rate_hz=rate,center_hz=m['CenterFrequency'],total_samples=min(rate,int(m['SampleCount'])),
                             label_evidence='archive_name_XML_Drone_agree_publisher_float32_reader')
-                    decision.update(use='train',reason='up_to_three_packs_prefix_only_no_independent_units')
+                    decision.update(use='train',reason=f'up_to_{rfuav_packs}_packs_no_independent_units')
                 else: decision['reason']='controller_equipment_or_unresolved_aircraft_alias'
             elif ds=='FPV_Analog_Video':
                 decision['reason']='sweep_capture_equipment_labels_not_aircraft_models_continuity_format_need_review'

@@ -7,6 +7,7 @@
 #include <map>
 #include <sstream>
 #include <iomanip>
+#include <set>
 
 namespace rfmon {
 void draw_lora_security_panel(const lora_security::Snapshot& s) {
@@ -54,21 +55,26 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
     ImGui::Checkbox("CRC valid only",&view.crc_only);ImGui::SameLine();
     if(ImGui::SmallButton("Clear filters")){view.filter.Clear();view.crc_only=false;}
     ImGui::TextDisabled("Right-click headers for every column. Select a time for a complete frozen hypothesis inspector.");
-    size_t headers=0, verified_count=0, partial=0, failed=0;
+    size_t headers=0, verified_count=0, partial=0, failed=0, ungrouped=0;
+    std::set<std::string> reception_groups;bool grouping_limited=false;
     for (const auto& row : packets) {
         headers += row.header_valid;
+        if(row.reception_id.empty())++ungrouped;else reception_groups.insert(row.reception_id);
+        grouping_limited=grouping_limited||row.reception_grouping_limited;
         verified_count += row.crc == LoraPacketRow::Crc::Valid;
         partial += row.header_valid && !row.payload_complete;
         failed += row.crc == LoraPacketRow::Crc::Failed;
     }
     ImGui::Text("Retained observations: %zu | Valid headers: %zu | CRC valid: %zu | Partial: %zu | CRC failed: %zu",
                 packets.size(), headers, verified_count, partial, failed);
-    ImGui::TextDisabled("SF/BW/polarity hypotheses; counts are not unique transmitters or delivery rates.");
+    ImGui::Text("Retained reception groups: %zu | Ungrouped rows: %zu",reception_groups.size(),ungrouped);
+    ImGui::TextDisabled("Conservative capture-local grouping; raw hypotheses remain below. Groups are not devices or a packet-delivery count.");
+    if(grouping_limited)ImGui::TextWrapped("Grouping comparison limit reached: unmatched hypotheses were kept separate.");
     static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable |
                                    ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
                                    ImGuiTableFlags_ScrollX;
     ImVec2 outer_size(0.0f,view.selected?std::min(height,240.f):height);
-    if (!ImGui::BeginTable("lora_packets", 31, flags, outer_size)) return;
+    if (!ImGui::BeginTable("lora_packets", 32, flags, outer_size)) return;
 
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 80.0f);
@@ -110,6 +116,7 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
     ImGui::TableSetupColumn("Capture offset (s)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 135.0f);
     ImGui::TableSetupColumn("FEC mismatches", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 120.0f);
     ImGui::TableSetupColumn("LoRaWAN structure", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 220.0f);
+    ImGui::TableSetupColumn("Reception group", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 260);
     ImGui::TableHeadersRow();
 
     ImVec4 dim(0.55f, 0.55f, 0.58f, 1.0f);
@@ -118,7 +125,7 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
 
     for (auto it = packets.rbegin(); it != packets.rend(); ++it) {
         const auto& d = *it;
-        std::string search=d.time+" "+d.status+" "+d.decoder+" "+d.payload_hex+" "+std::to_string(d.sf)+" "+std::to_string(d.freq_mhz);
+        std::string search=d.time+" "+d.status+" "+d.decoder+" "+d.reception_id+" "+d.payload_hex+" "+std::to_string(d.sf)+" "+std::to_string(d.freq_mhz);
         if(!view.filter.PassFilter(search.c_str())||(view.crc_only&&d.crc!=LoraPacketRow::Crc::Valid))continue;
         bool verified = d.crc == LoraPacketRow::Crc::Valid;
         ImGui::TableNextRow();
@@ -235,6 +242,9 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
             ImGui::TextUnformatted(d.lorawan_candidate->c_str());
             if (ImGui::IsItemHovered() && d.lorawan_detail) ImGui::SetTooltip("%s", d.lorawan_detail->c_str());
         } else ImGui::TextDisabled("Unclassified");
+        ImGui::TableNextColumn();
+        if(d.reception_id.empty())ImGui::TextDisabled("Ungrouped / unavailable");
+        else ImGui::Text("%s (%zu hypotheses)",d.reception_id.c_str(),d.reception_hypotheses);
     }
     ImGui::EndTable();
     if(view.selected) {
@@ -242,6 +252,7 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
         ImGui::SeparatorText("Selected LoRa hypothesis snapshot");
         ImGui::TextWrapped("%s | %s | %s | CRC: %s",d.time.c_str(),d.status.c_str(),d.decoder.c_str(),lora_crc_label(d.crc));
         ImGui::TextWrapped("%s",d.detail.c_str());
+        if(!d.reception_id.empty())ImGui::TextWrapped("Capture-local reception: %s | %zu source hypotheses (before GUI tail retention)",d.reception_id.c_str(),d.reception_hypotheses);
         if(d.fp_gate_reason)ImGui::TextWrapped("RF fingerprint gate: %s",d.fp_gate_reason->c_str());
         if(ImGui::Button("Close hypothesis details"))view.selected.reset();
         else {
@@ -251,7 +262,7 @@ void draw_lora_packet_table(const std::vector<LoraPacketRow>& packets, float hei
                 auto field=[](const char* name,const auto& value){if(value){std::ostringstream out;out<<std::setprecision(17)<<*value;ImGui::TextWrapped("%s: %s",name,out.str().c_str());}else ImGui::TextDisabled("%s: unavailable",name);};
                 field("CR code",d.cr);field("Header length bytes",d.payload_len);field("CRC validity",d.crc_valid);field("LDRO",d.ldro);field("Sync observation",d.sync_word);field("Sync check skipped (lab)",d.sync_check_skipped);field("Inverted IQ",d.inverted_iq);
                 field("Preamble peak ratio",d.preamble_peak_ratio);field("SFD peak ratio",d.sfd_peak_ratio);field("CFO Hz",d.cfo_hz);field("Drift Hz/symbol",d.drift_hz_per_symbol);field("Capture offset s",d.capture_offset_s);field("FEC disagreements",d.fec_disagreements);
-                field("Decoder sample start",d.decoder_sample_start);field("Decoder sample end",d.decoder_sample_end);ImGui::Text("Start uncertainty: %zu samples",d.start_uncertainty_samples);
+                field("Decoder sample start",d.decoder_sample_start);field("Aligned data start (BW-rate samples)",d.decoder_data_start);field("Decoder sample end",d.decoder_sample_end);ImGui::Text("Start uncertainty: %zu samples",d.start_uncertainty_samples);
                 ImGui::TextWrapped("Payload hex: %s",d.payload_hex.c_str());field("Payload text",d.payload_repr);field("LoRaWAN candidate",d.lorawan_candidate);field("LoRaWAN detail (MIC unverified)",d.lorawan_detail);
             }
             if(ImGui::CollapsingHeader("Complete RF fingerprint measurements")) {
@@ -290,6 +301,7 @@ void draw_lora_replay_panel() {
             auto c = load_lora_capture(path);
             Result r;
             r.rows = analyze_lora_capture(c.iq, c.sample_rate_hz, c.requested_center_hz, skip);
+            if(!skip)annotate_lora_receptions(r.rows,c.sample_rate_hz,"offline:"+path);
             for (auto& row : r.rows) {
                 row.time = "Replay";
                 if (c.overflow) row.detail += " Capture overflow: sample continuity lost.";

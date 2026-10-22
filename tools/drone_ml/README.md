@@ -1,8 +1,13 @@
-# Standalone drone RF STFT learning
+# Drone RF STFT learning and optional inference
 
-This experimental Python project has no connection to the C++ acquisition, decoder,
-security monitor or GUI. It inventories SDA metadata, prepares numerical STFTs from
-existing derived IQ, trains a compact CNN and performs bounded offline inference.
+This experimental Python project inventories SDA metadata, prepares numerical STFTs,
+trains compact and residual CNNs and performs bounded offline inference. An optional
+native **Model Inference** tab now consumes copied IQ from the existing scanner observer
+through a separate Python process. It is disabled by default and shows experimental
+scores with no accepted identity. Expanded residual training and development audits
+finished on 22 October 2026; the new model was not promoted. See the
+[final comparison and insights](../../docs/DRONE_ML_EXPANDED_FINAL_VALIDATION.md) and current
+[integration, results, commands and limits](../../docs/DRONE_ML_LIVE_INTEGRATION.md).
 It does not currently supply validated drone/model identification.
 
 ## What is implemented
@@ -217,8 +222,9 @@ improvements; see `cross_unit_implementation/` under the run directory.
 6. Measure independent model confusion, unknown false acceptance, known rejection,
    end-to-end misses, false alerts/hour and decision latency. Current metrics are window
    summaries; encounter aggregation and confidence intervals remain pending.
-7. Export ONNX, verify Python/C++ preprocessing and inference parity, then add a bounded
-   optional inference worker in shadow mode. No ONNX/C++ integration exists yet.
+7. The bounded optional C++ supervisor/Python inference worker is implemented, with
+   offline direct-inference parity verified. ONNX export and native model execution
+   remain future options; the current worker uses the existing PyTorch checkpoint.
 8. Qualify later local USRP sessions, including the postponed Mini 2 tests. Do not treat an
    unknown RF signal as an unknown drone or automatically train on model-generated labels.
 

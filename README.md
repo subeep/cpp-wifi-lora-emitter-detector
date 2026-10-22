@@ -9,9 +9,15 @@ and **Wi-Fi 5GHz** - each showing its own persistent device list, plus a
 **USRP X310** (Ethernet) - see "Multi-device support" below for what
 differs between them.
 
-**This is energy detection, not protocol decoding.** It tells you
-*something is transmitting at this frequency with this bandwidth*, not
-*this is device X sending payload Y*.
+The current application combines energy detection with legacy Wi-Fi decoding,
+LoRa PHY processing, a persistent Wi-Fi enrolment inventory, passive security
+rules and optional experimental signal analysis. Decoded MAC addresses are
+claimed interfaces, not authenticated physical identities. Energy detections
+and anonymous RF clusters must not be counted as verified devices.
+
+The older architecture and scan-plan walkthrough below describes the original
+port; use the GUI's **Coverage & limits** page and the dated validation reports
+under `docs/` for current feature scope and measured limits.
 
 ## Requirements
 

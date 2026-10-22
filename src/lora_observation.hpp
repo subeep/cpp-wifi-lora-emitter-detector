@@ -36,6 +36,11 @@ struct LoraPacketRow {
     std::optional<double> cfo_hz, drift_hz_per_symbol, capture_offset_s;
     std::optional<int> fec_disagreements;
     std::optional<size_t> decoder_sample_start, decoder_sample_end;
+    std::optional<size_t> decoder_data_start; // SFD-derived data anchor, at BW sample rate
+    // Capture-local hypothesis grouping. This does not identify a transmitter.
+    std::string reception_id;
+    size_t reception_hypotheses = 0;
+    bool reception_grouping_limited = false;
     size_t start_uncertainty_samples = 0; // coarse preamble search; not exact packet arrival
     bool analysis_limited = false; // hypothesis output may have reached receiver cap
     int cfo_bins = 0;
@@ -64,6 +69,22 @@ struct LoraPacketRow {
     std::optional<double> fp_evm_pct;
     std::optional<double> fp_sync_corr;
 };
+
+struct LoraReceptionGroup {
+    std::vector<size_t> hypotheses; // indices into the unchanged source rows
+    size_t representative = 0;
+    bool located = false;
+};
+struct LoraReceptionGrouping {
+    std::vector<LoraReceptionGroup> groups;
+    size_t unlocated = 0;
+    bool comparison_limited = false;
+};
+// One call = one capture/context. Coordinates are compared at the actual input
+// rate; incompatible PHYs, payloads and integrity states never collapse.
+LoraReceptionGrouping group_lora_receptions(const std::vector<LoraPacketRow>& rows, double sample_rate_hz);
+void annotate_lora_receptions(std::vector<LoraPacketRow>& rows, double sample_rate_hz,
+                              const std::string& capture_scope);
 
 const char* lora_crc_label(LoraPacketRow::Crc crc);
 void set_lora_integrity(LoraPacketRow& row, bool complete, bool crc_on, bool crc_valid);

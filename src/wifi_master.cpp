@@ -5,6 +5,9 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <sys/file.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <nlohmann/json.hpp>
 
 namespace rfmon::wifi_master {
@@ -83,7 +86,16 @@ bool safe_key(const std::string& key, bool mac) {
 }
 }
 
-WifiMasterList::WifiMasterList(std::string dir) : dir_(std::move(dir)) { load_all_devices(); }
+WifiMasterList::WifiMasterList(std::string dir) : dir_(std::move(dir)) {
+    std::error_code ec; std::filesystem::create_directories(dir_, ec);
+    if (!ec) {
+        lock_fd_ = ::open((dir_ + "/.writer.lock").c_str(), O_CREAT|O_RDWR|O_CLOEXEC|O_NOFOLLOW, 0600);
+        if (lock_fd_ >= 0 && flock(lock_fd_, LOCK_EX|LOCK_NB) != 0) { ::close(lock_fd_); lock_fd_ = -1; }
+    }
+    load_all_devices();
+    if (lock_fd_ < 0) storage_error_ = "Wi-Fi store is read-only: another writer or inaccessible directory";
+}
+WifiMasterList::~WifiMasterList() { if (lock_fd_ >= 0) { flock(lock_fd_, LOCK_UN); ::close(lock_fd_); } }
 std::string WifiMasterList::device_path(const std::string& key) const { return dir_ + "/" + key + ".ndjson"; }
 std::string WifiMasterList::storage_error() const {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -119,6 +131,15 @@ void WifiMasterList::load_all_devices() {
                     have_meta = true;
                     continue;
                 }
+                if (j.value("type", "") == "seen") {
+                    const auto ts = j.at("ts").get<int64_t>();
+                    const auto hz = j.at("hz").get<double>();
+                    const auto phy = j.at("phy").get<std::string>();
+                    if (!dev.key_is_mac || !std::isfinite(hz) || (phy != "OFDM" && phy != "DSSS")) throw std::runtime_error("Invalid interface");
+                    dev.transmitter_seen = true;
+                    if (ts >= dev.last_seen_ts) { dev.last_seen_ts=ts; dev.last_channel_hz=hz; dev.last_phy=phy; }
+                    continue;
+                }
                 if (j.value("type", "") == "identity") {
                     auto b = read_beacon(j.at("identity"));
                     if (!dev.key_is_mac || b.bssid != dev.key || !b.fcs_valid) throw std::runtime_error("Invalid identity");
@@ -145,20 +166,21 @@ void WifiMasterList::load_all_devices() {
                     throw std::runtime_error("Unknown record");
                 auto r = j.get<WifiMasterReading>();
                 dev.readings.push_back(r);
+                if(dev.readings.size()>size_t(MAX_READINGS_PER_DEVICE))dev.readings.pop_front();
             } catch (const std::exception&) {
                 storage_error_ = "Skipped malformed Wi-Fi record in " + entry.path().filename().string();
                 // A damaged meta line cannot safely identify any subsequent readings.
                 if (!have_meta) break;
             }
         }
-        if (!have_meta || (dev.readings.empty() && !dev.identity)) continue;
+        if (!have_meta || (dev.readings.empty() && !dev.identity && !dev.transmitter_seen)) continue;
         while (dev.readings.size() > size_t(MAX_READINGS_PER_DEVICE)) dev.readings.pop_front();
-        if (!dev.readings.empty()) {
+        if (!dev.readings.empty() && dev.readings.back().ts >= dev.last_seen_ts) {
             dev.last_seen_ts = dev.readings.back().ts;
             dev.last_channel_hz = dev.readings.back().channel_hz;
             dev.last_phy = dev.readings.back().phy;
         }
-        if (dev.identity && (dev.readings.empty() || dev.identity_ts >= dev.last_seen_ts)) {
+        if (dev.identity && dev.identity_ts >= dev.last_seen_ts) {
             dev.last_seen_ts = dev.identity_ts;
             dev.last_channel_hz = dev.monitored_channel_hz;
             dev.last_phy = dev.identity_phy;
@@ -215,6 +237,7 @@ int WifiMasterList::find_fp_match(double irr_db, double dc_dbc, double iq_eps,
 }
 
 void WifiMasterList::append_line(const std::string& key, const std::string& line) {
+    if (!writable()) return;
     const auto path = device_path(key);
     // A crash may leave a partial last line. Keep the next valid observation
     // separate so it can still be recovered on restart.
@@ -239,10 +262,12 @@ std::string WifiMasterList::identity_line(const Device& dev) const {
         {"monitored_channel_hz", dev.monitored_channel_hz}, {"identity", beacon_json(*dev.identity)}}.dump();
 }
 void WifiMasterList::compact_device_file(const Device& dev) {
+    if (!writable()) return;
     std::string path = device_path(dev.key), tmp = path + ".tmp";
     {
         std::ofstream out(tmp, std::ios::trunc);
         out << meta_json(dev.key, dev.key_is_mac, dev.first_seen_ts).dump() << '\n';
+        if (dev.transmitter_seen) out << json{{"type","seen"},{"ts",dev.last_seen_ts},{"hz",dev.last_channel_hz},{"phy",dev.last_phy}}.dump() << '\n';
         if (dev.identity) out << identity_line(dev) << '\n';
         for (const auto& r : dev.readings) out << json(r).dump() << '\n';
         out.flush();
@@ -255,12 +280,13 @@ void WifiMasterList::compact_device_file(const Device& dev) {
     if (ec) storage_error_ = "Cannot replace Wi-Fi record: " + ec.message();
 }
 std::string WifiMasterList::record_identity(const wifi::BeaconInfo& info, double monitored_hz, int64_t ts, const std::string& phy) {
-    if (phy != "DSSS" && phy != "OFDM") return "";
+    if (!writable() || (phy != "DSSS" && phy != "OFDM")) return "";
     auto mac = wifi::canonical_mac(info.bssid);
     if (!info.fcs_valid || !mac || !std::isfinite(monitored_hz)) return "";
     std::lock_guard<std::mutex> lock(mutex_);
     int idx = find_mac_match(*mac);
     if (idx < 0) {
+        if (devices_.size() >= 4096) { storage_error_="Wi-Fi inventory full (4096 records); discovery incomplete"; return ""; }
         Device dev;
         dev.key = *mac; dev.key_is_mac = true; dev.first_seen_ts = ts;
         append_line(dev.key, meta_json(dev.key, true, ts).dump());
@@ -293,7 +319,7 @@ std::string WifiMasterList::record_identity(const wifi::BeaconInfo& info, double
 }
 std::string WifiMasterList::record_reading(std::optional<std::string> mac, const std::string& phy,
         double channel_hz, double bandwidth_hz, const wifi_fingerprint::WifiFingerprint& fp, int64_t ts) {
-    if (fp.gated_out) return "";
+    if (!writable() || fp.gated_out) return "";
     if (mac) { mac = wifi::canonical_mac(*mac); if (!mac) return ""; }
     WifiMasterReading r;
     r.ts = ts; r.channel_hz = channel_hz; r.bandwidth_hz = bandwidth_hz; r.phy = phy;
@@ -303,6 +329,7 @@ std::string WifiMasterList::record_reading(std::optional<std::string> mac, const
     std::lock_guard<std::mutex> lock(mutex_);
     int idx = mac ? find_mac_match(*mac) : find_fp_match(fp.irr_db, fp.dc_dbc, fp.iq_eps, fp.iq_phi_deg);
     if (idx < 0) {
+        if (devices_.size() >= 4096) { storage_error_="Wi-Fi inventory full (4096 records); discovery incomplete"; return ""; }
         Device dev;
         if (mac) { dev.key = *mac; dev.key_is_mac = true; }
         else {
@@ -323,6 +350,22 @@ std::string WifiMasterList::record_reading(std::optional<std::string> mac, const
         compact_device_file(dev); dev.identity_lines = dev.identity ? 1 : 0;
     }
     return dev.key;
+}
+std::string WifiMasterList::record_transmitter(const std::string& address, double hz, int64_t ts, const std::string& phy) {
+    auto mac=wifi::canonical_mac(address);
+    if (!writable() || !mac || !std::isfinite(hz) || (phy!="OFDM" && phy!="DSSS")) return {};
+    std::lock_guard<std::mutex> lock(mutex_);
+    int idx=find_mac_match(*mac);
+    if(idx<0) {
+        if(devices_.size()>=4096){storage_error_="Wi-Fi inventory full (4096 records); discovery incomplete";return {};}
+        Device d;d.key=*mac;d.key_is_mac=true;d.first_seen_ts=ts;
+        append_line(d.key,meta_json(d.key,true,ts).dump());devices_.push_back(std::move(d));idx=int(devices_.size()-1);
+    }
+    auto& d=devices_[idx];d.transmitter_seen=true;
+    if(ts>=d.last_seen_ts){d.last_seen_ts=ts;d.last_channel_hz=hz;d.last_phy=phy;}
+    append_line(d.key,json{{"type","seen"},{"ts",ts},{"hz",hz},{"phy",phy}}.dump());
+    if(++d.identity_lines>100){compact_device_file(d);d.identity_lines=1;}
+    return d.key;
 }
 std::vector<WifiMasterRow> WifiMasterList::snapshot() const {
     std::lock_guard<std::mutex> lock(mutex_);

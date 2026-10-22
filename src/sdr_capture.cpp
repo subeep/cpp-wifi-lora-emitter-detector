@@ -47,18 +47,20 @@ UsrpCapture::UsrpCapture(const std::string& antenna, std::optional<double> gain_
     if (gain_db.has_value()) {
         try_set_agc(usrp_, false, channel_);
         usrp_->set_rx_gain(*gain_db, channel_);
+        gain_db_ = usrp_->get_rx_gain(channel_);
     } else {
         try_set_agc(usrp_, true, channel_);
     }
 }
 
 void UsrpCapture::set_gain(std::optional<double> gain_db) {
-    gain_db_ = gain_db;
     if (gain_db.has_value()) {
         try_set_agc(usrp_, false, channel_);
         usrp_->set_rx_gain(*gain_db, channel_);
+        gain_db_ = usrp_->get_rx_gain(channel_);
     } else {
         try_set_agc(usrp_, true, channel_);
+        gain_db_.reset();
     }
 }
 

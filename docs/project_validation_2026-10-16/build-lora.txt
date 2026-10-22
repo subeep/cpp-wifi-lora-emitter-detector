@@ -1,0 +1,6 @@
+[ 30%] Built target rfmon_cyclo_core
+[ 30%] Built target rfmon_cyclo_transport
+[ 40%] Built target wifi_cyclo_worker
+[ 50%] Built target rfmon_cyclo_offline
+Consolidate compiler generated dependencies of target lora_scan_smoke
+[100%] Built target lora_scan_smoke

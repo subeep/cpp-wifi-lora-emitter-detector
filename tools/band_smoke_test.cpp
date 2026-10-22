@@ -17,6 +17,8 @@
 #include <vector>
 #include <string>
 #include <thread>
+#include <filesystem>
+#include <fstream>
 
 #include "../src/config.hpp"
 #include "../src/scanner.hpp"
@@ -93,6 +95,53 @@ void run_band(Scanner& scanner, const std::string& band, const char* label, int 
 }  // namespace
 
 int main(int argc, char** argv) {
+    if(argc==3 && std::string(argv[1])=="--isolated") {
+        const auto root=std::filesystem::absolute(argv[2]);
+        if(!std::filesystem::create_directories(root)){std::fprintf(stderr,"Output directory must be new\n");return 2;}
+        std::filesystem::current_path(root);
+        Scanner scanner(root.string());scanner.set_device_type(SdrDeviceType::X310);scanner.set_gain(20);
+        scanner.set_lora_lock_freq(865e6);scanner.set_lora_capture_seconds(2);
+        scanner.set_wifi_fixed_channel(1);scanner.set_active_band(BAND_WIFI_2G4);
+        scanner.set_wifi_security_recording((root/"events.ndjson").string());
+        nlohmann::json report;report["phases"]=nlohmann::json::array();bool passed=true;
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+        passed=scanner.set_wifi_cyclo_enabled(true);
+#endif
+        scanner.start();
+        auto phase=[&](const char* name,const std::string& band,int channel,int seconds) {
+            scanner.set_wifi_fixed_channel(channel?std::optional<int>(channel):std::nullopt);scanner.set_active_band(band);
+            const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(seconds);
+            while(std::chrono::steady_clock::now()<end)std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            const auto s=scanner.status();
+            nlohmann::json p={{"name",name},{"connected",s.connected},{"error",s.error},{"rx_stalled",s.rx_stalled},
+                {"active_band",s.active_band},{"step",s.active_step_label},{"cycles",s.cycle_count},
+                {"rf_rows",scanner.snapshot(band).size()},{"wifi_tail",scanner.wifi_packets().size()},
+                {"lora_captures",scanner.lora_security_snapshot()->captures}};
+            passed=passed&&s.connected&&s.error.empty()&&!s.rx_stalled&&s.active_band==band;
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+            auto stats=scanner.wifi_cyclo_stats();auto r=scanner.wifi_cyclo_snapshot();
+            p["dsp"]={{"enabled",stats.enabled},{"measured",stats.measured},{"busy",stats.dropped_busy},
+                {"failures",stats.failures},{"timeouts",stats.worker_timeouts},{"protocol_errors",stats.protocol_errors},
+                {"current_result",bool(r)},{"result_band",r?r->capture.band_ghz:0},{"result_epoch",r?r->epoch:0},{"epoch",stats.epoch}};
+            if(r)passed=passed&&r->epoch==stats.epoch&&r->capture.band_ghz==(band==BAND_WIFI_2G4?2:band==BAND_WIFI_5G?5:0);
+#endif
+            report["phases"].push_back(p);std::printf("%s connected=%d error=%s\n",name,s.connected,s.error.c_str());std::fflush(stdout);
+        };
+        phase("wifi24_dsp",BAND_WIFI_2G4,1,20);
+        scanner.set_gain(25);phase("wifi5_gain_change",BAND_WIFI_5G,36,20);
+        phase("lora_rate_change",BAND_SUB_GHZ,0,15);
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+        scanner.set_wifi_cyclo_enabled(false);
+#endif
+        phase("wifi24_dsp_disabled",BAND_WIFI_2G4,6,15);
+        scanner.stop();scanner.start();phase("stop_start",BAND_WIFI_2G4,6,15);scanner.stop();
+        auto health=scanner.wifi_enrolment_health();report["enrolment_error"]=health.error;
+        report["enrolment_drops"]=health.dropped_batches;report["security"]=wifi_security::snapshot_json(*scanner.wifi_security_snapshot());
+        report["lora"]=lora_security::snapshot_json(*scanner.lora_security_snapshot());
+        report["passed"]=passed&&health.error.empty()&&!health.dropped_batches;
+        std::ofstream out(root/"report.json");out<<report.dump(2)<<'\n';out.close();
+        return out&&report["passed"].get<bool>()?0:1;
+    }
     // Scanner defaults to the B210 (see scanner.hpp), and only the
     // GUI's device selector ever overrides it - so this tool used to
     // try to open a B210 regardless of what was actually plugged in,

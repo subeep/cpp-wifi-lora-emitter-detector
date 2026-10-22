@@ -5,8 +5,95 @@
 #include "config.hpp"
 #include <cmath>
 #include <cstdio>
+#include <algorithm>
+#include <limits>
 
 namespace rfmon {
+namespace {
+struct ReceptionCoordinates {
+    bool valid = false;
+    size_t start = 0, end = 0, uncertainty = 0, symbol = 0;
+    std::optional<size_t> data;
+};
+ReceptionCoordinates reception_coordinates(const LoraPacketRow& r, double rate) {
+    ReceptionCoordinates c;
+    if(!r.header_valid || r.decoder!="LoRa explicit PHY" || r.sf<7 || r.sf>12 ||
+       !r.decoder_sample_start || !r.decoder_sample_end || *r.decoder_sample_start>=*r.decoder_sample_end ||
+       !std::isfinite(rate) || rate<=0 || !std::isfinite(r.freq_mhz) ||
+       (r.bandwidth_khz!=125 && r.bandwidth_khz!=250 && r.bandwidth_khz!=500))return c;
+    const double ratio=rate/(r.bandwidth_khz*1000);
+    if(!std::isfinite(ratio)||ratio<1||ratio>1024||std::abs(ratio-std::round(ratio))>1e-6)return c;
+    const size_t factor=size_t(std::llround(ratio)), max=std::numeric_limits<size_t>::max()/factor;
+    if(*r.decoder_sample_end>max || r.start_uncertainty_samples>max)return c;
+    if(r.decoder_data_start) {
+        if(*r.decoder_data_start<*r.decoder_sample_start || *r.decoder_data_start>=*r.decoder_sample_end)return c;
+        c.data=*r.decoder_data_start*factor;
+    }
+    c.start=*r.decoder_sample_start*factor;c.end=*r.decoder_sample_end*factor;
+    c.uncertainty=r.start_uncertainty_samples*factor;c.symbol=(size_t(1)<<r.sf)*factor;
+    c.valid=true;return c;
+}
+size_t sample_distance(size_t a,size_t b) {return a>b?a-b:b-a;}
+bool same_reception(const LoraPacketRow& a,const ReceptionCoordinates& ca,
+                    const LoraPacketRow& b,const ReceptionCoordinates& cb) {
+    if(!ca.valid || !cb.valid || a.sf!=b.sf || a.bandwidth_khz!=b.bandwidth_khz ||
+       a.freq_mhz!=b.freq_mhz || a.cr!=b.cr || a.payload_len!=b.payload_len ||
+       a.payload_complete!=b.payload_complete || a.crc!=b.crc || a.payload_hex!=b.payload_hex)return false;
+    // Opposite-polarity evidence is compatible only when both independently
+    // recovered the same complete CRC-valid bytes. Never resolve ambiguity by
+    // picking one unverified polarity interpretation.
+    if(a.inverted_iq!=b.inverted_iq && !(a.payload_complete && a.crc==LoraPacketRow::Crc::Valid))return false;
+    if(ca.data && cb.data) {
+        // An aligned SFD/data anchor is stronger than overlap/coarse starts.
+        // Keep the tolerance below a symbol and compare to the FIRST member,
+        // not an expanding/transitive union that could swallow later packets.
+        const size_t tolerance=std::min({ca.symbol/4,cb.symbol/4,ca.uncertainty,cb.uncertainty});
+        return sample_distance(*ca.data,*cb.data)<=tolerance &&
+               sample_distance(ca.start,cb.start)<=std::min(ca.symbol,cb.symbol) &&
+               sample_distance(ca.end,cb.end)<=std::min(ca.symbol,cb.symbol);
+    }
+    // Old rows do not have an aligned anchor. Preserve the old exact-span
+    // behavior rather than guessing equivalence from payload bytes or overlap.
+    return !ca.data && !cb.data && ca.start==cb.start && ca.end==cb.end;
+}
+}
+LoraReceptionGrouping group_lora_receptions(const std::vector<LoraPacketRow>& rows,double rate) {
+    LoraReceptionGrouping result;
+    std::vector<ReceptionCoordinates> coordinates;coordinates.reserve(rows.size());
+    for(const auto& r:rows)coordinates.push_back(reception_coordinates(r,rate));
+    size_t remaining_comparisons=1u<<20; // conservative fall-back keeps rows separate
+    for(size_t i=0;i<rows.size();++i) {
+        const auto& c=coordinates[i];
+        if(!c.valid)++result.unlocated;
+        bool grouped=false;
+        if(c.valid && remaining_comparisons)for(auto& g:result.groups) {
+            if(!remaining_comparisons){result.comparison_limited=true;break;}
+            --remaining_comparisons;
+            if(!g.located)continue;
+            const size_t anchor=g.hypotheses.front();
+            if(!same_reception(rows[anchor],coordinates[anchor],rows[i],c))continue;
+            g.hypotheses.push_back(i);
+            // Stable representative selection: no change to any member's bytes,
+            // integrity, provenance or quality measurements.
+            if(rows[i].fec_disagreements && (!rows[g.representative].fec_disagreements ||
+               *rows[i].fec_disagreements<*rows[g.representative].fec_disagreements))g.representative=i;
+            grouped=true;break;
+        }
+        if(!grouped)result.groups.push_back({{i},i,c.valid});
+        if(c.valid && !remaining_comparisons)result.comparison_limited=true;
+    }
+    return result;
+}
+void annotate_lora_receptions(std::vector<LoraPacketRow>& rows,double rate,const std::string& scope) {
+    const auto grouped=group_lora_receptions(rows,rate);
+    for(auto& row:rows){row.reception_id.clear();row.reception_hypotheses=0;row.reception_grouping_limited=grouped.comparison_limited;}
+    size_t ordinal=0;
+    for(const auto& g:grouped.groups) {
+        if(!g.located)continue;
+        const std::string id=scope+"/reception-"+std::to_string(++ordinal);
+        for(size_t i:g.hypotheses){rows[i].reception_id=id;rows[i].reception_hypotheses=g.hypotheses.size();}
+    }
+}
 const char* lora_crc_label(LoraPacketRow::Crc crc) {
     switch (crc) {
         case LoraPacketRow::Crc::Valid: return "Valid";
@@ -100,9 +187,10 @@ std::vector<LoraPacketRow> analyze_lora_packets(const std::vector<std::complex<f
         row.capture_offset_s = p.start_sample / bandwidth;
         if (p.start_sample>=0 && p.end_sample>p.start_sample) {
             row.decoder_sample_start=size_t(p.start_sample);row.decoder_sample_end=size_t(p.end_sample);
+            if(p.data_start_sample>=p.start_sample && p.data_start_sample<p.end_sample)row.decoder_data_start=size_t(p.data_start_sample);
             row.start_uncertainty_samples=size_t(1)<<sf;
         }
-        row.analysis_limited=packets.size()>=32; // conservative: per-polarity cap is 32
+        row.analysis_limited=diagnostics.packet_limit_reached; // per polarity, not combined count
         row.fec_disagreements = p.fec_disagreements;
         row.sf = sf; row.cr = p.cr; row.payload_len = p.declared_payload_len;
         row.cfo_bins = int(std::lround(p.cfo_bins)); row.ldro = p.ldro;
@@ -116,6 +204,8 @@ std::vector<LoraPacketRow> analyze_lora_packets(const std::vector<std::complex<f
         } else row.detail += " Sync bins " + std::to_string(p.sync_bins[0]) + ", " +
                               std::to_string(p.sync_bins[1]) + " (not quantized).";
         if (p.ldro_ambiguous) row.detail += " LDRO hypothesis unresolved by CRC.";
+        if(!p.payload_complete || !p.crc_on || !p.crc_valid)
+            row.detail += " Unverified candidate: search resumed after its header instead of trusting the payload span.";
         if (p.payload_complete) payload_text(row, p.payload);
         if (p.payload_complete && (!p.crc_on || p.crc_valid)) {
             if (auto candidate=inspect_lorawan(p.payload)) {
@@ -168,6 +258,7 @@ std::vector<LoraPacketRow> analyze_lora_capture(const std::vector<std::complex<f
             }
         }
     }
+    if(!laboratory_mode)annotate_lora_receptions(rows,rate,"capture-local");
     return rows;
 }
 } // namespace rfmon

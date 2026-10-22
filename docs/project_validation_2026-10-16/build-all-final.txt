@@ -1,0 +1,150 @@
+[  3%] Built target test_lora_phy
+[  3%] Built target test_dsp
+[  3%] Built target rfmon_drone_turbo
+[  3%] Built target test_wifi_phy
+[  3%] Built target test_lora_phy_std
+[  6%] Built target rfmon_cyclo_core
+[  7%] Built target test_wifi_frame
+[  7%] Built target test_fingerprint
+[  8%] Built target test_wifi_stress
+[  8%] Built target test_wifi_fingerprint
+[  8%] Built target test_wifi_dsss_rx
+[  9%] Built target test_wifi_master
+[ 10%] Built target test_registry
+[ 11%] Built target test_lora_master
+[ 11%] Built target test_wifi_identity
+Consolidate compiler generated dependencies of target sf_estimator_spike
+Consolidate compiler generated dependencies of target test_lora_observation
+Consolidate compiler generated dependencies of target test_lora_gui
+Consolidate compiler generated dependencies of target test_wifi_gui
+[ 12%] Built target test_bench_tx
+[ 13%] Built target test_lora_observation
+[ 15%] Built target sf_estimator_spike
+[ 15%] Building CXX object CMakeFiles/test_lora_gui.dir/src/security/lora_security.cpp.o
+Consolidate compiler generated dependencies of target lora_replay
+Consolidate compiler generated dependencies of target lora_capture_crop
+[ 19%] Built target test_wifi_gui
+Consolidate compiler generated dependencies of target wifi_test_bench
+[ 20%] Built target lora_capture_crop
+[ 21%] Built target lora_replay
+Consolidate compiler generated dependencies of target lora_capture_cli
+Consolidate compiler generated dependencies of target wifi_capture_cli
+[ 24%] Built target test_wifi_ofdm
+[ 26%] Built target wifi_test_bench
+[ 27%] Building CXX object CMakeFiles/wifi_ofdm_replay.dir/tools/wifi_ofdm_replay.cpp.o
+[ 28%] Built target lora_capture_cli
+[ 28%] Building CXX object CMakeFiles/wifi_ofdm_replay.dir/src/wifi_iq_capture.cpp.o
+[ 28%] Building CXX object CMakeFiles/wifi_capture_cli.dir/src/wifi_iq_capture.cpp.o
+[ 29%] Built target wifi_remote_id_inspect
+[ 29%] Building CXX object CMakeFiles/test_lora_receiver.dir/tests/test_lora_receiver.cpp.o
+[ 29%] Built target test_remote_id_monitor
+[ 30%] Built target test_wifi_security_frame
+[ 30%] Built target wifi_frame_inspect
+[ 31%] Building CXX object CMakeFiles/wifi_security_replay.dir/tools/wifi_security_replay.cpp.o
+[ 34%] Built target test_wifi_security_events
+[ 36%] Built target test_wifi_security_baseline
+[ 37%] Built target test_serial_lane
+[ 39%] Built target test_wifi_security_flood
+[ 39%] Building CXX object CMakeFiles/test_lora_receiver.dir/src/lora_capture.cpp.o
+[ 39%] Linking CXX executable wifi_capture_cli
+[ 40%] Built target wifi_capture_cli
+[ 43%] Built target test_wifi_security_beacon_replay
+[ 43%] Building CXX object CMakeFiles/lora_security_replay.dir/tools/lora_security_replay.cpp.o
+[ 43%] Linking CXX executable wifi_ofdm_replay
+[ 43%] Built target wifi_ofdm_replay
+[ 43%] Building CXX object CMakeFiles/test_capture_provenance.dir/tests/test_capture_provenance.cpp.o
+[ 43%] Building CXX object CMakeFiles/test_capture_provenance.dir/src/wifi_iq_capture.cpp.o
+[ 43%] Linking CXX executable test_lora_gui
+[ 45%] Built target test_lora_gui
+[ 45%] Building CXX object CMakeFiles/test_lora_security.dir/tests/test_lora_security.cpp.o
+[ 45%] Building CXX object CMakeFiles/wifi_security_replay.dir/src/wifi_iq_capture.cpp.o
+[ 45%] Linking CXX executable test_lora_receiver
+[ 46%] Built target test_lora_receiver
+[ 46%] Building CXX object CMakeFiles/test_lora_security.dir/src/security/lora_security.cpp.o
+[ 47%] Building CXX object CMakeFiles/lora_security_replay.dir/src/security/lora_security.cpp.o
+[ 47%] Building CXX object CMakeFiles/lora_security_replay.dir/src/lora_capture.cpp.o
+[ 47%] Linking CXX executable wifi_security_replay
+[ 47%] Building CXX object CMakeFiles/test_lora_security.dir/src/lora_capture.cpp.o
+[ 49%] Built target wifi_security_replay
+[ 50%] Built target test_gui_shell
+[ 50%] Building CXX object CMakeFiles/test_capture_provenance.dir/src/lora_capture.cpp.o
+Consolidate compiler generated dependencies of target test_wifi_enrolment
+[ 52%] Built target test_wifi_enrolment
+[ 53%] Built target test_cyclo_sweeps
+[ 54%] Built target test_cyclo_chirp
+[ 55%] Built target test_cyclo_evidence
+[ 55%] Built target test_cyclo_refinement
+[ 55%] Built target test_cyclo_clock
+[ 55%] Built target test_cyclo_burst
+[ 55%] Built target test_cyclo_background
+[ 55%] Built target test_cyclo_waveforms
+[ 56%] Built target test_cyclo_protocol
+[ 56%] Built target test_cyclo_structure
+[ 56%] Built target test_cyclo_review
+[ 56%] Built target test_cyclo_decision
+[ 56%] Built target test_cyclo_named
+[ 56%] Built target test_cyclo_marker_structure
+[ 56%] Built target rfmon_cyclo_transport
+[ 56%] Built target rfmon_drones
+[ 56%] Built target cyclo_fault_worker_1
+[ 57%] Built target cyclo_fault_worker_2
+[ 57%] Built target cyclo_fault_worker_3
+[ 57%] Built target cyclo_fault_worker_4
+[ 58%] Built target wifi_cyclo_worker
+[ 60%] Built target test_dji_addon
+[ 61%] Built target rfmon_cyclo_offline
+Consolidate compiler generated dependencies of target rf_monitor_gui
+[ 68%] Built target rf_monitor_gui
+Consolidate compiler generated dependencies of target band_smoke_test
+[ 73%] Built target band_smoke_test
+Consolidate compiler generated dependencies of target wifi_scan_smoke
+[ 73%] Building CXX object CMakeFiles/wifi_scan_smoke.dir/tools/wifi_scan_smoke.cpp.o
+Consolidate compiler generated dependencies of target test_scanner_wifi_lane
+[ 73%] Building CXX object CMakeFiles/test_scanner_wifi_lane.dir/tests/test_scanner_wifi_lane.cpp.o
+[ 73%] Building CXX object CMakeFiles/wifi_scan_smoke.dir/src/scanner.cpp.o
+[ 74%] Linking CXX executable lora_security_replay
+[ 74%] Built target lora_security_replay
+Consolidate compiler generated dependencies of target test_scanner_lora_security
+[ 74%] Building CXX object CMakeFiles/test_scanner_lora_security.dir/tests/test_scanner_lora_security.cpp.o
+[ 74%] Linking CXX executable test_capture_provenance
+[ 75%] Built target test_capture_provenance
+[ 75%] Building CXX object CMakeFiles/lora_scan_smoke.dir/tools/lora_scan_smoke.cpp.o
+[ 75%] Linking CXX executable test_lora_security
+[ 76%] Built target test_lora_security
+[ 76%] Building CXX object CMakeFiles/test_scanner_lora_security.dir/src/scanner.cpp.o
+[ 76%] Building CXX object CMakeFiles/wifi_scan_smoke.dir/src/sdr_capture.cpp.o
+[ 77%] Building CXX object CMakeFiles/test_scanner_lora_security.dir/src/sdr_capture.cpp.o
+[ 77%] Building CXX object CMakeFiles/test_scanner_lora_security.dir/src/lora_capture.cpp.o
+[ 77%] Building CXX object CMakeFiles/lora_scan_smoke.dir/src/scanner.cpp.o
+[ 78%] Building CXX object CMakeFiles/test_scanner_lora_security.dir/src/security/lora_security.cpp.o
+[ 78%] Building CXX object CMakeFiles/wifi_scan_smoke.dir/src/lora_capture.cpp.o
+[ 78%] Building CXX object CMakeFiles/test_scanner_wifi_lane.dir/src/scanner.cpp.o
+[ 78%] Building CXX object CMakeFiles/lora_scan_smoke.dir/src/sdr_capture.cpp.o
+[ 78%] Building CXX object CMakeFiles/lora_scan_smoke.dir/src/lora_capture.cpp.o
+[ 78%] Building CXX object CMakeFiles/wifi_scan_smoke.dir/src/security/lora_security.cpp.o
+[ 78%] Building CXX object CMakeFiles/lora_scan_smoke.dir/src/security/lora_security.cpp.o
+[ 78%] Linking CXX executable test_scanner_lora_security
+[ 78%] Building CXX object CMakeFiles/test_scanner_wifi_lane.dir/src/sdr_capture.cpp.o
+[ 82%] Built target test_scanner_lora_security
+Consolidate compiler generated dependencies of target test_cyclo_panel
+[ 83%] Built target test_cyclo_panel
+[ 83%] Linking CXX executable wifi_cyclo_replay
+[ 83%] Built target wifi_cyclo_replay
+[ 83%] Linking CXX executable test_cyclostationary
+[ 83%] Built target test_cyclostationary
+[ 84%] Linking CXX executable test_cyclo_roi
+[ 84%] Built target test_cyclo_roi
+[ 84%] Building CXX object CMakeFiles/test_scanner_wifi_lane.dir/src/lora_capture.cpp.o
+[ 84%] Building CXX object CMakeFiles/test_scanner_wifi_lane.dir/src/security/lora_security.cpp.o
+[ 84%] Building CXX object tools/cyclostationary/CMakeFiles/test_cyclo_shadow.dir/__/__/tests/test_cyclo_shadow.cpp.o
+[ 84%] Linking CXX executable test_cyclo_shadow
+[ 85%] Building CXX object tools/cyclostationary/CMakeFiles/test_cyclo_process.dir/__/__/tests/test_cyclo_process.cpp.o
+[ 85%] Built target test_cyclo_shadow
+[ 85%] Linking CXX executable wifi_scan_smoke
+[ 90%] Built target wifi_scan_smoke
+[ 90%] Linking CXX executable lora_scan_smoke
+[ 95%] Built target lora_scan_smoke
+[ 95%] Linking CXX executable test_scanner_wifi_lane
+[100%] Built target test_scanner_wifi_lane
+[100%] Linking CXX executable test_cyclo_process
+[100%] Built target test_cyclo_process

@@ -55,3 +55,6 @@ __pycache__/
 
 # Small independent SX1262 hardware regression captures.
 !tests/fixtures/lora_sx1262/**/iq.cf32_le
+
+# Isolated build directories
+/build-*/

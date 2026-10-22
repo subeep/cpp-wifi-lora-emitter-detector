@@ -1,0 +1,28 @@
+Internal ctest changing into directory: /home/sudeep/Documents/newrocktest-cpp/build-wifi-enrolment
+Test project /home/sudeep/Documents/newrocktest-cpp/build-wifi-enrolment
+      Start  7: wifi_security_frame
+ 1/11 Test  #7: wifi_security_frame ..............   Passed    0.06 sec
+      Start  8: wifi_security_events
+ 2/11 Test  #8: wifi_security_events .............   Passed    0.19 sec
+      Start  9: wifi_security_baseline
+ 3/11 Test  #9: wifi_security_baseline ...........   Passed    0.20 sec
+      Start 11: scanner_wifi_lane
+ 4/11 Test #11: scanner_wifi_lane ................   Passed    7.28 sec
+      Start 12: wifi_security_flood
+ 5/11 Test #12: wifi_security_flood ..............   Passed    0.02 sec
+      Start 13: wifi_security_beacon_replay
+ 6/11 Test #13: wifi_security_beacon_replay ......   Passed    0.01 sec
+      Start 14: capture_provenance
+ 7/11 Test #14: capture_provenance ...............   Passed    0.00 sec
+      Start 15: lora_security
+ 8/11 Test #15: lora_security ....................   Passed    0.21 sec
+      Start 16: wifi_security_transactions
+ 9/11 Test #16: wifi_security_transactions .......   Passed    0.18 sec
+      Start 17: security_replay_cli
+10/11 Test #17: security_replay_cli ..............   Passed    0.35 sec
+      Start 18: scanner_lora_security
+11/11 Test #18: scanner_lora_security ............   Passed    0.14 sec
+
+100% tests passed, 0 tests failed out of 11
+
+Total Test time (real) =   8.64 sec

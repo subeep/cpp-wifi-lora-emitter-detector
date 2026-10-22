@@ -1,0 +1,78 @@
+PASS sustained mixed deauth/disassoc creates incident
+PASS exact units, usable exposure, conservative confidence
+PASS evidence and threshold timeline
+PASS triggering window excluded before learning
+PASS rolling observations coalesce sustained flood
+PASS overflow and queue loss cannot establish quiet
+PASS clean recovery closes and releases hold
+PASS offline JSON includes incidents
+PASS cold start cannot claim a baseline-supported flood
+PASS cold-start candidate cannot poison baseline
+PASS legitimate retry duplicates do not inflate units
+PASS single-capture reconnect burst lacks sustained evidence
+PASS scan gap breaks sustained window
+PASS new gain requires own baseline
+PASS loss notice invalidates partial detector window
+PASS queue loss and burst cap excluded from clean reference
+PASS bounded detector overload is explicit and unusable
+PASS independent rule holds latch partial window
+PASS reset preserves active rule hold
+PASS holds survive persistence
+PASS last holder release permits clean learning
+PASS restored evidence and timeline honor current capacities
+PASS restored byte limits enforced
+PASS invalid quiet duration ignored
+PASS restart does not inherit quiet or partial detection continuity
+PASS restored hold recovers on usable quiet
+PASS offline serialization preserves decisions and evidence
+PASS threaded live consumer and offline state agree
+PASS out-of-order capture cannot advance quiet
+PASS missing frame events cannot advance quiet
+PASS rule hold keys are bounded
+PASS released hold capacity is reusable
+PASS encrypted management headers count without claiming PMF authenticity
+PASS combined baseline sums window counts before computing percentile
+PASS distributed targets create one AP-wide incident with explicit scope
+PASS production defaults detect sustained activity after 30 usable baseline seconds
+PASS malformed recording input breaks sustained flood evidence
+PASS separated identical non-retry copies trigger repeated-content path
+PASS repeated-content candidates cannot train the baseline and carry rule version
+PASS short identical copies without Retry still collapse under guard
+PASS long Retry-marked repeats do not claim independent attempts
+PASS flood across former fixed-window boundary is detected
+PASS rolling historic activity alone cannot reset quiet or emit a new observation
+PASS rolling detection survives capture-window phase shift
+PASS rolling detection survives capture-window phase shift
+PASS rolling detection survives capture-window phase shift
+PASS rolling detection survives capture-window phase shift
+PASS repeated per-client contents aggregate into AP-wide path
+PASS different claimed BSSIDs never combine into AP-wide flood
+PASS client-originated disconnects aggregate affected clients at claimed AP
+PASS single-capture multi-client reconnect burst stays negative
+PASS host-only timing cannot establish separated repeated-content units
+PASS sample ordering makes reversed event delivery deterministic
+PASS repeated-content evidence cannot bridge loss, bad input, caps, overflow or session reset
+PASS repeated-content evidence cannot bridge loss, bad input, caps, overflow or session reset
+PASS repeated-content evidence cannot bridge loss, bad input, caps, overflow or session reset
+PASS repeated-content evidence cannot bridge loss, bad input, caps, overflow or session reset
+PASS repeated-content evidence cannot bridge loss, bad input, caps, overflow or session reset
+PASS repeated raw observations obey bounded window capacity
+PASS tiny-capture window capacity excludes incomplete comparisons
+PASS AP and target group capacity fails conservatively
+PASS expanded campaign queues without loss
+PASS expanded campaign contains target and AP-wide repeated-content positives
+PASS expanded paths preserve offline serialization decisions and evidence
+PASS expanded paths produce identical threaded and offline incidents
+PASS learned channel management rate raises threshold above provisional floor
+PASS sub-threshold candidates still protect reference learning
+PASS receiver profiles never coalesce AP-wide incidents
+PASS quiet exposure stays within matching receiver profile
+PASS disagreeing event/device anchor cannot prove repeat separation
+PASS out-of-capture evidence is explicitly excluded
+PASS invalid repeated-content guard is rejected
+PASS long captures retain multiple-capture evidence and their full exposure denominator
+PASS every detection path matches full threaded, direct and serialized offline evidence
+PASS every detection path matches full threaded, direct and serialized offline evidence
+PASS every detection path matches full threaded, direct and serialized offline evidence
+PASS every detection path matches full threaded, direct and serialized offline evidence
+0 failures

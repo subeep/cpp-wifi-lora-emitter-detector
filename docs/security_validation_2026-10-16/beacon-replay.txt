@@ -1,0 +1,41 @@
+PASS historical beacon after newer beacon alerts
+PASS suspected replay classification
+PASS original, intervening and repeat evidence retained
+PASS actual receive age; triggering capture never quiet
+PASS repeated observations coalesce
+PASS evidence persists with interrupted status
+PASS snapshot exposes rule diagnostics
+PASS normal progression and sequence wrap benign
+PASS repetition without intervening newer beacon is not replay verdict
+PASS Retry flag cannot conceal historical beacon
+PASS duplicate ingestion is idempotent
+PASS unknown TSF regression reacquires after reboot-like reset
+PASS degraded or out-of-order input cannot establish replay
+PASS degraded or out-of-order input cannot establish replay
+PASS degraded or out-of-order input cannot establish replay
+PASS degraded or out-of-order input cannot establish replay
+PASS degraded or out-of-order input cannot establish replay
+PASS degraded or out-of-order input cannot establish replay
+PASS degraded or out-of-order input cannot establish replay
+PASS session/profile/channel/gap prevents historical comparison
+PASS session/profile/channel/gap prevents historical comparison
+PASS session/profile/channel/gap prevents historical comparison
+PASS session/profile/channel/gap prevents historical comparison
+PASS global loss clears replay history
+PASS missing event invalidates capture before emission
+PASS bounded history eviction prevents unsupported match
+PASS history TTL expires original observation
+PASS rule disabled
+PASS local capacity overload rejects whole capture
+PASS near-time duplicate below minimum delay
+PASS invalid FCS never becomes replay evidence
+PASS degraded capture cannot close replay incident
+PASS clean observed recovery closes incident
+PASS serialized replay equals direct state including evidence
+PASS threaded monitor equals offline replay
+PASS malformed recording line breaks historical replay comparison
+PASS TSF/sequence alone or a different PHY/source cannot establish full-frame replay
+PASS TSF/sequence alone or a different PHY/source cannot establish full-frame replay
+PASS TSF/sequence alone or a different PHY/source cannot establish full-frame replay
+PASS TSF/sequence alone or a different PHY/source cannot establish full-frame replay
+PASS out-of-order frames invalidate the entire capture before an incident can be emitted

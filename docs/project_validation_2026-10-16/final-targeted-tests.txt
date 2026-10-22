@@ -1,0 +1,12 @@
+Internal ctest changing into directory: /home/sudeep/Documents/newrocktest-cpp/build-wifi-enrolment
+Test project /home/sudeep/Documents/newrocktest-cpp/build-wifi-enrolment
+    Start 11: scanner_wifi_lane
+1/3 Test #11: scanner_wifi_lane ................   Passed    7.68 sec
+    Start 18: scanner_lora_security
+2/3 Test #18: scanner_lora_security ............   Passed    0.15 sec
+    Start 19: cyclostationary_panel
+3/3 Test #19: cyclostationary_panel ............   Passed    0.02 sec
+
+100% tests passed, 0 tests failed out of 3
+
+Total Test time (real) =   7.85 sec

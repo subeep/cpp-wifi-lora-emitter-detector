@@ -1,0 +1,16 @@
+Internal ctest changing into directory: /home/sudeep/Documents/newrocktest-cpp/build-wifi-enrolment
+Test project /home/sudeep/Documents/newrocktest-cpp/build-wifi-enrolment
+    Start  5: lora_receiver
+1/5 Test  #5: lora_receiver ......................   Passed    1.38 sec
+    Start  6: lora_observation
+2/5 Test  #6: lora_observation ...................   Passed    0.04 sec
+    Start 18: scanner_lora_security
+3/5 Test #18: scanner_lora_security ..............   Passed    0.15 sec
+    Start 39: lora_payload_replay
+4/5 Test #39: lora_payload_replay ................   Passed    0.25 sec
+    Start 62: cyclostationary_reference_corpus
+5/5 Test #62: cyclostationary_reference_corpus ...   Passed    0.03 sec
+
+100% tests passed, 0 tests failed out of 5
+
+Total Test time (real) =   1.86 sec

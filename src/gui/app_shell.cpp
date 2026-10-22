@@ -15,6 +15,7 @@ const char* page_name(Page p) {
     case Page::Wifi5:return "Wi-Fi 5 GHz"; case Page::Lora:return "LoRa";
     case Page::Drones:return "Drones"; case Page::Security:return "Security";
     case Page::Captures:return "Captures"; default:return "Settings";
+    case Page::ModelInference:return "Model Inference";
     }
 }
 const char* page_purpose(Page p) {
@@ -25,6 +26,7 @@ const char* page_purpose(Page p) {
     case Page::Drones:return "Reported broadcasts and telemetry. Identity is unauthenticated.";
     case Page::Security:return "Suspected activity and the coverage needed to interpret it.";
     case Page::Captures:return "Existing capture and offline review workflows. Results stay separate from live evidence.";
+    case Page::ModelInference:return "Optional experimental model predictions from existing capture workers.";
     default:return "Explicit acquisition controls, display preferences and implemented capabilities.";
     }
 }
@@ -86,7 +88,7 @@ void draw_workspace(State& s,const Context& c,bool drones,const std::function<vo
     const bool narrow=ImGui::GetContentRegionAvail().x<1000*scale;
     if(!s.legacy && narrow) {
         if(ImGui::BeginCombo("Workspace",page_name(s.page))) {
-            for(int i=0;i<8;++i){auto p=static_cast<Page>(i);if(p==Page::Drones&&!drones)continue;
+            for(int i=0;i<int(Page::Count);++i){auto p=static_cast<Page>(i);if(p==Page::Drones&&!drones)continue;
                 if(ImGui::Selectable(page_name(p),p==s.page)){s.page=p;if(p==Page::Security)s.security_first=true;}}
             ImGui::EndCombo();
         }
@@ -94,7 +96,7 @@ void draw_workspace(State& s,const Context& c,bool drones,const std::function<vo
     if(!s.legacy && !narrow) {
         ImGui::BeginChild("Navigation",{170*scale,-footer},ImGuiChildFlags_Borders);
         note("WORKSPACES");
-        for(int i=0;i<8;++i) {
+        for(int i=0;i<int(Page::Count);++i) {
             auto p=static_cast<Page>(i);if(p==Page::Drones&&!drones)continue;
             ImGui::PushID(i);if(ImGui::Selectable(page_name(p),p==s.page,0,{0,32*scale})) {
                 s.page=p;if(p==Page::Security)s.security_first=true;

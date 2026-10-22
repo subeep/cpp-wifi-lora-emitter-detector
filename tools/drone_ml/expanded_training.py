@@ -143,18 +143,39 @@ def cross_unit_contrastive(embedding,labels,groups,temperature=.1):
     return -means[valid].mean()
 
 
-def train(corpus_path,review_path,output,epochs=40,batch_size=8,architecture='residual',device='cpu',resume=False):
+def resume_configuration(previous,current,allow_device_change=False):
+    """Device migration is explicit; every scientific configuration field stays fixed."""
+    if previous==current:return
+    changed={k for k in previous.keys()|current.keys() if previous.get(k)!=current.get(k)}
+    if changed!={'device'} or not allow_device_change:
+        raise ValueError('resume configuration/corpus mismatch')
+    if previous['device'] not in ('cpu','cuda') or current['device'] not in ('cpu','cuda'):
+        raise ValueError('unsupported resume device')
+
+
+def train(corpus_path,review_path,output,epochs=40,batch_size=8,architecture='residual',device='cpu',resume=False,
+          allow_device_change=False):
     """Explicit opt-in entry point; preflight and fixed epochs, never final-test IQ."""
     if not 1<=epochs<=100 or not 2<=batch_size<=64:raise ValueError('invalid training configuration')
+    if device not in ('cpu','cuda'):raise ValueError('unsupported training device')
+    if allow_device_change and not resume:raise ValueError('device migration requires resume')
+    if device=='cuda':
+        os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG',':4096:8')
+        if not torch.cuda.is_available():raise ValueError('CUDA is unavailable; CPU fallback is not automatic')
+        torch.backends.cudnn.benchmark=False
+        torch.backends.cudnn.deterministic=True
+        torch.backends.cudnn.allow_tf32=False
+        torch.backends.cuda.matmul.allow_tf32=False
     readiness=preflight(corpus_path,review_path)
     m=json.loads(Path(corpus_path).read_text())
     out=Path(output).resolve() if resume else new_output(output,[Path(corpus_path).parent,Path(review_path).parent,Path('/media/sudeep/Storage/datasets')])
     corpus_hash=sha256(corpus_path)
     configuration=dict(epochs=epochs,batch_size=batch_size,architecture=architecture,device=device,seed=17,corpus_sha256=corpus_hash)
-    if resume and json.loads((out/'run_config.json').read_text())!=configuration:
-        raise ValueError('resume configuration/corpus mismatch')
+    previous=json.loads((out/'run_config.json').read_text()) if resume else configuration
+    if resume:resume_configuration(previous,configuration,allow_device_change)
     if not resume:write_json(out/'run_config.json',configuration)
     def atomic_json(name,data):
+        if name=='progress.json':data=dict(data,device=device)
         temporary=out/(name+'.tmp');write_json(temporary,data);temporary.replace(out/name)
     def atomic_save(name,data):
         temporary=out/(name+'.tmp');torch.save(data,temporary);temporary.replace(out/name)
@@ -168,11 +189,31 @@ def train(corpus_path,review_path,output,epochs=40,batch_size=8,architecture='re
     scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,T_max=epochs,eta_min=1e-5)
     history=[];start_epoch=0;steps=0;started=time.monotonic()
     if resume:
-        state=torch.load(out/'training_state.pt',map_location=device,weights_only=True)
+        state=torch.load(out/'training_state.pt',map_location='cpu',weights_only=True)
         model.load_state_dict(state['model']);optimizer.load_state_dict(state['optimizer']);scheduler.load_state_dict(state['scheduler'])
         torch.set_rng_state(state['torch_rng'].cpu());sampler.generator.set_state(state['sampler_rng'].cpu())
         history=state['history'];start_epoch=state['completed_epochs'];steps=state['optimizer_steps']
-        if device=='cuda':torch.cuda.set_rng_state_all(state['cuda_rng'])
+        source_device=state.get('device',previous['device'])
+        if source_device not in ('cpu','cuda'):raise ValueError('unsupported checkpoint device')
+        if source_device!=device and not allow_device_change:
+            raise ValueError('checkpoint device migration requires explicit permission')
+        if device=='cuda':
+            if source_device=='cuda':
+                if len(state['cuda_rng'])!=torch.cuda.device_count():raise ValueError('CUDA RNG/device count mismatch')
+                torch.cuda.set_rng_state_all([r.cpu() for r in state['cuda_rng']])
+            else:
+                # CPU dropout RNG has no equivalent CUDA state. Record a new stream.
+                torch.cuda.manual_seed_all(17+start_epoch)
+        if source_device!=device:
+            path=out/'device_transitions.json'
+            transitions=json.loads(path.read_text()) if path.exists() else []
+            transitions.append(dict(from_device=source_device,to_device=device,completed_epochs=start_epoch,
+                checkpoint_sha256=sha256(out/'training_state.pt'),torch_version=str(torch.__version__),
+                cuda_version=torch.version.cuda,cuda_seed=17+start_epoch if device=='cuda' else None,
+                bitwise_equivalent_to_original_device=False,updated_unix=time.time()))
+            atomic_json('device_transitions.json',transitions)
+    atomic_json('runtime.json',dict(device=device,torch_version=str(torch.__version__),cuda_version=torch.version.cuda,
+        gpu=torch.cuda.get_device_name() if device=='cuda' else None,precision='float32',batch_size=batch_size))
     atomic_json('progress.json',dict(status='training',pid=os.getpid(),architecture=architecture,completed_epochs=start_epoch,
         total_epochs=epochs,optimizer_steps=steps,total_batches_per_epoch=len(loader)))
     for epoch in range(start_epoch,epochs):
@@ -193,7 +234,7 @@ def train(corpus_path,review_path,output,epochs=40,batch_size=8,architecture='re
         atomic_save('training_state.pt',dict(model=model.state_dict(),optimizer=optimizer.state_dict(),scheduler=scheduler.state_dict(),
             torch_rng=torch.get_rng_state(),sampler_rng=sampler.generator.get_state(),
             cuda_rng=torch.cuda.get_rng_state_all() if device=='cuda' else [],history=history,
-            completed_epochs=epoch+1,optimizer_steps=steps))
+            completed_epochs=epoch+1,optimizer_steps=steps,device=device))
         atomic_json('progress.json',dict(status='training',pid=os.getpid(),architecture=architecture,
             completed_epochs=epoch+1,total_epochs=epochs,optimizer_steps=steps,history=history,
             elapsed_this_process_seconds=time.monotonic()-started))
@@ -203,6 +244,9 @@ def train(corpus_path,review_path,output,epochs=40,batch_size=8,architecture='re
         preprocessing=m['preprocessing'],normalization=m['normalization'],activity_policy=m['activity_policy'],
         policy=None,policy_blockers=['expanded_model_requires_fresh_calibration_and_independent_evaluation'],
         development_only=True,model_validated_for_live_use=False)
+    transitions=out/'device_transitions.json'
+    checkpoint['training_device']=device
+    checkpoint['device_transitions']=json.loads(transitions.read_text()) if transitions.exists() else []
     atomic_save('model.pt',checkpoint)
     write_json(out/'training_report.json',dict(history=history,architecture=architecture,readiness=readiness,
         model_sha256=sha256(out/'model.pt'),corpus_sha256=corpus_hash,optimizer_steps=steps,release_ready=False))
@@ -215,12 +259,13 @@ def main():
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--start-training',action='store_true')
     p.add_argument('--resume',action='store_true')
+    p.add_argument('--allow-device-change',action='store_true',help='Explicitly record a non-bitwise device migration on resume')
     p.add_argument('--epochs',type=int,default=40);p.add_argument('--batch-size',type=int,default=8)
     p.add_argument('--architecture',choices=('residual','baseline'),default='residual')
     p.add_argument('--device',choices=('cpu','cuda'),default='cpu')
     a=p.parse_args()
     if a.resume and not a.start_training:p.error('--resume requires --start-training')
-    if a.start_training:train(a.corpus,a.review,a.output,a.epochs,a.batch_size,a.architecture,a.device,a.resume)
+    if a.start_training:train(a.corpus,a.review,a.output,a.epochs,a.batch_size,a.architecture,a.device,a.resume,a.allow_device_change)
     else:
         out=new_output(a.output,[a.corpus.parent,a.review.parent,Path('/media/sudeep/Storage/datasets')])
         r=preflight(a.corpus,a.review);write_json(out/'readiness.json',r)

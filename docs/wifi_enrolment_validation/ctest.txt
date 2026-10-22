@@ -1,0 +1,106 @@
+Internal ctest changing into directory: /home/sudeep/Documents/newrocktest-cpp/build-wifi-enrolment
+Test project /home/sudeep/Documents/newrocktest-cpp/build-wifi-enrolment
+      Start  1: remote_id_monitor
+ 1/50 Test  #1: remote_id_monitor ......................   Passed    0.75 sec
+      Start  2: wifi_remote_id
+ 2/50 Test  #2: wifi_remote_id .........................   Passed    0.06 sec
+      Start  3: dji_decoder
+ 3/50 Test  #3: dji_decoder ............................   Passed    2.01 sec
+      Start  4: dji_addon
+ 4/50 Test  #4: dji_addon ..............................   Passed    2.10 sec
+      Start  5: lora_receiver
+ 5/50 Test  #5: lora_receiver ..........................   Passed    1.28 sec
+      Start  6: lora_observation
+ 6/50 Test  #6: lora_observation .......................   Passed    0.03 sec
+      Start  7: wifi_security_frame
+ 7/50 Test  #7: wifi_security_frame ....................   Passed    0.06 sec
+      Start  8: wifi_security_events
+ 8/50 Test  #8: wifi_security_events ...................   Passed    0.18 sec
+      Start  9: wifi_security_baseline
+ 9/50 Test  #9: wifi_security_baseline .................   Passed    0.21 sec
+      Start 10: serial_lane
+10/50 Test #10: serial_lane ............................   Passed    0.40 sec
+      Start 11: scanner_wifi_lane
+11/50 Test #11: scanner_wifi_lane ......................   Passed    7.22 sec
+      Start 12: wifi_security_flood
+12/50 Test #12: wifi_security_flood ....................   Passed    0.02 sec
+      Start 13: wifi_security_beacon_replay
+13/50 Test #13: wifi_security_beacon_replay ............   Passed    0.01 sec
+      Start 14: capture_provenance
+14/50 Test #14: capture_provenance .....................   Passed    0.00 sec
+      Start 15: lora_security
+15/50 Test #15: lora_security ..........................   Passed    0.20 sec
+      Start 16: wifi_security_transactions
+16/50 Test #16: wifi_security_transactions .............   Passed    0.17 sec
+      Start 17: security_replay_cli
+17/50 Test #17: security_replay_cli ....................   Passed    0.35 sec
+      Start 18: scanner_lora_security
+18/50 Test #18: scanner_lora_security ..................   Passed    0.14 sec
+      Start 19: cyclostationary_panel
+19/50 Test #19: cyclostationary_panel ..................   Passed    0.02 sec
+      Start 20: gui_shell
+20/50 Test #20: gui_shell ..............................   Passed    0.58 sec
+      Start 21: wifi_gui
+21/50 Test #21: wifi_gui ...............................   Passed    0.38 sec
+      Start 22: lora_gui
+22/50 Test #22: lora_gui ...............................   Passed    0.09 sec
+      Start 23: wifi_enrolment
+23/50 Test #23: wifi_enrolment .........................   Passed    0.37 sec
+      Start 24: cyclostationary_math
+24/50 Test #24: cyclostationary_math ...................   Passed    0.06 sec
+      Start 25: cyclostationary_roi
+25/50 Test #25: cyclostationary_roi ....................   Passed    0.03 sec
+      Start 26: cyclostationary_sweeps
+26/50 Test #26: cyclostationary_sweeps .................   Passed    0.11 sec
+      Start 27: cyclostationary_chirp
+27/50 Test #27: cyclostationary_chirp ..................   Passed    0.05 sec
+      Start 28: cyclostationary_evidence
+28/50 Test #28: cyclostationary_evidence ...............   Passed    0.05 sec
+      Start 29: cyclostationary_refinement
+29/50 Test #29: cyclostationary_refinement .............   Passed    0.31 sec
+      Start 30: cyclostationary_clock
+30/50 Test #30: cyclostationary_clock ..................   Passed    0.35 sec
+      Start 31: cyclostationary_burst
+31/50 Test #31: cyclostationary_burst ..................   Passed    0.07 sec
+      Start 32: cyclostationary_background
+32/50 Test #32: cyclostationary_background .............   Passed    0.22 sec
+      Start 33: cyclostationary_waveforms
+33/50 Test #33: cyclostationary_waveforms ..............   Passed    0.41 sec
+      Start 34: cyclostationary_protocol
+34/50 Test #34: cyclostationary_protocol ...............   Passed    0.01 sec
+      Start 35: cyclostationary_structure
+35/50 Test #35: cyclostationary_structure ..............   Passed    0.44 sec
+      Start 36: cyclostationary_review
+36/50 Test #36: cyclostationary_review .................   Passed    0.00 sec
+      Start 37: cyclostationary_shadow
+37/50 Test #37: cyclostationary_shadow .................   Passed    0.70 sec
+      Start 38: cyclostationary_process
+38/50 Test #38: cyclostationary_process ................   Passed    0.81 sec
+      Start 39: cyclostationary_link_validation
+39/50 Test #39: cyclostationary_link_validation ........   Passed    0.02 sec
+      Start 40: cyclostationary_marker_recurrence
+40/50 Test #40: cyclostationary_marker_recurrence ......   Passed    0.05 sec
+      Start 41: cyclostationary_marker_prefix
+41/50 Test #41: cyclostationary_marker_prefix ..........   Passed    0.29 sec
+      Start 42: cyclostationary_extended_link_reader
+42/50 Test #42: cyclostationary_extended_link_reader ...   Passed    0.20 sec
+      Start 43: cyclostationary_marker_symbol
+43/50 Test #43: cyclostationary_marker_symbol ..........   Passed    0.29 sec
+      Start 44: cyclostationary_local_link_reader
+44/50 Test #44: cyclostationary_local_link_reader ......   Passed    0.09 sec
+      Start 45: cyclostationary_link_reference_audit
+45/50 Test #45: cyclostationary_link_reference_audit ...   Passed    0.04 sec
+      Start 46: cyclostationary_reference_corpus
+46/50 Test #46: cyclostationary_reference_corpus .......   Passed    0.03 sec
+      Start 47: cyclostationary_cli
+47/50 Test #47: cyclostationary_cli ....................   Passed    0.94 sec
+      Start 48: cyclostationary_decision
+48/50 Test #48: cyclostationary_decision ...............   Passed    0.00 sec
+      Start 49: cyclostationary_named
+49/50 Test #49: cyclostationary_named ..................   Passed    0.06 sec
+      Start 50: cyclostationary_marker_structure
+50/50 Test #50: cyclostationary_marker_structure .......   Passed    0.03 sec
+
+100% tests passed, 0 tests failed out of 50
+
+Total Test time (real) =  22.28 sec

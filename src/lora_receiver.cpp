@@ -221,7 +221,17 @@ static std::vector<Packet> demodulate_normal(const std::vector<std::complex<floa
         if(hi>=0&&hi<16&&lo>=0&&lo<16&&std::abs(best.sync_bins[0]-8*hi)<1.5&&std::abs(best.sync_bins[1]-8*lo)<1.5)
             best.sync_word=(hi<<4)|lo;
         results.push_back(best);
-        i=std::max(i,size_t(std::max(0L,best.end_sample)/n)-1);
+        // Only a complete CRC-checked payload justifies skipping its declared
+        // span. A five-bit header check alone cannot reserve the rest of IQ:
+        // a partial/failed/CRC-absent candidate may cover a later real packet.
+        // Resume after the eight header symbols to avoid rediscovering this
+        // same SFD throughout a long preamble, while keeping the search bounded.
+        const bool verified=best.payload_complete && best.crc_on && best.crc_valid;
+        const long resume=verified?best.end_sample:data_start+8L*n;
+        if(!verified)++diagnostics.unverified_payload_recoveries;
+        i=std::max(i,size_t(std::max(0L,resume)/n)-1);
+        if(results.size()>=size_t(opt.max_packets) && i+opt.min_preamble_symbols+1<windows)
+            diagnostics.packet_limit_reached=true;
     }
     return results;
 }

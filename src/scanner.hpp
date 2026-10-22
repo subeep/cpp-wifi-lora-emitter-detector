@@ -28,6 +28,7 @@
 #include "security/lora_security.hpp"
 #include "serial_lane.hpp"
 #include "wifi_master.hpp"
+#include "wifi_enrolment.hpp"
 
 namespace rfmon {
 
@@ -72,6 +73,7 @@ struct WifiPacketRow {
     int ofdm_rate_mbps = 0;
     size_t psdu_length = 0;
     bool fcs_valid = false;  // recovered MPDU passed its FCS (any frame type, DSSS or OFDM)
+    std::string enrolment_source; // exact burst key for asynchronous inventory association
     std::string master_key;  // persistent BSSID or accepted fingerprint-cluster key
     // MAC type/subtype of an FCS-valid MPDU, e.g. "Mgmt/Deauthentication"
     // (security/wifi_mac_frame.hpp). Empty when nothing FCS-valid was recovered.
@@ -197,6 +199,9 @@ public:
     // by decoded MAC/BSSID when one is available (DSSS and legacy OFDM
     // beacons/probe responses), fingerprint-cluster otherwise.
     std::vector<wifi_master::WifiMasterRow> wifi_master_snapshot() const;
+    bool wifi_enrolment_command(wifi_master::EnrolmentCommand c) { return wifi_master_.command(std::move(c)); }
+    wifi_master::EnrolmentHealth wifi_enrolment_health() const { return wifi_master_.health(); }
+    void flush_wifi_enrolment() { wifi_master_.flush(); }
     std::string wifi_storage_error() const { return wifi_master_.storage_error(); }
 
     // Passive Wi-Fi security monitor (docs/WIFI_SECURITY_IMPLEMENTATION_PLAN.md,
@@ -317,7 +322,7 @@ private:
     std::map<std::string, std::map<int, int>> wifi_source_counts_;
 
     lora_master::LoraMasterList lora_master_;
-    wifi_master::WifiMasterList wifi_master_;
+    wifi_master::WifiEnrolment wifi_master_;
 
     // Security monitor input. The run id is fixed per Scanner instance;
     // radio_session_ increments on every successful radio (re)connect,

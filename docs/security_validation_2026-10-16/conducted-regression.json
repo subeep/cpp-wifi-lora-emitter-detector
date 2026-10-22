@@ -1,0 +1,349 @@
+{
+  "schema": "wifi_security_campaign_audit.v1",
+  "passed": true,
+  "executable_sha256": "c4bf5523a8c7e22cb2eedae5848396a3c463c138af2fbf5e40a0443d7d204d1a",
+  "input_sha256": {
+    "/home/sudeep/Documents/newrocktest-cpp/data/hackrf_wifi_validation/2026-10-02/conducted-104606/campaign-complete/baseline-events.ndjson": "5ba1669b4ded3921dc4f636c6f7dfb3022ea8bac8a72731f98a8acc4ca0276ac",
+    "/home/sudeep/Documents/newrocktest-cpp/data/hackrf_wifi_validation/2026-10-02/conducted-104606/campaign-complete/baseline-snapshot.json": "819ced2631f421b851a7dae881bffc6580021f2680789c3a9aea4a102aaa3b88",
+    "/home/sudeep/Documents/newrocktest-cpp/data/hackrf_wifi_validation/2026-10-02/conducted-104606/campaign-complete/historical_replay-events.ndjson": "ff2f596857e6efc67349eab447388992ccc67d797755b6249ecb8af8ccf0f89e",
+    "/home/sudeep/Documents/newrocktest-cpp/data/hackrf_wifi_validation/2026-10-02/conducted-104606/campaign-complete/historical_replay-snapshot.json": "38d7a0424daab27837b1452810cb65b6960fb0e3ca54e911465044e64b4bb120",
+    "/home/sudeep/Documents/newrocktest-cpp/data/hackrf_wifi_validation/2026-10-02/conducted-104606/campaign-complete/target_distinct-events.ndjson": "0c89fbe9d6f8a21bc2f0ad9c03c6be1f2df1233910ce102beb103bfc23a54204",
+    "/home/sudeep/Documents/newrocktest-cpp/data/hackrf_wifi_validation/2026-10-02/conducted-104606/campaign-complete/target_distinct-snapshot.json": "f1d3fee891c1be14a270bd7ed5cfcb808671f213379c3c6f80648ff223b92e06",
+    "/home/sudeep/Documents/newrocktest-cpp/data/hackrf_wifi_validation/2026-10-02/conducted-104606/campaign-complete/target_repeated-events.ndjson": "d6667cc2728625a89ee0dd1d4c807eb855e3507e92c341e093b8957ee3d3b44f",
+    "/home/sudeep/Documents/newrocktest-cpp/data/hackrf_wifi_validation/2026-10-02/conducted-104606/campaign-complete/target_repeated-snapshot.json": "60aa7ef63c8b4ae71c78b1b0fa27d8720092d1bf2ffe1274c27ee6329f6c49b6",
+    "/home/sudeep/Documents/newrocktest-cpp/data/hackrf_wifi_validation/2026-10-02/conducted-104606/campaign-complete/ap_distinct-events.ndjson": "b77188361e75930842e24bc0e3cc3cea84d13fc52e89409bc4fb01a3b0473e05",
+    "/home/sudeep/Documents/newrocktest-cpp/data/hackrf_wifi_validation/2026-10-02/conducted-104606/campaign-complete/ap_distinct-snapshot.json": "6c3c155227ac6dc1b838e70481aa7296f650abb929b454081cb5735293c26221",
+    "/home/sudeep/Documents/newrocktest-cpp/data/hackrf_wifi_validation/2026-10-02/conducted-104606/campaign-complete/ap_repeated-events.ndjson": "8f99659ecc09d9646b0af0f69b0fcf9dd9cd26b5576b8d779d72a21ee185fd7b",
+    "/home/sudeep/Documents/newrocktest-cpp/data/hackrf_wifi_validation/2026-10-02/conducted-104606/campaign-complete/ap_repeated-snapshot.json": "c8e70e06260fbcb400018b9cfc8ae25a47eef0f21ecc354839087c0e56d32c86",
+    "/home/sudeep/Documents/newrocktest-cpp/data/hackrf_wifi_validation/2026-10-02/conducted-104606/campaign-complete/retry_negative-events.ndjson": "7a47d2a43b8773df9bb0d37b8202ab21f2428cbee99ff14eca3d023bf8717dbb",
+    "/home/sudeep/Documents/newrocktest-cpp/data/hackrf_wifi_validation/2026-10-02/conducted-104606/campaign-complete/retry_negative-snapshot.json": "720d2be3104a7a671a5db2c79db2e0c98ea4d450dfd7a7f8bd3c9709929a8528",
+    "/home/sudeep/Documents/newrocktest-cpp/data/hackrf_wifi_validation/2026-10-02/conducted-104606/campaign-complete/receiver/events.ndjson": "4adaeb7a9c86c2de0a1ecde15a51888630349d3c2381366fe8bdbc94db842df0",
+    "/home/sudeep/Documents/newrocktest-cpp/data/hackrf_wifi_validation/2026-10-02/conducted-104606/campaign-complete/receiver/snapshot.json": "f92708a16bb4c45e742044e80c1a6687b7011b9dfcc8bc4bcefedb7525f7bb4c"
+  },
+  "inputs_unchanged": true,
+  "hardware_operated": false,
+  "independent_validation": false,
+  "thresholds_calibrated": false,
+  "cases": [
+    {
+      "phase": "baseline",
+      "passed": true,
+      "semantic_difference_keys": [],
+      "added_snapshot_fields": {
+        "transactions": {
+          "cryptographic_validation": false,
+          "enabled": true,
+          "evaluated": 0,
+          "excluded_captures": 0,
+          "history": 8,
+          "history_evictions": 0,
+          "max_frame_bytes": 2048,
+          "max_frames": 256,
+          "max_gap_s": 1.0,
+          "max_links": 128,
+          "max_pending": 32,
+          "max_profiles": 8,
+          "min_delay_s": 0.5,
+          "policy": "historical_answered_transaction_v1",
+          "retention_s": 30.0,
+          "unsupported": 0
+        }
+      },
+      "expected_path": null,
+      "path_advanced": true,
+      "negative_control_passed": true,
+      "clean_coverage": true,
+      "frames_accepted": 289,
+      "incidents": 0,
+      "observations": {},
+      "paths": []
+    },
+    {
+      "phase": "historical_replay",
+      "passed": true,
+      "semantic_difference_keys": [],
+      "added_snapshot_fields": {
+        "transactions": {
+          "cryptographic_validation": false,
+          "enabled": true,
+          "evaluated": 0,
+          "excluded_captures": 0,
+          "history": 8,
+          "history_evictions": 0,
+          "max_frame_bytes": 2048,
+          "max_frames": 256,
+          "max_gap_s": 1.0,
+          "max_links": 128,
+          "max_pending": 32,
+          "max_profiles": 8,
+          "min_delay_s": 0.5,
+          "policy": "historical_answered_transaction_v1",
+          "retention_s": 30.0,
+          "unsupported": 0
+        }
+      },
+      "expected_path": "historical_beacon_after_newer",
+      "path_advanced": true,
+      "negative_control_passed": true,
+      "clean_coverage": true,
+      "frames_accepted": 303,
+      "incidents": 1,
+      "observations": {
+        "1": 5
+      },
+      "paths": [
+        "historical_beacon_after_newer"
+      ]
+    },
+    {
+      "phase": "target_distinct",
+      "passed": true,
+      "semantic_difference_keys": [],
+      "added_snapshot_fields": {
+        "transactions": {
+          "cryptographic_validation": false,
+          "enabled": true,
+          "evaluated": 162,
+          "excluded_captures": 0,
+          "history": 8,
+          "history_evictions": 0,
+          "max_frame_bytes": 2048,
+          "max_frames": 256,
+          "max_gap_s": 1.0,
+          "max_links": 128,
+          "max_pending": 32,
+          "max_profiles": 8,
+          "min_delay_s": 0.5,
+          "policy": "historical_answered_transaction_v1",
+          "retention_s": 30.0,
+          "unsupported": 0
+        }
+      },
+      "expected_path": "distinct_management_frames",
+      "path_advanced": true,
+      "negative_control_passed": true,
+      "clean_coverage": true,
+      "frames_accepted": 465,
+      "incidents": 2,
+      "observations": {
+        "1": 5,
+        "2": 6
+      },
+      "paths": [
+        "distinct_management_frames",
+        "historical_beacon_after_newer"
+      ]
+    },
+    {
+      "phase": "target_repeated",
+      "passed": true,
+      "semantic_difference_keys": [],
+      "added_snapshot_fields": {
+        "transactions": {
+          "cryptographic_validation": false,
+          "enabled": true,
+          "evaluated": 327,
+          "excluded_captures": 0,
+          "history": 8,
+          "history_evictions": 0,
+          "max_frame_bytes": 2048,
+          "max_frames": 256,
+          "max_gap_s": 1.0,
+          "max_links": 128,
+          "max_pending": 32,
+          "max_profiles": 8,
+          "min_delay_s": 0.5,
+          "policy": "historical_answered_transaction_v1",
+          "retention_s": 30.0,
+          "unsupported": 0
+        }
+      },
+      "expected_path": "repeated_management_frames",
+      "path_advanced": true,
+      "negative_control_passed": true,
+      "clean_coverage": true,
+      "frames_accepted": 630,
+      "incidents": 2,
+      "observations": {
+        "1": 5,
+        "2": 11
+      },
+      "paths": [
+        "distinct_management_frames",
+        "historical_beacon_after_newer",
+        "repeated_management_frames"
+      ]
+    },
+    {
+      "phase": "ap_distinct",
+      "passed": true,
+      "semantic_difference_keys": [],
+      "added_snapshot_fields": {
+        "transactions": {
+          "cryptographic_validation": false,
+          "enabled": true,
+          "evaluated": 486,
+          "excluded_captures": 0,
+          "history": 8,
+          "history_evictions": 0,
+          "max_frame_bytes": 2048,
+          "max_frames": 256,
+          "max_gap_s": 1.0,
+          "max_links": 128,
+          "max_pending": 32,
+          "max_profiles": 8,
+          "min_delay_s": 0.5,
+          "policy": "historical_answered_transaction_v1",
+          "retention_s": 30.0,
+          "unsupported": 0
+        }
+      },
+      "expected_path": "ap_wide_distinct_management_frames",
+      "path_advanced": true,
+      "negative_control_passed": true,
+      "clean_coverage": true,
+      "frames_accepted": 789,
+      "incidents": 3,
+      "observations": {
+        "1": 5,
+        "2": 11,
+        "3": 5
+      },
+      "paths": [
+        "ap_wide_distinct_management_frames",
+        "distinct_management_frames",
+        "historical_beacon_after_newer",
+        "repeated_management_frames"
+      ]
+    },
+    {
+      "phase": "ap_repeated",
+      "passed": true,
+      "semantic_difference_keys": [],
+      "added_snapshot_fields": {
+        "transactions": {
+          "cryptographic_validation": false,
+          "enabled": true,
+          "evaluated": 647,
+          "excluded_captures": 0,
+          "history": 8,
+          "history_evictions": 0,
+          "max_frame_bytes": 2048,
+          "max_frames": 256,
+          "max_gap_s": 1.0,
+          "max_links": 128,
+          "max_pending": 32,
+          "max_profiles": 8,
+          "min_delay_s": 0.5,
+          "policy": "historical_answered_transaction_v1",
+          "retention_s": 30.0,
+          "unsupported": 0
+        }
+      },
+      "expected_path": "ap_wide_repeated_management_frames",
+      "path_advanced": true,
+      "negative_control_passed": true,
+      "clean_coverage": true,
+      "frames_accepted": 950,
+      "incidents": 3,
+      "observations": {
+        "1": 5,
+        "2": 11,
+        "3": 10
+      },
+      "paths": [
+        "ap_wide_distinct_management_frames",
+        "ap_wide_repeated_management_frames",
+        "distinct_management_frames",
+        "historical_beacon_after_newer",
+        "repeated_management_frames"
+      ]
+    },
+    {
+      "phase": "retry_negative",
+      "passed": true,
+      "semantic_difference_keys": [],
+      "added_snapshot_fields": {
+        "transactions": {
+          "cryptographic_validation": false,
+          "enabled": true,
+          "evaluated": 811,
+          "excluded_captures": 0,
+          "history": 8,
+          "history_evictions": 0,
+          "max_frame_bytes": 2048,
+          "max_frames": 256,
+          "max_gap_s": 1.0,
+          "max_links": 128,
+          "max_pending": 32,
+          "max_profiles": 8,
+          "min_delay_s": 0.5,
+          "policy": "historical_answered_transaction_v1",
+          "retention_s": 30.0,
+          "unsupported": 0
+        }
+      },
+      "expected_path": null,
+      "path_advanced": true,
+      "negative_control_passed": true,
+      "clean_coverage": true,
+      "frames_accepted": 1114,
+      "incidents": 3,
+      "observations": {
+        "1": 5,
+        "2": 11,
+        "3": 10
+      },
+      "paths": [
+        "ap_wide_distinct_management_frames",
+        "ap_wide_repeated_management_frames",
+        "distinct_management_frames",
+        "historical_beacon_after_newer",
+        "repeated_management_frames"
+      ]
+    },
+    {
+      "phase": "final",
+      "passed": true,
+      "semantic_difference_keys": [],
+      "added_snapshot_fields": {
+        "transactions": {
+          "cryptographic_validation": false,
+          "enabled": true,
+          "evaluated": 811,
+          "excluded_captures": 0,
+          "history": 8,
+          "history_evictions": 0,
+          "max_frame_bytes": 2048,
+          "max_frames": 256,
+          "max_gap_s": 1.0,
+          "max_links": 128,
+          "max_pending": 32,
+          "max_profiles": 8,
+          "min_delay_s": 0.5,
+          "policy": "historical_answered_transaction_v1",
+          "retention_s": 30.0,
+          "unsupported": 0
+        }
+      },
+      "expected_path": null,
+      "path_advanced": true,
+      "negative_control_passed": true,
+      "clean_coverage": true,
+      "frames_accepted": 1114,
+      "incidents": 3,
+      "observations": {
+        "1": 5,
+        "2": 11,
+        "3": 10
+      },
+      "paths": [
+        "ap_wide_distinct_management_frames",
+        "ap_wide_repeated_management_frames",
+        "distinct_management_frames",
+        "historical_beacon_after_newer",
+        "repeated_management_frames"
+      ]
+    }
+  ]
+}

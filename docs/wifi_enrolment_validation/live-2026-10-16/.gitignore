@@ -1,0 +1,7 @@
+# Local ambient Wi-Fi evidence includes addresses and management frames.
+/ch1/
+/ch6/
+/sweep24/
+/sweep5/
+/soak1/
+/policy-copy/

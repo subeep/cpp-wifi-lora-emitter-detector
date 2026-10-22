@@ -41,7 +41,15 @@ int main(){char tmp[]="/tmp/rfmon-scanner-lora-XXXXXX";if(!mkdtemp(tmp))return 1
         auto snapshot=scanner.lora_security_snapshot();
         check(snapshot->captures==1&&snapshot->device_timed==1&&snapshot->eligible>=1&&snapshot->excluded==0,
             "Production LoRa scanner submits decoded evidence and coverage to consumer");
-        check(!scanner.lora_packets().empty()&&!scanner.lora_capture_pending(),"Existing LoRa GUI rows and requested capture save still work");
+        const auto display=scanner.lora_packets();
+        check(!display.empty()&&!scanner.lora_capture_pending(),"Existing LoRa GUI rows and requested capture save still work");
+        bool tagged=false;
+        for(const auto& row:display)if(row.header_valid) {
+            check(row.decoder_data_start.has_value() && row.reception_id.find("/session-1/capture-1/reception-")!=std::string::npos && row.reception_hypotheses>=1,
+                  "Production scanner publishes capture-scoped grouping without replacing hypothesis rows");
+            tagged=true;
+        }
+        check(tagged,"Live grouping fixture must contain a located decoded row");
         for(const auto& directory:fs::directory_iterator(std::string(tmp)+"/captures")) {
             auto saved=load_lora_capture(directory.path().string());
             check(saved.timing&&saved.timing->device_time_ns==5000000000&&saved.capture_seq==snapshot->latest.capture_seq,

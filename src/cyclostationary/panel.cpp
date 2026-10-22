@@ -4,9 +4,64 @@
 #include "imgui.h"
 #include <chrono>
 #include <algorithm>
+#include <cmath>
 
 namespace rfmon::cyclo {
 namespace {
+void draw_signal_overview(const ShadowResult& r, const TileMeasurement& tile,
+                          const ShadowStats& stats, int selected) {
+    const auto& c=r.capture;
+    const float fraction=c.source_samples?std::min(1.0,double(r.copied_samples)/c.source_samples):0;
+    if(ImGui::BeginTable("DSP overview",3,ImGuiTableFlags_SizingStretchSame|ImGuiTableFlags_BordersInnerV)) {
+        ImGui::TableNextColumn();ImGui::TextDisabled("SAMPLED COVERAGE");
+        ImGui::Text("%.2f%% of this capture",100*fraction);
+        ImGui::ProgressBar(fraction,ImVec2(-1,8),"");
+        ImGui::TableNextColumn();ImGui::TextDisabled("SIGNAL QUALITY");
+        ImGui::TextColored(tile.review.observed_quality_passed?ImVec4(.35f,.85f,.65f,1):ImVec4(1,.7f,.3f,1),
+            "%s",tile.review.observed_quality_passed?"Checks passed":"Needs review");
+        ImGui::TableNextColumn();ImGui::TextDisabled("ANALYSIS WORKER");
+        ImGui::Text("%.0f ms | %llu measured",r.processing_ms,(unsigned long long)stats.measured);
+        ImGui::TextDisabled("%llu busy skips",(unsigned long long)stats.dropped_busy);
+        ImGui::EndTable();
+    }
+    ImGui::Spacing();ImGui::TextUnformatted("Where we looked");
+    const ImVec2 origin=ImGui::GetCursorScreenPos();const float width=std::max(1.f,ImGui::GetContentRegionAvail().x);
+    auto* draw=ImGui::GetWindowDrawList();
+    draw->AddRectFilled(origin,ImVec2(origin.x+width,origin.y+24),IM_COL32(34,42,54,255),4);
+    if(c.source_samples)for(std::size_t i=0;i<r.tiles.size();++i){const auto& t=r.tiles[i].source;
+        const float a=std::clamp(float(double(t.source_offset)/c.source_samples),0.f,1.f);
+        const float b=std::clamp(float((double(t.source_offset)+t.samples)/c.source_samples),a,1.f);
+        draw->AddRectFilled(ImVec2(origin.x+a*width,origin.y+3),ImVec2(origin.x+std::min(width,std::max(a*width+2,b*width)),origin.y+21),
+            int(i)==selected?IM_COL32(76,207,189,255):IM_COL32(87,127,171,255),2);
+    }
+    ImGui::Dummy(ImVec2(width,26));ImGui::TextDisabled("Capture start  |  coloured segments = analysed windows  |  capture end");
+    ImGui::Spacing();ImGui::TextUnformatted("Spectrum of selected window");
+    std::vector<float> power;power.reserve(tile.spectral.power_fraction.size());
+    float high=-120;
+    for(double p:tile.spectral.power_fraction){const float db=std::isfinite(p)&&p>0?float(10*std::log10(p)):-120.f;power.push_back(db);high=std::max(high,db);}
+    if(!power.empty()) {
+        ImGui::PlotLines("##window spectrum",power.data(),int(power.size()),0,"Relative bin power (dB)",high-60,high+3,ImVec2(-1,125));
+        if(ImGui::BeginTable("Spectrum axis",3,ImGuiTableFlags_SizingStretchSame)) {
+            ImGui::TableNextColumn();ImGui::TextDisabled("%.3f MHz",(c.capture_center_hz-c.sample_rate_hz/2)/1e6);
+            ImGui::TableNextColumn();ImGui::TextDisabled("Centre %.3f MHz",c.capture_center_hz/1e6);
+            ImGui::TableNextColumn();ImGui::TextDisabled("%.3f MHz",(c.capture_center_hz+c.sample_rate_hz/2)/1e6);
+            ImGui::EndTable();
+        }
+        ImGui::Text("99%% power span: %.3f MHz",(tile.spectral.occupied_high_hz-tile.spectral.occupied_low_hz)/1e6);
+    } else ImGui::TextDisabled("No usable spectrum for this window.");
+    ImGui::TextDisabled("Relative power, not calibrated dBm. Unsampled activity can be missed.");
+    if(ImGui::BeginTable("Pattern overview",3,ImGuiTableFlags_SizingStretchSame|ImGuiTableFlags_BordersInnerV)) {
+        for(const auto* kind:{"cp_timing","barker_11","linear_sweep"}) {
+            const bool sweep=std::string(kind)=="linear_sweep";
+            const auto& review=sweep?tile.sweep_review:tile.review;
+            bool supported=false;for(const auto& p:review.candidates)if(p.kind==kind&&p.pattern_consistent)supported=true;
+            ImGui::TableNextColumn();ImGui::TextUnformatted(sweep?"Sweep structure":std::string(kind)=="cp_timing"?"Repeated symbol timing":"Barker-11 code");
+            ImGui::TextColored(supported?ImVec4(.4f,.8f,1,1):ImVec4(.65f,.68f,.72f,1),"%s",supported?"Pattern supported":"Not established");
+        }
+        ImGui::EndTable();
+    }
+    ImGui::TextDisabled("Pattern support is experimental; it does not identify a drone.");
+}
 WindowProtocolEvidence draw_wifi_protocol(const ShadowResult& r,SampleTile tile) {
     const auto& p=r.wifi_protocol;
     TilePlan plan;plan.count=std::min(r.tiles.size(),tile_limit);
@@ -124,6 +179,7 @@ void draw_shadow_panel(const std::shared_ptr<const ShadowResult>& result,
         ImGui::EndCombo();
     }
     const auto& tile = r.tiles[std::size_t(selected_tile)];
+    draw_signal_overview(r,tile,stats,selected_tile);
     ImGui::Text("Capture %llu | Window %d/%zu | %.3f MHz | Age %.1f s",
         (unsigned long long)c.capture_sequence,selected_tile+1,r.tiles.size(),c.capture_center_hz/1e6,
         std::chrono::duration<double>(std::chrono::steady_clock::now()-r.completed_at).count());
@@ -165,6 +221,8 @@ void draw_shadow_panel(const std::shared_ptr<const ShadowResult>& result,
         ImGui::TextWrapped("A compatible chirp is not unique to OcuSync. Device category, endpoint role and exact drone model remain unknown.");
         ImGui::TreePop();
     }
+    ImGui::Spacing();
+    if(!ImGui::CollapsingHeader("Detailed measurements")) return;
     draw_review(tile.review,tile.sweep_review);
     std::size_t raw_ordinary=0,raw_conjugate=0,checked_ordinary=0,checked_conjugate=0;
     for(std::size_t i=0;i<tile.waveform.peaks.size();++i) {

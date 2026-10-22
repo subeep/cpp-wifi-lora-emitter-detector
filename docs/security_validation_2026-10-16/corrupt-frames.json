@@ -1,0 +1,16 @@
+{
+  "bit_errors": {
+    "frames_ingested": 256,
+    "frames_accepted": 0,
+    "frames_rejected_fcs": 256,
+    "frames_rejected_malformed": 0,
+    "incidents_total": 0
+  },
+  "short_headers": {
+    "frames_ingested": 256,
+    "frames_accepted": 0,
+    "frames_rejected_fcs": 0,
+    "frames_rejected_malformed": 256,
+    "incidents_total": 0
+  }
+}

@@ -76,9 +76,12 @@ Batch make_batch(const LoraCapture& input,size_t received,const std::vector<Lora
     // given a deterministic offline identity by the replay tool.
     c.supported=supported_rate(c.rate_hz);
     c.analysed=c.supported?analysis_span(c.rate_hz,received):0;c.processed=c.analysed>0;
-    std::set<std::tuple<size_t,size_t,int,double,std::vector<uint8_t>,int>> seen;
-    for(const auto& row:rows) {
-        c.analysis_limited=c.analysis_limited||row.analysis_limited;
+    // Keep original hypotheses in the source rows. The security event stream
+    // uses one representative per strictly compatible reception group.
+    const auto grouped=group_lora_receptions(rows,c.rate_hz);
+    for(const auto& row:rows)c.analysis_limited=c.analysis_limited||row.analysis_limited;
+    for(const auto& group:grouped.groups) {
+        const auto& row=rows[group.representative];
         if(!row.header_valid||!row.decoder_sample_start||!row.decoder_sample_end) {++c.unlocated;continue;}
         double f=c.rate_hz/(row.bandwidth_khz*1000);
         if(!std::isfinite(f)||f<1||f>1024||std::abs(f-std::round(f))>1e-6) {++c.unlocated;continue;}
@@ -90,11 +93,8 @@ Batch make_batch(const LoraCapture& input,size_t received,const std::vector<Lora
         e.sf=row.sf;e.bandwidth_hz=row.bandwidth_khz*1000;e.cr=row.cr;e.inverted_iq=row.inverted_iq;
         e.header_valid=row.header_valid;e.payload_complete=row.payload_complete;e.crc=row.crc;e.decoder=row.decoder;
         e.payload=payload_bytes(row.payload_hex);
-        // Only collapse identical hypotheses at exactly the same sample span
-        // and PHY context. Different samples remain actual repeated receptions.
-        auto key=std::make_tuple(e.sample_start,e.sample_end,e.sf,e.bandwidth_hz,e.payload,int(e.crc));
-        if(!seen.insert(key).second) {++c.deduplicated;continue;}
         if(b.events.size()>=kMaxEvents) {c.analysis_limited=true;break;}
+        c.deduplicated+=group.hypotheses.size()-1;
         if(c.timing)e.device_time_ns=capture_sample_time(*c.timing,c.rate_hz,received,e.sample_start);
         if(e.protocol_eligible())if(auto p=inspect_lorawan(e.payload))e.lorawan_candidate=p->type;
         b.events.push_back(std::move(e));
@@ -180,9 +180,9 @@ void State::ingest(const Batch& b) {
     snapshot_.health=!c.processed?"Capture failed or not analysed":!c.supported?"Unsupported sample rate":
         c.laboratory?"Laboratory decoder excluded":!ordered?"Device time regression; security input excluded":!c.usable()?"Incomplete coverage; security input excluded":
         !c.timing||!c.timing->device_time_valid?"Supported-PHY coverage; hardware timing unavailable":"Usable supported-PHY coverage";
-    std::set<std::tuple<size_t,size_t,int,double,std::vector<uint8_t>,int>> seen;
+    std::set<std::tuple<size_t,size_t,int,double,std::optional<int>,std::optional<bool>,bool,std::string,std::vector<uint8_t>,int>> seen;
     for(const auto& e:b.events) {
-        if(!seen.insert({e.sample_start,e.sample_end,e.sf,e.bandwidth_hz,e.payload,int(e.crc)}).second) {++snapshot_.hypotheses_deduplicated;continue;}
+        if(!seen.insert({e.sample_start,e.sample_end,e.sf,e.bandwidth_hz,e.cr,e.inverted_iq,e.payload_complete,e.decoder,e.payload,int(e.crc)}).second) {++snapshot_.hypotheses_deduplicated;continue;}
         ++snapshot_.events;snapshot_.eligible+=e.protocol_eligible()&&usable;
         snapshot_.crc_failed+=e.crc==LoraPacketRow::Crc::Failed;snapshot_.crc_absent+=e.crc==LoraPacketRow::Crc::Absent;snapshot_.partial+=!e.payload_complete;
         snapshot_.recent.push_back(e);if(snapshot_.recent.size()>256)snapshot_.recent.pop_front();

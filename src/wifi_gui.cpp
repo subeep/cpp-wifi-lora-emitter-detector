@@ -5,6 +5,8 @@
 #include <map>
 #include <sstream>
 #include <iomanip>
+#include <nlohmann/json.hpp>
+#include <cstring>
 
 namespace rfmon {
 void draw_wifi_packet_table(const std::vector<WifiPacketRow>& packets, float height) {
@@ -191,9 +193,36 @@ void draw_wifi_packet_table(const std::vector<WifiPacketRow>& packets, float hei
 
 // Persistent identities and provisional clusters. Select a row for provenance,
 // advertised capabilities and the latest accepted RF reading.
-void draw_wifi_master_table(const std::vector<wifi_master::WifiMasterRow>& rows, float height, bool inline_inspector) {
+void draw_wifi_master_table(const std::vector<wifi_master::WifiMasterRow>& rows, float height, bool inline_inspector, const std::function<bool(wifi_master::EnrolmentCommand)>& command, int band) {
     if (rows.empty()) { ImGui::TextDisabled("No Wi-Fi identities or fingerprints recorded yet."); return; }
     static std::string selected;
+    struct MasterView { ImGuiTextFilter search; int filter=0; bool all_bands=false, clusters=false; std::string message, edit_key, pending_key, pending_action; char alias[129]={}, note[1025]={}; };
+    static std::map<ImGuiID,MasterView> views;auto& v=views[ImGui::GetID("enrolment view")];
+    v.search.Draw("Search master list",240);ImGui::SameLine();
+    ImGui::Combo("Review filter",&v.filter,"All\0Needs attention\0Approved\0Unapproved\0Disallowed\0");
+    ImGui::Checkbox("All Wi-Fi bands",&v.all_bands);ImGui::SameLine();ImGui::Checkbox("Include anonymous RF clusters",&v.clusters);
+    ImGui::TextDisabled("Claimed interfaces, not unique physical devices. Red means unreviewed/unapproved, not proven malicious.");
+    size_t fresh=0,unapproved=0,approved=0,changed=0;
+    for(const auto& r:rows)if(r.enrolment){const auto& e=*r.enrolment;
+        fresh+=e.policy=="unreviewed"&&!e.imported;unapproved+=e.policy!="approved";approved+=e.policy=="approved";
+        changed+=e.digital_review||wifi_master::has_rf_review(e);}
+    ImGui::Text("All Wi-Fi: %zu new | %zu unapproved | %zu approved | %zu changes to review",fresh,unapproved,approved,changed);
+    if(!v.message.empty())ImGui::TextWrapped("%s",v.message.c_str());
+    auto submit=[&](const std::string& action,const std::string& key){
+        if(command){v.message=command({key,action,v.alias,v.note})?"Command queued; saved status appears above when committed.":"Command queue full; action was NOT accepted.";}
+    };
+    std::vector<const wifi_master::WifiMasterRow*> visible;
+    auto attention=[](const auto& r){return r.enrolment && (r.enrolment->policy!="approved" || r.enrolment->digital_review || wifi_master::has_rf_review(*r.enrolment));};
+    for(const auto& r:rows){
+        if(!r.key_is_mac&&!v.clusters)continue;
+        if(band&&!v.all_bands){bool match=r.enrolment?(band==24?r.enrolment->seen_24>0:r.enrolment->seen_5>0):(band==24?r.last_channel_hz>=2400e6&&r.last_channel_hz<2500e6:r.last_channel_hz>=5000e6&&r.last_channel_hz<6000e6);if(!match)continue;}
+        const std::string policy=r.enrolment?r.enrolment->policy:"unreviewed";
+        if((v.filter==1&&!attention(r))||(v.filter==2&&policy!="approved")||(v.filter==3&&policy=="approved")||(v.filter==4&&policy!="disallowed"))continue;
+        std::string haystack=r.device_key+" "+r.vendor+" "+(r.identity?wifi::display_text(r.identity->ssid):"")+" "+(r.enrolment?r.enrolment->alias:"");
+        if(v.search.PassFilter(haystack.c_str()))visible.push_back(&r);
+    }
+    std::stable_sort(visible.begin(),visible.end(),[&](auto a,auto b){return attention(*a)>attention(*b);});
+    height=std::max(160.f,height-115.f);
     const auto flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable |
                        ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX;
     bool open_details = false;
@@ -208,24 +237,29 @@ void draw_wifi_master_table(const std::vector<wifi_master::WifiMasterRow>& rows,
     };
     const bool wide_inspector=inline_inspector && !selected.empty() && ImGui::GetContentRegionAvail().x>=1100;
     if(wide_inspector)ImGui::BeginChild("Identity list",ImVec2(ImGui::GetContentRegionAvail().x-450,height),ImGuiChildFlags_None,ImGuiWindowFlags_HorizontalScrollbar);
-    if (ImGui::BeginTable("wifi_master_identity_v2", 13, flags, ImVec2(0, wide_inspector?std::max(120.f,height-20):inline_inspector && !selected.empty()?std::min(height,260.f):height))) {
+    if (ImGui::BeginTable("wifi_master_identity_v2", 14, flags, ImVec2(0, wide_inspector?std::max(120.f,height-20):inline_inspector && !selected.empty()?std::min(height,260.f):height))) {
         ImGui::TableSetupScrollFreeze(2, 1);
-        const char* columns[] = {"Identity (click)", "Network / SSID", "Vendor assignment", "Advertised security",
+        const char* columns[] = {"Identity (click)", "Review status", "Network / SSID", "Vendor assignment", "Advertised security",
             "AP channel", "WPS model", "PHY capabilities", "First seen", "Last seen", "Identity observations",
             "RF readings retained", "Monitored MHz", "Identity source"};
-        const float widths[] = {155,180,190,245,85,150,180,155,155,140,135,110,140};
-        for (int i=0; i<13; ++i) ImGui::TableSetupColumn(columns[i], ImGuiTableColumnFlags_WidthFixed | ((i>=5)?ImGuiTableColumnFlags_DefaultHide:0), widths[i]);
+        const float widths[] = {155,160,180,190,245,85,150,180,155,155,140,135,110,140};
+        for (int i=0; i<14; ++i) ImGui::TableSetupColumn(columns[i], ImGuiTableColumnFlags_WidthFixed | ((i>=5)?ImGuiTableColumnFlags_DefaultHide:0), widths[i]);
         ImGui::TableHeadersRow();
-        for (const auto& row : rows) {
-            ImGui::TableNextRow(); ImGui::TableNextColumn();
-            // Green for a decoded network identity (MAC-keyed - see
-            // key_is_mac), white for a provisional RF-fingerprint
-            // cluster with no decoded SSID/name yet.
-            ImGui::PushStyleColor(ImGuiCol_Text, row.key_is_mac ? ImVec4(0.25f,0.73f,0.31f,1) : ImVec4(0.92f,0.92f,0.94f,1));
+        ImGuiListClipper clipper;clipper.Begin(int(visible.size()));
+        while(clipper.Step())for(int ri=clipper.DisplayStart;ri<clipper.DisplayEnd;++ri){const auto& row=*visible[ri];
+            ImGui::TableNextRow(0,ImGui::GetTextLineHeightWithSpacing()*3); ImGui::TableNextColumn();
+            // Red is an unreviewed/unapproved identity, never a claim of malice.
+            ImGui::PushStyleColor(ImGuiCol_Text, row.key_is_mac && (!row.enrolment || row.enrolment->policy!="approved") ? ImVec4(1.f,.35f,.35f,1) : ImVec4(.85f,.90f,.94f,1));
             if (ImGui::Selectable(row.device_key.c_str(), selected == row.device_key)) {
                 selected = row.device_key; open_details = true;
             }
             ImGui::PopStyleColor();
+            ImGui::TableNextColumn();
+            if(row.enrolment){const auto& e=*row.enrolment;
+                ImGui::TextUnformatted(wifi_master::enrolment_label(e));
+                if(e.digital_review)ImGui::TextColored(ImVec4(1,.65f,.2f,1),"DIGITAL CHANGE");
+                if(wifi_master::has_rf_review(e))ImGui::TextColored(ImVec4(1,.65f,.2f,1),"RF REVIEW (experimental)");
+            }else ImGui::TextDisabled("%s",row.key_is_mac?"REVIEW REQUIRED":"RF CANDIDATE");
             ImGui::TableNextColumn();
             if (row.identity) text(row.identity->ssid, row.identity->ssid_present ? "Hidden SSID" : "SSID not advertised");
             else ImGui::TextDisabled("Not decoded");
@@ -257,6 +291,69 @@ void draw_wifi_master_table(const std::vector<wifi_master::WifiMasterRow>& rows,
             ImGui::PushTextWrapPos(0);
             ImGui::Text("%s", row.device_key.c_str());
             ImGui::TextDisabled("%s", row.key_is_mac ? "Decoded network identity; multiple BSSIDs can share one radio." : "Provisional RF cluster; not a verified physical device.");
+            if(row.enrolment){const auto& e=*row.enrolment;
+                ImGui::TextWrapped("%s | %s",wifi_master::enrolment_label(e),e.role.c_str());
+                if(!e.alias.empty())ImGui::TextWrapped("Alias: %s",e.alias.c_str());
+                ImGui::TextWrapped("Latest source: %s",e.last_source.c_str());
+                ImGui::Text("Since enrolment: %llu observations | Accepted RF: %llu | Rejected RF: %llu",(unsigned long long)e.observations,(unsigned long long)e.accepted,(unsigned long long)e.rejected);
+                ImGui::TextDisabled("Presence is last observation only; scan gaps are not evidence of absence.");
+                if(e.seen_24)ImGui::Text("2.4 GHz last observed: %s",date(e.seen_24).c_str());
+                if(e.seen_5)ImGui::Text("5 GHz last observed: %s",date(e.seen_5).c_str());
+                if(command){
+                    if(v.edit_key!=row.device_key){v.edit_key=row.device_key;std::snprintf(v.alias,sizeof(v.alias),"%s",e.alias.c_str());std::snprintf(v.note,sizeof(v.note),"%s",e.note.c_str());}
+                    if(ImGui::Button("Acknowledge"))submit("acknowledge",row.device_key);
+                    ImGui::SameLine();if(ImGui::Button("Approve / enrol...")){v.pending_key=row.device_key;v.pending_action="approve";ImGui::OpenPopup("Confirm enrolment action");}
+                    if(ImGui::Button("Mark disallowed...")){v.pending_key=row.device_key;v.pending_action="disallow";ImGui::OpenPopup("Confirm enrolment action");}
+                    ImGui::SameLine();if(ImGui::Button("Revoke approval"))submit("unapprove",row.device_key);
+                    ImGui::InputText("Alias",v.alias,sizeof(v.alias));ImGui::InputTextMultiline("Note",v.note,sizeof(v.note),ImVec2(0,55));
+                    if(ImGui::Button("Save label / note"))submit("note",row.device_key);
+                    if(e.digital_review&&ImGui::Button("Acknowledge digital changes"))submit("review_digital",row.device_key);
+                    if(wifi_master::has_rf_review(e)&&ImGui::Button("Acknowledge RF warnings"))submit("review_rf",row.device_key);
+                    if(ImGui::Button("Accept / replace RF reference...")){v.pending_key=row.device_key;v.pending_action="reference";ImGui::OpenPopup("Confirm enrolment action");}
+                    if(ImGui::BeginPopupModal("Confirm enrolment action",nullptr,ImGuiWindowFlags_AlwaysAutoResize)){
+                        ImGui::TextWrapped("Action: %s for %s",v.pending_action.c_str(),v.pending_key.c_str());
+                        ImGui::TextWrapped("Approval is your local policy, not authenticated hardware identity. RF references preserve prior versions. Automatic adaptation remains disabled.");
+                        if(ImGui::Button("Confirm")){submit(v.pending_action,v.pending_key);ImGui::CloseCurrentPopup();}ImGui::SameLine();if(ImGui::Button("Cancel"))ImGui::CloseCurrentPopup();ImGui::EndPopup();
+                    }
+                }
+                if(ImGui::CollapsingHeader("RF profile and reference history",ImGuiTreeNodeFlags_DefaultOpen)){
+                    ImGui::TextWrapped("Automatic trusted adaptation: OFF. Window summaries update; accepted references never change without an explicit action. Comparisons are experimental.");
+                    if(!e.last_rejection.empty())ImGui::TextWrapped("Last exclusion: %s",e.last_rejection.c_str());
+                    if(e.profiles.empty())ImGui::TextDisabled("No comparable RF profile. Digital identity still retained.");
+                    for(size_t pi=0;pi<e.profiles.size();++pi){const auto& p=e.profiles[pi];ImGui::PushID(int(pi));
+                        if(ImGui::TreeNode("Context","%s: %zu captures | %s",p.phy.c_str(),p.captures,p.review?"REVIEW":p.has_reference?"Reference available":"Collecting / no reference")){
+                            ImGui::TextWrapped("%s",p.context.c_str());ImGui::Text("%s to %s",date(p.first_ts).c_str(),date(p.last_ts).c_str());
+                            const char* names[]={"CFO (ppm)","Image/signal (dB)","IQ amplitude error","IQ phase (degrees)","DC (dBc)","DC phase (degrees)"};
+                            for(int m=0;m<6;++m){if(!(p.valid&(1u<<m))){ImGui::TextDisabled("%s: unavailable",names[m]);continue;}
+                                ImGui::Text("%s: %.4g | MAD %.4g",names[m],p.centre[m],p.spread[m]);if(p.has_reference)ImGui::Text("  Reference %.4g | deviation %+.4g",p.reference[m],p.deviation[m]);}
+                            if(!p.cfo_history.empty())ImGui::PlotLines("CFO capture summaries",p.cfo_history.data(),int(p.cfo_history.size()),0,"Capture order; gaps not shown as elapsed time",FLT_MAX,FLT_MAX,ImVec2(0,70));
+                            ImGui::TextWrapped("Source: %s",p.source.c_str());ImGui::TreePop();}
+                        ImGui::PopID();
+                    }
+                    if(!e.archived_profiles.empty()&&ImGui::TreeNode("Archived receiver contexts")){
+                        ImGui::TextDisabled("Latest 64 retired context summaries; accepted references remain preserved separately.");
+                        for(const auto& p:e.archived_profiles){ImGui::Separator();ImGui::TextWrapped("%s",p.context.c_str());
+                            ImGui::Text("%zu captures | CFO %.4g ppm | MAD %.4g | %s",p.captures,p.centre[0],p.spread[0],p.review?"REVIEW":"Historical");}
+                        ImGui::TreePop();
+                    }
+                    ImGui::Text("Accepted reference versions: %llu (maximum 8)",(unsigned long long)e.reference_version);
+                }
+                if(ImGui::CollapsingHeader("Discovery, change and operator history")){
+                    ImGui::Text("Latest %zu of %llu events retained",e.history.size(),(unsigned long long)e.history_total);
+                    for(auto it=e.history.rbegin();it!=e.history.rend();++it){ImGui::Separator();ImGui::TextWrapped("%s | %s",date(it->ts).c_str(),it->kind.c_str());ImGui::TextWrapped("%s",it->detail.c_str());ImGui::TextDisabled("%s",it->source.c_str());}
+                }
+                if(ImGui::CollapsingHeader("Related security incidents")){
+                    ImGui::TextWrapped("Association by claimed address in the published incident tail only; not authenticated attribution or complete history. Use Security workspace for evidence.");
+                    if(row.related_incidents.empty())ImGui::TextDisabled("No address association in current incident snapshot.");
+                    for(const auto& incident:row.related_incidents)ImGui::BulletText("%s",incident.c_str());
+                }
+                if(ImGui::Button("Copy enrolment evidence JSON")){
+                    nlohmann::json j={{"source","Wi-Fi enrolment; claimed identity"},{"key",row.device_key},{"policy",e.policy},{"alias",e.alias},{"note",e.note},{"last_source",e.last_source},{"first_seen",row.first_seen_ts},{"last_seen",row.last_seen_ts},{"observations",e.observations},{"reference_version",e.reference_version},{"history_total",e.history_total}};
+                    j["history"]=nlohmann::json::array();for(const auto& h:e.history)j["history"].push_back({{"id",h.id},{"ts",h.ts},{"kind",h.kind},{"detail",h.detail},{"source",h.source}});
+                    j["profiles"]=nlohmann::json::array();for(const auto& p:e.profiles)j["profiles"].push_back({{"context",p.context},{"valid_mask",p.valid},{"centre",p.centre},{"mad",p.spread},{"has_reference",p.has_reference},{"reference",p.reference},{"review",p.review},{"source",p.source}});
+                    ImGui::SetClipboardText(j.dump(2).c_str());
+                }
+            }
             ImGui::Separator();
             ImGui::Text("Vendor assignment: %s", row.vendor.empty() ? "Unknown" : wifi::display_text(row.vendor).c_str());
             ImGui::TextWrapped("Lookup source: %s", row.vendor_source.empty() ? "No decoded MAC" : row.vendor_source.c_str());

@@ -37,7 +37,9 @@ struct CaptureTiming {
     double actual_rf_hz = 0.0;    // tune result: RF LO actually set
     double actual_dsp_hz = 0.0;   // tune result: residual DSP shift
     bool retuned = true;          // false: already on this frequency, tune and settle skipped
-    std::optional<double> gain_db;  // gain last requested through this object (nullopt: AGC)
+    // Configured gain read back after a fixed-gain change (nullopt: AGC).
+    // Older recordings used requested gain; they cannot be retroactively calibrated.
+    std::optional<double> gain_db;
 };
 
 

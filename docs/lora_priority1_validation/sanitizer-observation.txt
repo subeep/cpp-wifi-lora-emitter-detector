@@ -1,0 +1,1 @@
+PASS: integrity states, corrupt/truncated/CRC-absent waveforms, decoder provenance, capture/replay and malformed files

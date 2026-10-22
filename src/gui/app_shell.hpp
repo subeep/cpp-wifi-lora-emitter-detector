@@ -4,7 +4,7 @@
 #include <string>
 
 namespace rfmon::gui {
-enum class Page { Overview, Wifi24, Wifi5, Lora, Drones, Security, Captures, Settings };
+enum class Page { Overview, Wifi24, Wifi5, Lora, Drones, Security, Captures, Settings, ModelInference, Count };
 struct State {
     Page page = Page::Overview;
     bool setup_open = false;

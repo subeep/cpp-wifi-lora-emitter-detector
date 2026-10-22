@@ -1,0 +1,10 @@
+{
+  "src/scanner.cpp": "ea8508a0dd2903a0e6e08ac572a22efca64de4eae9c12e3ea727cbed40510bac",
+  "src/sdr_capture.cpp": "f6e7c6f5ab432950a4461bef78c4c7359bbf7b4e75ddc8f93a463046b9985a74",
+  "src/capture_timing.hpp": "d914eed35edd0328fa584710930557c73af88239671a0c38ae1d309ce532c13b",
+  "src/cyclostationary/panel.cpp": "334cd8a3ecbc3c60a2205a22e9caa3b5c3de37b02d54f255e26002dca72dc51b",
+  "tests/test_cyclo_panel.cpp": "ddc1e3367d26b12533742ad8fc5509911584061a2adc2d99cebe9da3125a9515",
+  "tools/band_smoke_test.cpp": "87ddef2caadc41a711cb9ad337b408afaf4da16b8f233c47edbdcfcd77006211",
+  "CMakeLists.txt": "e7b584c9819927aa437dde5887d6535dd64ec022106828e4deba8d445a022706",
+  "build-wifi-enrolment/rf_monitor_gui": "652e2349af360f10253d0ef9ea4fdaa42e2932a3c098c2839d165ecf3025f5d4"
+}

@@ -20,6 +20,17 @@ int main(){char tmp[]="/tmp/rfmon-lora-security-XXXXXX";if(!mkdtemp(tmp))return 
         "Decimated sample mapping preserves coarse packet-start uncertainty");
     auto again=r;again.decoder_sample_start=3000;again.decoder_sample_end=4800;
     b=make_batch(c,100000,{r,again});check(b.events.size()==2,"Same bytes received at different samples remain separate transmissions");
+    auto anchored=r;anchored.decoder_data_start=1200;anchored.payload_len=3;
+    auto duplicate=anchored;duplicate.decoder_sample_start=204;duplicate.decoder_sample_end=2004;duplicate.decoder_data_start=1224;
+    auto grouped=make_batch(c,100000,{anchored,duplicate});
+    check(grouped.events.size()==1&&grouped.capture.hypotheses==2&&grouped.capture.deduplicated==1,
+          "Aligned hypotheses group without inflating eligible event counts");
+    State grouped_live,grouped_replay;grouped_live.ingest(grouped);grouped_replay.ingest(from_json(to_json(grouped)));
+    check(snapshot_json(grouped_live.snapshot())==snapshot_json(grouped_replay.snapshot())&&grouped_live.snapshot().eligible==1,
+          "Grouped event stream round-trips without schema or eligibility changes");
+    auto conflict=anchored;conflict.cr=2;auto alternatives=make_batch(c,100000,{anchored,conflict});State conflicting;
+    conflicting.ingest(alternatives);
+    check(alternatives.events.size()==2&&conflicting.snapshot().events==2,"Competing coding-rate interpretations retained in consumer");
     State direct,offline;direct.ingest(b);offline.ingest(from_json(nlohmann::json::parse(to_json(b).dump())));
     check(snapshot_json(direct.snapshot())==snapshot_json(offline.snapshot()),"Serialized replay equals live-state ingestion");
     direct.ingest(b);check(direct.snapshot().captures==1&&direct.snapshot().duplicates==1,"Repeated capture ingestion cannot inflate exposure");

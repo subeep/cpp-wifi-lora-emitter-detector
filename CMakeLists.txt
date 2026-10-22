@@ -601,6 +601,11 @@ target_include_directories(test_serial_lane PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_serial_lane PRIVATE Threads::Threads)
 add_test(NAME serial_lane COMMAND test_serial_lane)
 
+# Bounded Wi-Fi enrolment consumer; the GUI glob already includes it.
+foreach(target band_smoke_test wifi_scan_smoke)
+  target_sources(${target} PRIVATE src/wifi_enrolment.cpp)
+endforeach()
+
 get_target_property(SCANNER_TEST_SOURCES band_smoke_test SOURCES)
 list(REMOVE_ITEM SCANNER_TEST_SOURCES tools/band_smoke_test.cpp)
 add_executable(test_scanner_wifi_lane tests/test_scanner_wifi_lane.cpp ${SCANNER_TEST_SOURCES})
@@ -692,12 +697,23 @@ endif()
 # UI-only navigation qualification; no Scanner, SDR, worker or persisted store.
 if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
   add_executable(test_gui_shell tests/test_gui_shell.cpp src/gui/app_shell.cpp
+    src/ml_inference.cpp src/ml_panel.cpp
     ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
   target_include_directories(test_gui_shell PRIVATE ${CMAKE_SOURCE_DIR}/src ${IMGUI_DIR} ${WIFI_EGL_INCLUDE_DIR})
   target_link_libraries(test_gui_shell PRIVATE OpenGL::GL ${WIFI_EGL_LIBRARY} dl)
+  target_link_libraries(test_gui_shell PRIVATE Threads::Threads)
+  target_compile_definitions(test_gui_shell PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
   add_test(NAME gui_shell COMMAND test_gui_shell)
 endif()
+
+add_executable(test_ml_inference tests/test_ml_inference.cpp src/ml_inference.cpp)
+target_include_directories(test_ml_inference PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_ml_inference PRIVATE Threads::Threads)
+add_test(NAME ml_inference COMMAND test_ml_inference "${CMAKE_SOURCE_DIR}/tests/fixtures/ml_worker.py")
+add_executable(ml_inference_probe tools/ml_inference_probe.cpp src/ml_inference.cpp)
+target_include_directories(ml_inference_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(ml_inference_probe PRIVATE Threads::Threads)
 
 if(TARGET test_wifi_gui)
   add_test(NAME wifi_gui COMMAND test_wifi_gui)
@@ -707,3 +723,25 @@ if(TARGET test_lora_gui)
   add_test(NAME lora_gui COMMAND test_lora_gui)
   set_tests_properties(lora_gui PROPERTIES ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1")
 endif()
+
+# Persistent Wi-Fi enrolment: isolated stores and independently framed traffic.
+add_executable(test_wifi_enrolment tests/test_wifi_enrolment.cpp src/wifi_enrolment.cpp
+    src/wifi_master.cpp src/wifi_vendor.cpp src/wifi_frame.cpp
+    src/security/wifi_mac_frame.cpp src/security/wifi_frame_event.cpp)
+target_include_directories(test_wifi_enrolment PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+target_link_libraries(test_wifi_enrolment PRIVATE Threads::Threads)
+add_test(NAME wifi_enrolment COMMAND test_wifi_enrolment)
+
+# Keep the original radio-free DSP/decoder checks in the regular regression
+# suite as well; previously these executables were built but never run by CTest.
+foreach(check dsp lora_phy lora_phy_std wifi_phy wifi_frame wifi_dsss_rx wifi_stress
+              fingerprint wifi_fingerprint wifi_master registry lora_master wifi_identity bench_tx)
+  add_test(NAME ${check} COMMAND test_${check})
+endforeach()
+add_test(NAME wifi_ofdm COMMAND test_wifi_ofdm ${CMAKE_SOURCE_DIR}/tests/fixtures/wifi_ofdm)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME lora_payload_replay COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/tools/validation/validate_lora_payloads.py
+    --fixtures ${CMAKE_SOURCE_DIR}/tests/fixtures/lora_sx1262 --tool $<TARGET_FILE:lora_replay>)
+endif()
+set_tests_properties(wifi_enrolment PROPERTIES TIMEOUT 90)

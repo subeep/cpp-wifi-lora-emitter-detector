@@ -1,0 +1,7 @@
+{
+  "tools/wifi_scan_smoke.cpp": "2924c7152510c0d6c88ef341594961ce857e34c6a784a8ec41c3224df955b9da",
+  "src/wifi_enrolment.cpp": "fc5e842b0a2044f3476cf47acbec6c1443c5e7424ca56adf7e2dabb852e549ca",
+  "src/wifi_master.cpp": "838a79f64940eebd856e599b19448dfcca6512d4ebeff7134edfe240aa1fe2bc",
+  "src/scanner.cpp": "27c9949704e2156c7b23304f010713399a975cdb2640c2d60dc9057f04a1a5a0",
+  "build-wifi-enrolment/wifi_scan_smoke": "c1e20df28b757f32b1d9b75d10eb1f67437908e23b017e3be98f71366ddb24b0"
+}

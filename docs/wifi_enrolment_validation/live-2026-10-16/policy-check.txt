@@ -1,0 +1,16 @@
+PASS live discovery starts unreviewed
+PASS command queued
+PASS unapproved live identity cannot acquire reference
+PASS command queued
+PASS acknowledgement does not approve
+PASS command queued
+PASS command queued
+PASS eligible live RF profile accepts explicit test reference
+PASS command queued
+PASS command queued
+PASS disallow policy saved
+PASS second writer blocked
+PASS primary store healthy
+PASS policy survives reopen
+PASS reference survives reopen
+PASS alias survives reopen

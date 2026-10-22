@@ -23,6 +23,7 @@
 #endif
 #include "config.hpp"
 #include "gui/app_shell.hpp"
+#include "ml_panel.hpp"
 #include "fingerprint.hpp"
 #include "lora_master.hpp"
 #include "lora_gui.hpp"
@@ -354,12 +355,13 @@ int main() {
     // clicks Connect in the UI (see the device selector below) rather
     // than the app silently connecting to whatever the default happens
     // to be the instant the window appears.
+    ml::Inference model_inference; // Outlives scanner; disabled until explicitly started.
 #ifdef RFMON_ENABLE_DJI_DRONEID
     drone::Addon drones; // Outlives scanner and its processing lane.
-    Scanner scanner([&](const auto& iq, const auto& record) { drones.observe(iq, record); },
+    Scanner scanner([&](const auto& iq, const auto& record) { drones.observe(iq, record); model_inference.observe(iq, record); },
                     [&](const auto& frame) { drones.remote_id.submit(frame); });
 #else
-    Scanner scanner;
+    Scanner scanner([&](const auto& iq, const auto& record) { model_inference.observe(iq, record); });
 #endif
     bool scanner_started = false;
     // Wi-Fi security monitor recording (opt-in). Applied on the next
@@ -392,6 +394,10 @@ int main() {
 
         ScannerStatus status = scanner.status();
         std::string active_band = scanner.active_band();
+        static std::string previous_model_source;
+        const auto model_source=active_band+"/"+status.active_step_label+"/"+std::to_string(status.connected)+
+            "/"+std::to_string(status.wifi_fixed_channel.value_or(-1));
+        if(model_source!=previous_model_source){model_inference.invalidate();previous_model_source=model_source;}
         DeviceProfile profile = device_profile(selected_device);
         const bool drones_available =
 #ifdef RFMON_ENABLE_DJI_DRONEID
@@ -418,12 +424,17 @@ int main() {
                 rf_rows[band]=scanner.snapshot(band);source_counts[band]=scanner.wifi_source_counts(band);
             }
             wifi_rows=scanner.wifi_packets();wifi_identities=scanner.wifi_master_snapshot();
+            const auto incident_snapshot=scanner.wifi_security_snapshot();
+            for(auto& r:wifi_identities)for(const auto& incident:incident_snapshot->incidents)
+                if(r.key_is_mac && (incident.claimed_source==r.device_key || incident.claimed_bssid==r.device_key || incident.target==r.device_key))
+                    r.related_incidents.push_back("#"+std::to_string(incident.id)+" "+incident.rule+(incident.open?" (open)":" (closed)"));
             lora_rows=scanner.lora_packets();lora_identities=scanner.lora_master_snapshot();
             last_snapshot=ImGui::GetTime();
         }
         const auto security=scanner.wifi_security_snapshot();
         const auto security_queue=scanner.wifi_security_queue_stats();
         const auto run=scanner.wifi_security_run_id();
+        const auto new_wifi_count=std::count_if(wifi_identities.begin(),wifi_identities.end(),[](const auto& r){return r.enrolment && r.enrolment->policy=="unreviewed"&&!r.enrolment->imported;});
         auto draw_setup = [&] {
             ImGui::SeparatorText("Monitoring setup — explicit controls");
             gui::note("Choose the receiver and acquisition settings here. Display navigation does not apply settings.");
@@ -663,10 +674,14 @@ int main() {
                     gui::note("Search retained rows only. Maximum 1,000 rows across the packet tail; not exhaustive RF coverage.");
                     draw_wifi_packet_table(viewed,std::max(180.f,ImGui::GetContentRegionAvail().y-110));ImGui::EndTabItem();
                 }
-                if(ImGui::BeginTabItem("Identities & RF clusters")){
+                if(ImGui::BeginTabItem("Master list & enrolment")){
                     gui::note("Persistent identities across bands. BSSIDs are claimed interfaces; clusters are provisional. No physical-device count.");
                     auto error=scanner.wifi_storage_error();if(!error.empty())gui::note(error.c_str(),true);
-                    draw_wifi_master_table(wifi_identities,std::max(180.f,ImGui::GetContentRegionAvail().y-100),true);ImGui::EndTabItem();
+                    auto eh=scanner.wifi_enrolment_health();
+                    if(eh.dropped_batches)gui::note(("INVENTORY INCOMPLETE: "+std::to_string(eh.dropped_batches)+" enrolment batches dropped").c_str(),true);
+                    ImGui::Text("Enrolment queue: %zu | %s",eh.queued,eh.command_result.c_str());
+                    draw_wifi_master_table(wifi_identities,std::max(180.f,ImGui::GetContentRegionAvail().y-100),true,
+                        [&](wifi_master::EnrolmentCommand c){return scanner.wifi_enrolment_command(std::move(c));},band==BAND_WIFI_2G4?24:5);ImGui::EndTabItem();
                 }
                 if(ImGui::BeginTabItem("Experimental link analysis")){draw_cyclo(band);ImGui::EndTabItem();}
                 if(ImGui::BeginTabItem("Coverage & limits")){gui::draw_capabilities(drones_available,cyclo_available);ImGui::EndTabItem();}
@@ -730,6 +745,13 @@ int main() {
         if(!security->storage_error.empty())context.error+=" Recording: "+security->storage_error;
         if(!security->persist_error.empty())context.error+=" Persistence: "+security->persist_error;
         auto draw_overview = [&] {
+            if(new_wifi_count){ImGui::TextColored(ImVec4(1,.35f,.35f,1),"NEW WI-FI DEVICES: %zu awaiting review",size_t(new_wifi_count));
+                if(ImGui::Button("Review Wi-Fi master list")){
+                    const auto first=std::find_if(wifi_identities.begin(),wifi_identities.end(),[](const auto& r){return r.enrolment&&r.enrolment->policy=="unreviewed"&&!r.enrolment->imported;});
+                    ui.page=first!=wifi_identities.end()&&first->enrolment->seen_24==0?gui::Page::Wifi5:gui::Page::Wifi24;
+                }}
+            const auto enrollment_health=scanner.wifi_enrolment_health();
+            if(enrollment_health.dropped_batches)gui::note("Wi-Fi inventory input was dropped; coverage is incomplete.",true);
             gui::Overview data;
             data.captures=security->captures_ingested;data.groups=rf_rows[active_band].size();
             data.queue_depth=security_queue.depth;data.queue_peak=security_queue.high_water;
@@ -750,6 +772,7 @@ int main() {
                     if(ImGui::BeginTabItem("Monitoring")){if(active_band==BAND_SUB_GHZ)draw_lora();else draw_wifi(active_band);ImGui::EndTabItem();}
                     if(ImGui::BeginTabItem("Security")){draw_security();ImGui::EndTabItem();}
                     if(ImGui::BeginTabItem("Captures")){draw_captures();ImGui::EndTabItem();}
+                    if(ImGui::BeginTabItem("Model Inference")){ml::draw_panel(model_inference,status.connected,active_band);ImGui::EndTabItem();}
 #ifdef RFMON_ENABLE_DJI_DRONEID
                     if(ImGui::BeginTabItem("Drones")){drone::draw_panel(drones,gui::band_label(active_band),status.connected);ImGui::EndTabItem();}
 #endif
@@ -764,6 +787,8 @@ int main() {
             case gui::Page::Lora:draw_lora();break;
             case gui::Page::Security:draw_security();break;
             case gui::Page::Captures:draw_captures();break;
+            case gui::Page::ModelInference:ml::draw_panel(model_inference,status.connected,active_band);break;
+            case gui::Page::Count:break;
             case gui::Page::Drones:
 #ifdef RFMON_ENABLE_DJI_DRONEID
                 drone::draw_panel(drones,gui::band_label(active_band),status.connected,ui.drones_offline?"Offline IQ review":nullptr);ui.drones_offline=false;

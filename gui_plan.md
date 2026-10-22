@@ -6,6 +6,20 @@ Status: UI implementation delivered in `build-gui-revamp`; verification and limi
 
 Target: the existing C++17, Dear ImGui, GLFW and OpenGL application
 
+Planned add-on, 20 October 2026: a separate **Model Inference** tab is specified in
+[Drone model and inference plan](docs/DRONE_MODEL_AND_INFERENCE_PLAN.md).
+The user requested planning this addition, with model/data improvement first, then an
+optional inference worker consuming existing acquisition data. The tab will provide
+Start/Stop Inference, results, correctly labelled probabilities/scores, and capture/model/
+runtime details. It must preserve every existing function. This is a separate future
+integration scope, not permission to add backend work to the presentation-only revamp
+below. No model training or tab implementation is started by this plan update.
+
+Implementation update, 21 October 2026: after subsequent user authorization, the separate
+Model Inference addition was implemented and tested in `build-ml-inference`. It remains
+experimental; expanded training and live qualification are incomplete. See
+[the inference implementation report](docs/DRONE_ML_LIVE_INTEGRATION.md).
+
 ## 0. Implementation handoff — read before changing code
 
 ### Task and authority

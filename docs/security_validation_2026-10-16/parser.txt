@@ -1,0 +1,164 @@
+PASS [fixture_loaded]: 40 vectors
+PASS [fcs_ack]: valid
+PASS [fcs_action_csa_group_mme]: valid
+PASS [fcs_action_public_ext_csa]: valid
+PASS [fcs_assoc_req_rsn_mfpc]: valid
+PASS [fcs_assoc_resp_aid1]: valid
+PASS [fcs_auth_open_seq1]: valid
+PASS [fcs_auth_sae_anticlogging]: valid
+PASS [fcs_auth_sae_commit_group19]: valid
+PASS [fcs_beacon_csa_quiet_load_mme]: valid
+PASS [fcs_beacon_elem_overrun]: valid
+PASS [fcs_block_ack_req]: valid
+PASS [fcs_cf_end]: valid
+PASS [fcs_cts]: valid
+PASS [fcs_data_ccmp_ieee_vector_header]: valid
+PASS [fcs_data_tkip]: valid
+PASS [fcs_data_tods_eapol_m2]: valid
+PASS [fcs_data_tods_eapol_m4]: valid
+PASS [fcs_data_wds_4addr]: valid
+PASS [fcs_data_wep_key1]: valid
+PASS [fcs_deauth_bad_fcs]: invalid
+PASS [fcs_deauth_broadcast_bip_mme]: valid
+PASS [fcs_deauth_broadcast_reason7]: valid
+PASS [fcs_deauth_protected_ccmp]: valid
+PASS [fcs_deauth_truncated_reason]: valid
+PASS [fcs_deauth_unicast_retry_reason3]: valid
+PASS [fcs_disassoc_reason8]: valid
+PASS [fcs_header_truncated_addr2]: valid
+PASS [fcs_null_tods_pwrmgt]: valid
+PASS [fcs_probe_req_wildcard]: valid
+PASS [fcs_protocol_version_1]: valid
+PASS [fcs_ps_poll_aid1]: valid
+PASS [fcs_qos_data_amsdu_arp]: valid
+PASS [fcs_qos_data_fromds_eapol_m1]: valid
+PASS [fcs_qos_data_fromds_eapol_m3]: valid
+PASS [fcs_qos_data_htc_ipv4]: valid
+PASS [fcs_reassoc_req]: valid
+PASS [fcs_rts]: valid
+PASS [fcs_rts_bw_signalling_ta]: valid
+PASS [fcs_sa_query_request]: valid
+PASS [fcs_too_short_3]: too short
+PASS [fcs_too_short_state]
+PASS [bad_fcs_still_parsed_for_diagnostics_but_not_valid]
+PASS [deauth_type]
+PASS [deauth_roles]
+PASS [deauth_broadcast_target]
+PASS [deauth_seq]: 291
+PASS [deauth_duration_314us]
+PASS [deauth_reason_7]
+PASS [deauth_states]
+PASS [deauth_no_retry]
+PASS [deauth_retry_reason3]
+PASS [deauth_unicast_target]
+PASS [disassoc_reason8]
+PASS [auth_open_fields]
+PASS [auth_randomised_looking_ta]
+PASS [sae_commit_group19]
+PASS [sae_body_not_treated_as_elements]
+PASS [sae_anticlogging_status76]
+PASS [assoc_req_fixed]
+PASS [assoc_req_ssid]
+PASS [assoc_req_rsn_mfpc_only]
+PASS [assoc_req_akm_psk]
+PASS [assoc_req_element_order]
+PASS [assoc_resp_aid1]
+PASS [reassoc_current_ap]
+PASS [probe_req_wildcard_ssid]
+PASS [probe_req_bssid_and_ids]
+PASS [probe_req_vendor_oui]
+PASS [probe_req_rates]
+PASS [beacon_tsf]: 325613772854
+PASS [beacon_interval]
+PASS [beacon_element_order]
+PASS [beacon_ds_tim]
+PASS [beacon_country]
+PASS [beacon_bss_load]
+PASS [beacon_csa]
+PASS [beacon_quiet]
+PASS [beacon_rsn_mfpr_bip]
+PASS [beacon_mme_ipn]
+PASS [beacon_body_integrity_protected]
+PASS [beacon_existing_identity_parser_reused]
+PASS [sa_query_request]
+PASS [csa_action_category]
+PASS [csa_action_switch]
+PASS [csa_action_mme_bip256]
+PASS [csa_action_integrity_protected]
+PASS [public_action_not_robust]
+PASS [public_ext_csa_fields]
+PASS [broadcast_deauth_bip_ipn]
+PASS [protected_deauth_encrypted]
+PASS [protected_deauth_reason_not_invented]
+PASS [protected_deauth_pn]
+PASS [beacon_overrun_malformed_body]: element list overruns or has trailing octets
+PASS [beacon_overrun_keeps_readable_prefix]
+PASS [beacon_overrun_records_offending_element_id]
+PASS [deauth_truncated_reason]
+PASS [protocol_version_1_unsupported]
+PASS [protocol_version_1_not_labelled_as_pv0_type]: PV1/not decoded
+PASS [pv0_type_label]
+PASS [header_truncated_at_addr2_keeps_receiver]
+PASS [too_short_header_truncated]
+PASS [ccmp_vector_flags]
+PASS [ccmp_vector_duration_seq]
+PASS [ccmp_vector_roles]
+PASS [ccmp_vector_pn]
+PASS [qos_data_fromds_eapol_m1_eapol_key]
+PASS [qos_data_fromds_eapol_m1_message]: 4-way M1
+PASS [qos_data_fromds_eapol_m1_replay_counter]
+PASS [qos_data_fromds_eapol_m1_key_data_length]
+PASS [m1_qos_fromds_roles]
+PASS [m1_anonce]
+PASS [data_tods_eapol_m2_eapol_key]
+PASS [data_tods_eapol_m2_message]: 4-way M2
+PASS [data_tods_eapol_m2_replay_counter]
+PASS [data_tods_eapol_m2_key_data_length]
+PASS [m2_tods_roles]
+PASS [qos_data_fromds_eapol_m3_eapol_key]
+PASS [qos_data_fromds_eapol_m3_message]: 4-way M3
+PASS [qos_data_fromds_eapol_m3_replay_counter]
+PASS [qos_data_fromds_eapol_m3_key_data_length]
+PASS [data_tods_eapol_m4_eapol_key]
+PASS [data_tods_eapol_m4_message]: 4-way M4
+PASS [data_tods_eapol_m4_replay_counter]
+PASS [data_tods_eapol_m4_key_data_length]
+PASS [m4_zero_nonce]
+PASS [null_function_power_save]
+PASS [four_address_roles_no_bssid]
+PASS [four_address_ipv4]
+PASS [tkip_tsc]
+PASS [wep_iv_no_replay_counter]
+PASS [qos_htc_header_length]
+PASS [amsdu_first_subframe_arp]
+PASS [rts_fields]
+PASS [rts_bandwidth_signalling_ta_cleared]
+PASS [cts_ra_only]
+PASS [ack_ra_only]
+PASS [ps_poll_aid_not_nav]
+PASS [bar_header_only]
+PASS [cf_end_bssid]
+PASS [no_fcs_mode]
+PASS [hash_distinguishes_retry]
+PASS [hash_retry_invariant_matches]
+PASS [hash_deterministic]
+PASS [retry_invariant_hash_still_sees_body_changes]
+PASS [real_airtel-2g4.json_fcs_beacon]
+PASS [real_airtel-2g4.json_tsf]
+PASS [real_airtel-2g4.json_seq]: 2534
+PASS [real_airtel-2g4.json_bssid_agrees_with_existing_parser]
+PASS [real_airtel-2g4.json_elements_complete]
+PASS [real_avgarde-5g.json_fcs_beacon]
+PASS [real_avgarde-5g.json_tsf]
+PASS [real_avgarde-5g.json_seq]: 573
+PASS [real_avgarde-5g.json_bssid_agrees_with_existing_parser]
+PASS [real_avgarde-5g.json_elements_complete]
+PASS [real_avgarde-5g-offset.json_fcs_beacon]
+PASS [real_avgarde-5g-offset.json_tsf]
+PASS [real_avgarde-5g-offset.json_seq]: 708
+PASS [real_avgarde-5g-offset.json_bssid_agrees_with_existing_parser]
+PASS [real_avgarde-5g-offset.json_elements_complete]
+PASS [prefix_invariants]: 4480 parses
+PASS [random_bytes_invariants]: 20000 buffers
+
+ALL PASSED: 0 failure(s)

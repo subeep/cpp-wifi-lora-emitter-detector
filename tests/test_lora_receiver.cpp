@@ -76,6 +76,48 @@ int main(int argc,char** argv){try{
  auto bad_packet=rx::demodulate(waveform(damaged,7,0x34,16,47,0.375),7,125000);
  require(bad_packet.size()==1&&bad_packet[0].header_valid&&bad_packet[0].payload_complete&&
          !bad_packet[0].crc_valid,"Corrupted symbols accepted by CRC");
+ // An unverified header/payload must not suppress the later good frame.
+ // Use independent fixed vectors: no application modulator is an oracle.
+ for(bool inverted:{false,true}) {
+  for(int scenario=0;scenario<3;++scenario) {
+   auto damaged_symbols=fixed;
+   if(scenario==2)for(size_t k=8;k<damaged_symbols.size();++k)damaged_symbols[k]=std::fmod(damaged_symbols[k]+13,128);
+   auto early=waveform(damaged_symbols,7,0x34,16,47,.375);
+   if(scenario<2)early.resize(early.size()-128*5);
+   // Zero samples stop extraction. Nonzero later IQ instead exercises a
+   // false complete/CRC-failed interpretation across the next preamble.
+   early.resize(early.size()+(scenario==1?0:512));
+   const auto later_start=early.size();
+   auto later=waveform(fixed,7,0x12,12,23,-.25);
+   early.insert(early.end(),later.begin(),later.end());
+   if(inverted)for(auto& sample:early)sample=std::conj(sample);
+   rx::Diagnostics recovery_diagnostics;
+   const auto recovered=rx::demodulate(early,7,125000,{},&recovery_diagnostics);
+   require(recovery_diagnostics.unverified_payload_recoveries>=1,"Recovery not exposed in diagnostics");
+   rx::Options bounded;bounded.max_packets=1;rx::Diagnostics capped;
+   const auto limited=rx::demodulate(early,7,125000,bounded,&capped);
+   require(limited.size()==1 && capped.packet_limit_reached,"Recovery bypassed packet cap or hid incomplete coverage");
+   size_t good=0,unverified=0;
+   for(const auto& p:recovered) {
+    good+=p.crc_valid&&p.payload==expected&&size_t(p.data_start_sample)>=later_start&&p.inverted_iq==inverted;
+    unverified+=p.header_valid&&!p.crc_valid&&size_t(p.data_start_sample)<later_start;
+   }
+   require(good==1&&unverified==1,"Recovery after damaged packet scenario "+std::to_string(scenario)+" polarity "+std::to_string(inverted));
+  }
+ }
+ // CRC-absent traffic is still a useful observation, not a verified span.
+ const auto no_crc_vector=std::find_if(vectors.begin(),vectors.end(),[](const auto& v){return v["sf"]==7 && v["cr"]==1 && v["crc"]==false && v["ldro"]==false;});
+ require(no_crc_vector!=vectors.end(),"CRC-absent reference fixture missing");
+ for(bool inverted:{false,true}) {
+  auto no_crc_iq=waveform((*no_crc_vector)["symbols"].template get<std::vector<double>>(),7,0x12,32,47,.125);
+  const auto next_start=no_crc_iq.size();
+  auto later=waveform(fixed,7,0x34,8,23,-.375);no_crc_iq.insert(no_crc_iq.end(),later.begin(),later.end());
+  if(inverted)for(auto& sample:no_crc_iq)sample=std::conj(sample);
+  auto packets=rx::demodulate(no_crc_iq,7,125000);
+  require(packets.size()==2 && packets[0].payload_complete && !packets[0].crc_on && !packets[0].crc_valid &&
+          packets[1].crc_valid && packets[1].payload==expected && size_t(packets[1].data_start_sample)>=next_start,
+          "CRC-absent span hid later packet or was promoted to verified");
+ }
  // Independent SX1262 hardware fixtures are small and included in portable CI.
  nlohmann::json hardware;auto sxroot=root.parent_path()/"lora_sx1262";
  std::ifstream(sxroot/"expected.json")>>hardware;
