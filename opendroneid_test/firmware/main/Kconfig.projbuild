@@ -1,0 +1,75 @@
+menu "OpenDroneID test transmitter"
+
+config ODID_CHANNEL
+    int "2.4 GHz Wi-Fi channel"
+    range 1 11
+    default 6
+
+config ODID_RATE_MBPS
+    int "PHY rate in Mbps (1, 2, 5, 11 DSSS/CCK; 6..54 OFDM)"
+    default 1
+
+config ODID_SEND_BEACON
+    bool "Send Remote ID in Wi-Fi Beacon frames"
+    default y
+
+config ODID_SEND_NAN
+    bool "Send Remote ID in Wi-Fi NAN action frames"
+    default y
+
+config ODID_INTERVAL_MS
+    int "Interval between transmissions (ms)"
+    range 20 5000
+    default 100
+
+config ODID_TX_POWER_QDBM
+    int "Max TX power in 0.25 dBm units"
+    range 8 84
+    default 40
+
+config ODID_PROTOCOL_VERSION
+    int "OpenDroneID protocol version"
+    range 0 2
+    default 2
+
+config ODID_SERIAL_ID
+    string "Basic ID serial number (empty = derived from MAC)"
+    default ""
+
+config ODID_SELF_ID
+    string "Self ID description (max 23 chars)"
+    default "newrock ODID bench test"
+
+config ODID_OPERATOR_ID
+    string "Operator ID (max 20 chars)"
+    default "TEST-OPERATOR-0001"
+
+config ODID_CENTER_LAT_E7
+    int "Circle centre / operator latitude (degrees * 1e7)"
+    range -900000000 900000000
+    default 514779000
+
+config ODID_CENTER_LON_E7
+    int "Circle centre / operator longitude (degrees * 1e7)"
+    range -1800000000 1800000000
+    default -15000
+
+config ODID_GROUND_ALT_M
+    int "Ground altitude above WGS-84 ellipsoid (m)"
+    default 50
+
+config ODID_HEIGHT_M
+    int "Simulated height above takeoff (m)"
+    default 30
+
+config ODID_CIRCLE_RADIUS_M
+    int "Simulated circle radius (m)"
+    range 5 5000
+    default 40
+
+config ODID_SPEED_DM_S
+    int "Simulated ground speed (0.1 m/s units)"
+    range 1 2000
+    default 50
+
+endmenu
