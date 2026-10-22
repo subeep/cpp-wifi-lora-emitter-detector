@@ -103,3 +103,34 @@ For source rollback, `GUI_REVAMP_CHANGES.patch` contains only changes from this 
 ## Milestone handoff
 
 G0 inventory/baseline, G1 shell, G2 Security, G3 Wi-Fi/LoRa, G4 Drones and G5 captures/DSP/settings presentation are delivered. G6 software/fixture qualification and scope audit passed as described above. G7 documentation, isolated launch and rollback are delivered; the temporary legacy presentation remains available. Live hardware qualification and removal of that fallback are separate follow-up decisions. No backend enhancement is required to use this UI delivery.
+
+
+## Sample-rate setting and gain layout — 22 October 2026
+
+Monitoring setup (also shown in Settings) now stages an optional Wi-Fi IQ
+sample-rate request in MSps. Both Wi-Fi bands use the same request on the next
+Connect/Reconnect. The supported application input range is 1–200 MSps; this
+does not promise that UHD or each decoder supports every value. Unchecking
+Custom Wi-Fi sample rate restores the original device default. Explicit requests
+bypass the historical X310 20 MSps default; LoRa scan/listen rates are unchanged.
+
+The UI shows requested versus actual rate from the latest Wi-Fi capture.
+Empty/failed captures clear actual-rate availability. Invalid/nonfinite input
+prevents Connect/Reconnect; a running scanner rejects rate reconfiguration until
+stopped. AGC and manual gain are on the row immediately below Threshold.
+These values are session settings, not a persistent preferences file.
+
+The processing lane uses the requested rate for memory admission and drains to
+inline processing if the returned actual rate exceeds its two-step budget.
+UHD streamer caching distinguishes the request from its coerced actual rate, so
+an unchanged non-exact request no longer rebuilds the stream every capture.
+The GUI notes the existing legacy OFDM actual-input range of 20–64 MSps.
+
+Validation: the GUI builds in build-ml-inference. Scanner tests use a fake radio
+to cover default/custom rates, both Wi-Fi bands, requested/actual metadata,
+coercion beyond the overlap budget, failure clearing, invalid input, stopped-only
+configuration and preserved LoRa rates. Scanner Wi-Fi/LoRa, serial lane, GUI shell
+and inference regression suites pass. The inference test requires permission to
+open its inherited local Unix socket in this environment; its synthetic worker
+does not load a model or use hardware. No new hardware-rate qualification is
+claimed.
