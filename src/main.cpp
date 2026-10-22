@@ -378,6 +378,8 @@ int main() {
     float threshold_db = float(DEFAULT_DETECTION_THRESHOLD_DB);
     bool agc = false;
     float gain_db = float(DEFAULT_GAIN_DB);
+    bool custom_wifi_rate = false;
+    double wifi_rate_msps = WIFI_2G4_SAMPLE_RATE_HZ / 1e6;
 
     gui::State ui;
     bool theme_dirty = false;
@@ -459,9 +461,17 @@ int main() {
         }
         ImGui::SameLine();
         bool is_connected_to_selected = scanner_started && scanner.device_type() == selected_device;
+        const std::optional<double> staged_wifi_rate = custom_wifi_rate
+            ? std::optional<double>(wifi_rate_msps * 1e6) : std::nullopt;
+        ImGui::BeginDisabled(!Scanner::valid_wifi_sample_rate(staged_wifi_rate));
         if (ImGui::Button(scanner_started ? "Reconnect" : "Connect")) {
             if (scanner_started) scanner.stop();
+            scanner_started = false;
             scanner.set_device_type(selected_device);
+            if (!scanner.set_wifi_sample_rate(staged_wifi_rate)) {
+                ImGui::EndDisabled();
+                return;
+            }
             DeviceProfile new_profile = device_profile(selected_device);
             agc = false;
             gain_db = float(new_profile.default_gain_db);
@@ -485,6 +495,7 @@ int main() {
             scanner.start();
             scanner_started = true;
         }
+        ImGui::EndDisabled();
         if (scanner_started) {
             ImGui::SameLine();
             if (ImGui::Button("Disconnect")) {
@@ -547,6 +558,36 @@ int main() {
                                   "channel's air is sampled. Other channels are not heard at all meanwhile.");
         }
 
+        // Sample rates are staged until Connect/Reconnect, so the ordered
+        // Wi-Fi lane is rebuilt with the matching IQ memory budget.
+        ImGui::Spacing();
+        const double default_wifi_rate = std::min(WIFI_2G4_SAMPLE_RATE_HZ, profile.max_sample_rate_hz);
+        if (!custom_wifi_rate) wifi_rate_msps = default_wifi_rate / 1e6;
+        ImGui::Checkbox("Custom Wi-Fi sample rate", &custom_wifi_rate);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!custom_wifi_rate);
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::InputDouble("Sample rate (MSps)", &wifi_rate_msps, 1.0, 10.0, "%.6f");
+        ImGui::EndDisabled();
+        const std::optional<double> edited_wifi_rate = custom_wifi_rate
+            ? std::optional<double>(wifi_rate_msps * 1e6) : std::nullopt;
+        if (!Scanner::valid_wifi_sample_rate(edited_wifi_rate))
+            ImGui::TextColored(ImVec4(0.95f, 0.4f, 0.3f, 1), "Enter a finite sample rate from 1 to 200 MSps.");
+        ImGui::TextWrapped("Wi-Fi IQ output rate for both bands. Applies on Connect / Reconnect. "
+                           "Default %.3f MSps; UHD may select a nearby supported rate. LoRa uses its existing rates.",
+                           default_wifi_rate / 1e6);
+        ImGui::TextDisabled("Decoder support depends on actual rate (legacy Wi-Fi OFDM: 20-64 MSps).");
+        if (scanner_started && edited_wifi_rate != scanner.wifi_sample_rate())
+            ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.2f, 1), "Sample rate change pending Reconnect");
+        if (scanner_started && status.wifi_requested_rate_hz > 0) {
+            if (status.wifi_actual_rate_hz)
+                ImGui::Text("Latest Wi-Fi capture: requested %.6f MSps | actual %.6f MSps",
+                            status.wifi_requested_rate_hz / 1e6, *status.wifi_actual_rate_hz / 1e6);
+            else
+                ImGui::Text("Latest Wi-Fi capture: requested %.6f MSps | actual rate unavailable (no samples)",
+                            status.wifi_requested_rate_hz / 1e6);
+        }
+
         // --- LoRa frequency lock (only meaningful in Sub-GHz mode) ---
         // The 4 LORA_LISTEN_CHANNELS_HZ channels are cycled one per
         // cycle by default, so a real device on some other frequency
@@ -597,12 +638,10 @@ int main() {
             scanner.set_threshold_db(threshold_db);
         }
         if (profile.supports_agc) {
-            ImGui::SameLine();
             if (ImGui::Checkbox("AGC", &agc)) {
                 scanner.set_gain(agc ? std::optional<double>() : std::optional<double>(gain_db));
             }
         } else {
-            ImGui::SameLine();
             ImGui::BeginDisabled();
             bool agc_unavailable = false;
             ImGui::Checkbox("AGC (not supported on this radio)", &agc_unavailable);

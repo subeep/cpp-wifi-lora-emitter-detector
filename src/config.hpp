@@ -232,7 +232,7 @@ struct DeviceProfile {
     double default_gain_db;
     double max_gain_db;              // for the UI slider - hardware will clamp regardless
     bool supports_agc;               // UBX (and most non-AD9361 daughterboards) don't
-    double max_sample_rate_hz;       // transport-limited - see below
+    double max_sample_rate_hz;       // historical default ceiling; explicit Wi-Fi UI requests bypass it
     double lora_listen_capture_rate_hz;  // see below - the base rate to decimate down from
 };
 

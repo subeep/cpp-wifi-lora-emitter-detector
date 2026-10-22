@@ -256,6 +256,23 @@ SdrDeviceType Scanner::device_type() const {
     return device_type_;
 }
 
+bool Scanner::valid_wifi_sample_rate(std::optional<double> hz) {
+    // Bounded application input, not a promise that a radio supports every value.
+    return !hz || (std::isfinite(*hz) && *hz >= 1e6 && *hz <= 200e6);
+}
+
+bool Scanner::set_wifi_sample_rate(std::optional<double> hz) {
+    if (running_ || !valid_wifi_sample_rate(hz)) return false;
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    wifi_sample_rate_hz_ = hz;
+    return true;
+}
+
+std::optional<double> Scanner::wifi_sample_rate() const {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    return wifi_sample_rate_hz_;
+}
+
 void Scanner::set_threshold_db(double db) {
     std::lock_guard<std::mutex> lock(config_mutex_);
     threshold_db_ = db;
@@ -1133,30 +1150,36 @@ void Scanner::run() {
         status_.wifi_lane_enabled = false;
         status_.wifi_lane_wait_s = 0;
         status_.wifi_lane_high_water = 0;
+        status_.wifi_requested_rate_hz = 0;
+        status_.wifi_actual_rate_hz.reset();
     }
     std::optional<double> initial_gain;
     SdrDeviceType type;
+    std::optional<double> wifi_rate_override;
     {
         std::lock_guard<std::mutex> lock(config_mutex_);
         initial_gain = gain_db_;
         gain_dirty_ = false;
         type = device_type_;
+        wifi_rate_override = wifi_sample_rate_hz_;
     }
     DeviceProfile profile = device_profile(type);
     if (!connect_sdr(profile, initial_gain)) return;
 
-    // Wi-Fi processing lane: enabled when two steps of Wi-Fi IQ fit the
-    // budget (X310 yes, B210 no) and not disabled via RFMON_WIFI_LANE=0.
+    // Re-evaluate overlap for the requested rate, then check UHD's actual
+    // rate too: a coerced rate must not silently exceed the two-step budget.
+    const auto lane_rate_fits = [](double rate) {
+        return std::isfinite(rate) && rate > 0 &&
+            2.0L * SUB_CAPTURES_PER_STEP * std::ceil(rate * SUB_CAPTURE_DURATION_S) *
+                sizeof(std::complex<float>) <= WIFI_LANE_MAX_IQ_BYTES;
+    };
     std::optional<SerialLane<WifiStepJob>> wifi_lane;
     {
-        const double wifi_rate =
-            std::min(std::max(WIFI_2G4_SAMPLE_RATE_HZ, WIFI_5G_SAMPLE_RATE_HZ), profile.max_sample_rate_hz);
-        const size_t step_bytes = size_t(SUB_CAPTURES_PER_STEP) *
-                                  size_t(std::ceil(wifi_rate * SUB_CAPTURE_DURATION_S)) *
-                                  sizeof(std::complex<float>);
+        const double wifi_rate = wifi_rate_override.value_or(
+            std::min(std::max(WIFI_2G4_SAMPLE_RATE_HZ, WIFI_5G_SAMPLE_RATE_HZ), profile.max_sample_rate_hz));
         const char* env = std::getenv("RFMON_WIFI_LANE");
         const bool env_off = env && std::string(env) == "0";
-        const bool budget_ok = 2 * step_bytes <= WIFI_LANE_MAX_IQ_BYTES;
+        const bool budget_ok = lane_rate_fits(wifi_rate);
         if (budget_ok && !env_off) {
             wifi_lane.emplace([this](WifiStepJob& j) { run_wifi_lane_job(j); },
                               [] {
@@ -1250,19 +1273,17 @@ void Scanner::run() {
                 status_.active_step_label = step.label;
             }
 
-            // Clamped to the connected device's actual transport
-            // capacity (see DeviceProfile::max_sample_rate_hz in
-            // config.hpp) - requesting more than a link can carry
-            // doesn't just degrade gracefully, it can starve the
-            // control channel and take the whole connection down.
-            double request_rate = std::min(step.sample_rate_hz, profile.max_sample_rate_hz);
+            const bool wifi_step = step.band == BAND_WIFI_2G4 || step.band == BAND_WIFI_5G;
+            // Explicit Wi-Fi requests bypass the historical transport default.
+            // LoRa scan/listen rates retain their independent existing settings.
+            double request_rate = wifi_step && wifi_rate_override ? *wifi_rate_override :
+                std::min(step.sample_rate_hz, profile.max_sample_rate_hz);
             std::vector<std::vector<std::complex<float>>> captures;
             // Wi-Fi only: one coverage record per non-empty capture, kept
             // index-aligned with `captures`. Empty/failed captures are
             // submitted immediately - they are coverage too, just with
             // nothing sampled.
-            const bool wifi_step = step.band == BAND_WIFI_2G4 || step.band == BAND_WIFI_5G;
-            const bool lane_step = wifi_step && wifi_lane.has_value();
+            bool lane_step = wifi_step && wifi_lane.has_value();
             std::vector<wifi_security::CaptureRecord> capture_records;
             std::vector<wifi_security::CaptureRecord> empty_records;  // lane steps: submitted by the lane
 #ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
@@ -1280,6 +1301,26 @@ void Scanner::run() {
                 CaptureResult cr = sdr_->capture_detailed(step.center_hz, request_rate, SUB_CAPTURE_DURATION_S,
                                                           RETUNE_SETTLE_S, /*retune_always=*/!wifi_step);
                 actual_rate = cr.sample_rate_hz;
+                if (lane_step && !lane_rate_fits(actual_rate)) {
+                    wifi_lane->close();
+                    const auto stats = wifi_lane->stats();
+                    wifi_lane.reset();
+                    lane_step = false;
+                    // Earlier empty captures in this step were deferred to the
+                    // lane. It is drained; deliver them before current input.
+                    for (auto& record : empty_records) security_->submit(std::move(record));
+                    empty_records.clear();
+                    std::lock_guard<std::mutex> lock(status_mutex_);
+                    status_.wifi_lane_enabled = false;
+                    status_.wifi_lane_wait_s = stats.producer_wait_s_total;
+                    status_.wifi_lane_high_water = stats.high_water;
+                }
+                if (wifi_step) {
+                    std::lock_guard<std::mutex> lock(status_mutex_);
+                    status_.wifi_requested_rate_hz = request_rate;
+                    status_.wifi_actual_rate_hz = !cr.samples.empty() && std::isfinite(actual_rate) && actual_rate > 0
+                        ? std::optional<double>(actual_rate) : std::nullopt;
+                }
                 any_overflow = any_overflow || cr.overflow;
                 if (wifi_step) {
                     auto rec = new_capture_record(step, profile, request_rate, SUB_CAPTURE_DURATION_S, cr);

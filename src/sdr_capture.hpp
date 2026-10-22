@@ -78,6 +78,7 @@ public:
 
 private:
     void ensure_streamer(double sample_rate_hz);
+    double requested_rate_ = 0.0; // distinct from UHD's coerced current_rate_
 
     uhd::usrp::multi_usrp::sptr usrp_;
     uhd::rx_streamer::sptr streamer_;

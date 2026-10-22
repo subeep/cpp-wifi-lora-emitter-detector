@@ -65,7 +65,7 @@ void UsrpCapture::set_gain(std::optional<double> gain_db) {
 }
 
 void UsrpCapture::ensure_streamer(double sample_rate_hz) {
-    if (!streamer_ || current_rate_ != sample_rate_hz) {
+    if (!streamer_ || requested_rate_ != sample_rate_hz) {
         if (streamer_) {
             // On RFNoC devices (X310) the old streamer still holds its
             // block-graph connections (e.g. Radio#0 -> DDC#0) until
@@ -90,6 +90,7 @@ void UsrpCapture::ensure_streamer(double sample_rate_hz) {
         stream_args.channels = {channel_};
         streamer_ = usrp_->get_rx_stream(stream_args);
         current_rate_ = actual_rate;
+        requested_rate_ = sample_rate_hz;
     }
 }
 

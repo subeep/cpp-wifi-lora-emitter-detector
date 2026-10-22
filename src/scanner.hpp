@@ -53,6 +53,8 @@ struct ScannerStatus {
     bool wifi_lane_enabled = false;
     double wifi_lane_wait_s = 0;  // cumulative time acquisition waited for the lane
     size_t wifi_lane_high_water = 0;  // max jobs queued+running (bounded: one step + one marker)
+    double wifi_requested_rate_hz = 0;
+    std::optional<double> wifi_actual_rate_hz; // latest nonempty capture; absent on failure/start
 };
 
 // One detected Wi-Fi transmission - a single burst found by
@@ -133,6 +135,13 @@ public:
     // (see main.cpp's device selector, which does exactly this).
     void set_device_type(SdrDeviceType type);
     SdrDeviceType device_type() const;
+
+    // Wi-Fi IQ output rate, shared by both Wi-Fi bands. Configure while stopped;
+    // nullopt restores the existing device default. Explicit requests bypass the
+    // historical transport default; UHD reports the actual supported rate.
+    static bool valid_wifi_sample_rate(std::optional<double> hz);
+    bool set_wifi_sample_rate(std::optional<double> hz);
+    std::optional<double> wifi_sample_rate() const;
 
     void set_threshold_db(double db);
     double threshold_db() const;
@@ -301,6 +310,7 @@ private:
     bool lora_laboratory_mode_ = false;
     double lora_capture_seconds_ = LORA_LISTEN_DURATION_S;
     SdrDeviceType device_type_ = SdrDeviceType::B210;
+    std::optional<double> wifi_sample_rate_hz_;
 
     mutable std::mutex status_mutex_;
     ScannerStatus status_;

@@ -23,6 +23,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <random>
 #include <set>
 #include <string>
@@ -478,6 +479,97 @@ void end_to_end_checks(const fs::path& base) {
 #endif
 }
 
+// Exercise configured rates through the actual scanner loop, including UHD-like
+// coercion, both Wi-Fi bands, LoRa isolation and a failed latest capture.
+struct RateProbeRadio : CaptureDevice {
+    Scanner* scanner;
+    std::vector<double>* requests;
+    double actual_wifi_rate;
+    bool fail_last_wifi;
+    bool* running_change_rejected;
+    int count = 0;
+    CaptureResult capture_detailed(double center, double rate, double duration, double, bool) override {
+        ++count;
+        requests->push_back(rate);
+        if (count == 1) *running_change_rejected = !scanner->set_wifi_sample_rate(40e6);
+        const bool wifi = center > 2e9;
+        CaptureResult r;
+        // The first Wi-Fi step fits the requested budget; the second can
+        // expose a newly coerced actual rate and force a lane drain.
+        r.sample_rate_hz = wifi && count > 4 ? actual_wifi_rate : rate;
+        r.samples.resize(fail_last_wifi && count == 8 ? 0 : 2048);
+        r.timing.requested_samples = size_t(r.sample_rate_hz * duration);
+        r.timing.device_time_valid = !r.samples.empty();
+        r.timing.device_time_ns = int64_t(count) * 2'000'000'000;
+        r.timing.host_before_ns = 1'790'000'000'000'000'000 + r.timing.device_time_ns;
+        r.timing.host_after_ns = r.timing.host_before_ns + 100'000;
+        r.timing.timed_out = r.samples.empty();
+        if (count == 4) { scanner->set_wifi_fixed_channel(std::nullopt); scanner->set_active_band(BAND_WIFI_2G4); }
+        if (count == 8) scanner->set_active_band(BAND_SUB_GHZ);
+        if (count == 13) ScannerTestAccess::raise_stop_flag(*scanner);
+        return r;
+    }
+    void set_gain(std::optional<double>) override {}
+};
+
+void sample_rate_checks(const fs::path& base) {
+    for (double rate : {0.0, -1.0, 999999.0, 200000001.0,
+                        std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
+        check(!Scanner::valid_wifi_sample_rate(rate), "invalid_sample_rate_rejected");
+    check(Scanner::valid_wifi_sample_rate(std::nullopt) && Scanner::valid_wifi_sample_rate(1e6) &&
+          Scanner::valid_wifi_sample_rate(200e6), "sample_rate_defaults_and_bounds");
+    struct Case { const char* name; std::optional<double> request; double actual; bool fail; bool lane; };
+    for (const auto& c : std::vector<Case>{{"default", {}, 20e6, false, true},
+                                         {"custom", 100e6, 96e6, false, false},
+                                         {"coerced-budget", 24e6, 26e6, false, false},
+                                         {"failed", 100e6, 96e6, true, false}}) {
+        const auto root = base / (std::string("rate-") + c.name);
+        fs::create_directories(root);
+        Scanner scanner(root.string());
+        scanner.set_device_type(SdrDeviceType::X310);
+        scanner.set_active_band(BAND_WIFI_5G);
+        check(scanner.set_wifi_sample_rate(c.request), "configure_rate_before_connect");
+        check(!scanner.set_wifi_sample_rate(0) && scanner.wifi_sample_rate() == c.request,
+              "invalid_rate_preserves_setting");
+        scanner.set_wifi_security_recording((root / "rec.ndjson").string());
+        std::vector<double> requests;
+        bool rejected = false;
+        ScannerTestAccess::set_device_factory(scanner, [&](const DeviceProfile&, std::optional<double>) {
+            auto radio = std::make_unique<RateProbeRadio>();
+            radio->scanner = &scanner; radio->requests = &requests; radio->actual_wifi_rate = c.actual;
+            radio->fail_last_wifi = c.fail; radio->running_change_rejected = &rejected;
+            return radio;
+        });
+        unsetenv("RFMON_WIFI_LANE");
+        scanner.start();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!ScannerTestAccess::stop_flag(scanner) && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        scanner.stop();
+        const double wanted = c.request.value_or(20e6);
+        check(requests.size() == 13 && std::all_of(requests.begin(), requests.begin() + std::min(size_t(8), requests.size()),
+              [&](double rate) { return rate == wanted; }), "configured_rate_reaches_both_wifi_bands", c.name);
+        check(requests.size() == 13 && requests[8] == 5e6 && requests[11] == 5e6 && requests[12] == 500e3,
+              "wifi_rate_preserves_lora_scan_and_listen", c.name);
+        const auto status = scanner.status();
+        check(status.wifi_requested_rate_hz == wanted && (c.fail ? !status.wifi_actual_rate_hz :
+              status.wifi_actual_rate_hz == std::optional<double>(c.actual)), "requested_actual_rate_status", c.name);
+        check(status.wifi_lane_enabled == c.lane, "lane_respects_requested_and_coerced_rate_budget", c.name);
+        check(rejected && scanner.wifi_sample_rate() == c.request, "running_rate_change_requires_reconnect", c.name);
+        size_t records = 0;
+        for (const auto& line : read_recording(root / "rec.ndjson")) {
+            const auto record = nlohmann::json::parse(line);
+            if (record.value("kind", "") != "capture") continue;
+            ++records;
+            check(record.at("requested_rate_hz") == wanted, "capture_preserves_requested_rate", c.name);
+            check(record.at("sample_rate_hz") == (records <= 4 ? wanted : c.actual),
+                  "capture_preserves_actual_rate", c.name);
+        }
+        check(records == 8, "all_rate_probe_capture_records_retained", c.name);
+        check(scanner.set_wifi_sample_rate(std::nullopt) && !scanner.wifi_sample_rate(), "restore_default_while_stopped");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -570,6 +662,7 @@ int main() {
         const fs::path cwd = fs::current_path();
         fs::create_directories(base);
         fs::current_path(base);
+        sample_rate_checks(base);
         end_to_end_checks(base);
         fs::current_path(cwd);
     }
