@@ -35,6 +35,10 @@ struct Snapshot {
     double processing_ms{}, preprocessing_ms{}, queue_age_ms{}, oldest_queue_ms{}, end_to_end_ms{};
     size_t queue_depth{};
     uint64_t discontinuities{}, partial_discarded{}, stop_discarded{}, analysis_errors{};
+    // Native evidence stays distinct from authenticated identity (not provided).
+    uint64_t native_packet_count{}, native_rows_omitted{}, o4_windows{}, o4_candidates{};
+    std::vector<std::string> native_packets; // bounded JSON, receive metadata included
+    std::string o4_latest;
     std::vector<Observation> observations;
     std::map<std::string, BroadcastTrack> tracks; // per validated serial, bounded by kMaxTracks
 };
@@ -43,7 +47,7 @@ class Detector {
 public:
     Detector() = default;
     ~Detector();
-    void start();
+    void start(bool native_backend=false);
     void stop();
     bool running() const { return running_; }
     void submit(const std::complex<float>* data, size_t count, double rate,
@@ -59,6 +63,7 @@ private:
     };
     void run();
     void status(const std::string& message, bool ready=false);
+    std::atomic<bool> native_backend_{false}; // immutable while the worker runs
     std::atomic<bool> running_{false};
     std::atomic<uint64_t> dropped_{0}, gap_{0};
     std::thread thread_;

@@ -97,6 +97,25 @@ int main(int argc,char** argv) {
         } else drone::draw_remote_id(rid);
         ImGui::End();ImGui::Render();require(ImGui::GetCurrentContext()->ErrorCountCurrentFrame==0,"ImGui renderer state error");
     }
+    // Render the unified tab without starting a radio or classifier process.
+    a.unified=true;
+    a.classifier_state=[] { return drone::Addon::ClassifierState{false,false,"synthetic missing classifier"}; };
+    for(int i=0;i<3;++i) {
+#ifdef DJI_EGL
+        ImGui_ImplOpenGL3_NewFrame();
+#endif
+        ImGui::NewFrame();ImGui::SetNextWindowSize(io.DisplaySize);ImGui::SetNextWindowPos({0,0});
+        ImGui::Begin("Unified Drone Detection - diagnostic fixture");
+        ImGui::LogToBuffer();drone::draw_panel(a,"2.4 GHz / fixture",false);
+        const std::string rendered=ImGui::GetCurrentContext()->LogBuffer.c_str();ImGui::LogFinish();
+        if(i>0){
+            require(rendered.find("DEGRADED")!=std::string::npos,"degraded status missing");
+            require(rendered.find("OFF / service incomplete")!=std::string::npos,"mandatory classifier failure hidden");
+            require(rendered.find("not drone count")!=std::string::npos,"candidate semantics missing");
+        }
+        ImGui::End();ImGui::Render();require(ImGui::GetCurrentContext()->ErrorCountCurrentFrame==0,"unified ImGui state error");
+    }
+    a.unified=false;
 #ifdef DJI_EGL
     glViewport(0,0,1280,900); glClear(GL_COLOR_BUFFER_BIT); ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     if(argc>1) {

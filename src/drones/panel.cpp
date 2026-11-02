@@ -171,31 +171,65 @@ void draw_remote_id(const RidJson& s) {
     ImGui::PopID();
 }
 void draw_panel(Addon& a,const std::string& band,bool connected, const char* select_tab) {
-    ImGui::SeparatorText("Drone broadcasts");
-    ImGui::TextWrapped("Receive-only add-ons | Reported identities and telemetry are unauthenticated. DJI DroneID and standards-based Wi-Fi Remote ID remain separate sources.");
+    ImGui::SeparatorText("Drone Detection");
+    ImGui::TextWrapped("Receive-only observers on the existing receiver. Reported broadcast identities are unauthenticated. Model candidates and experimental O4 evidence are not validated drone identities.");
     if(ImGui::BeginTabBar("Drone sources")) {
-        if(ImGui::BeginTabItem("DJI live broadcasts")) {
-            if(a.live.running()) { if(ImGui::Button("Disable DJI add-on")) a.live.stop(); }
-            else if(ImGui::Button("Enable DJI add-on")) { a.offered=0; a.omitted=0; a.unhealthy=0; a.live.start(); }
-            ImGui::SameLine(); ImGui::Text("Receiver: %s | Active band: %s",connected?"connected":"disconnected",band.c_str());
-            ImGui::TextDisabled("Stop retains history. A new start resets observations.");
-            ImGui::TextWrapped("Uses existing Wi-Fi captures; does not retune or open another radio. Up to four separate 20 ms windows per capture (2M samples/window maximum). Gapped captures are skipped. Sweeping, passband and sampling gaps can miss broadcasts.");
-            if(a.unhealthy.load())ImGui::TextColored(ImVec4(1,.7f,.35f,1),"Unusable captures: %llu",(unsigned long long)a.unhealthy.load());
-            if(ImGui::CollapsingHeader("Capture sampling counters"))ImGui::Text("Capture samples: %llu | Not selected: %llu | Unusable captures: %llu",
-                (unsigned long long)a.offered.load(),(unsigned long long)a.omitted.load(),(unsigned long long)a.unhealthy.load());
-            draw_results(a.live.snapshot(),false);
-            ImGui::EndTabItem();
-        }
-        if(ImGui::BeginTabItem("Wi-Fi Remote ID")) {
-            bool enabled=a.remote_id.enabled();
-            if(ImGui::Checkbox("Enable Wi-Fi OpenDroneID",&enabled)) a.remote_id.enable(enabled);
-            ImGui::SameLine(); ImGui::Text("Receiver: %s | %s",connected?"connected":"disconnected",band.c_str());
-            ImGui::TextWrapped("Beacon and NAN message packs, protocol versions 0 / 1 / 2. Uses complete decoded Wi-Fi frames; event recording and DJI decoding are not required. No Bluetooth reception or signature verification. Scan gaps and unsupported Wi-Fi PHYs limit reception.");
-            ImGui::TextDisabled("Disable retains history. Re-enable resets sources and messages.");
-            // Bound snapshot copying independently of render rate.
-            static RidJson rid; static double last=-1; static bool last_enabled=false;
-            if(rid.is_null()||ImGui::GetTime()-last>.25||enabled!=last_enabled){rid=a.remote_id.snapshot();last=ImGui::GetTime();last_enabled=enabled;}
-            draw_remote_id(rid);
+        if(ImGui::BeginTabItem("Drone Detection")) {
+            if(a.unified) { if(ImGui::Button("Stop unified detection"))a.stop_unified(); }
+            else if(ImGui::Button("Start unified detection"))a.start_unified();
+            ImGui::SameLine();ImGui::Text("Receiver: %s | %s",connected?"connected":"disconnected",band.c_str());
+            auto classifier=a.classifier_state?a.classifier_state():Addon::ClassifierState{};
+            ImGui::TextColored(ImVec4(1,.7f,.35f,1),"%s",a.unified?"DIAGNOSTIC / DEGRADED - presence model not qualified":"Unified service stopped - independent diagnostic workers may still be active");
+            ImGui::TextWrapped("Mandatory classifier: %s. %s",classifier.enabled?(classifier.ready?"running":"starting / unavailable"):"OFF / service incomplete",classifier.detail.c_str());
+            ImGui::TextWrapped("No drone-absence decision is available. Existing ML uses sparse 8 ms views independently of decoder success. Inspect scores and STFTs in Model Inference. Scan gaps, overload, weak signals and unmonitored bands can miss drones.");
+            ImGui::TextDisabled("Stop affects workers started here; independently started workers retain their controls and history.");
+            ImGui::TextWrapped("An already running classifier is reused. Otherwise this starts the existing default checkpoint; start a custom checkpoint in Model Inference first.");
+            const auto native=a.native.snapshot();
+            ImGui::TextWrapped("Native backend: %s | legacy fallback: %s | Wi-Fi Remote ID: %s",native.status.c_str(),a.live.running()?"running":"OFF",a.remote_id.enabled()?"enabled":"OFF");
+            if(ImGui::CollapsingHeader("Native DJI packets and O4 structure evidence",ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextWrapped("DJI DroneID packet parsing is not full O1/O2/O3/O3+ control/video decoding. Native telemetry covers fewer packet formats than the retained legacy fallback. O4 is experimental; O4+ remains unqualified.");
+                ImGui::Text("CRC24 packets: %llu | O4 windows: %llu | candidate windows: %llu (not drone count)",
+                    (unsigned long long)native.native_packet_count,(unsigned long long)native.o4_windows,(unsigned long long)native.o4_candidates);
+                ImGui::Text("Processed samples: %llu | queue: %zu | dropped samples: %llu | errors: %llu",
+                    (unsigned long long)native.samples,native.queue_depth,(unsigned long long)native.dropped,(unsigned long long)native.analysis_errors);
+                ImGui::Text("Native compute: %.1f ms | queue age: %.1f ms | end-to-end: %.1f ms",native.processing_ms,native.queue_age_ms,native.end_to_end_ms);
+                ImGui::TextWrapped("At most 160 ms contiguous input per capture; queue holds one job. Gaps reset temporal evidence. Strongest-channel selection can miss a simultaneous weaker emitter. O4 windows need 80/160 ms supporting history; no candidates is not proof of absence.");
+                if(!native.o4_latest.empty()&&ImGui::TreeNode("Latest O4 evidence (retained; not an identity)")) {
+                    ImGui::TextWrapped("%s",native.o4_latest.c_str());ImGui::TreePop();
+                }
+                if(ImGui::TreeNode("Native packet inspector (last 64 receptions)")) {
+                    ImGui::Text("Packet rows omitted at worker: %llu",(unsigned long long)native.native_rows_omitted);
+                    for(size_t i=0;i<native.native_packets.size();++i) {
+                        ImGui::PushID(int(i));
+                        if(ImGui::TreeNode("Packet")){ImGui::TextWrapped("%s",native.native_packets[i].c_str());ImGui::TreePop();}
+                        ImGui::PopID();
+                    }
+                    ImGui::TreePop();
+                }
+            }
+            if(ImGui::CollapsingHeader("DJI broadcast telemetry / legacy fallback",ImGuiTreeNodeFlags_DefaultOpen))
+                draw_results(a.live.snapshot(),false);
+            if(ImGui::CollapsingHeader("Wi-Fi Open Drone ID",ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextWrapped("Beacon and NAN message packs, protocol versions 0 / 1 / 2. Uses complete decoded Wi-Fi frames. No Bluetooth or signature verification; unsupported PHYs and scan gaps limit coverage.");
+                static RidJson rid;static double last=-1;static bool last_enabled=false;
+                const bool enabled=a.remote_id.enabled();
+                if(rid.is_null()||ImGui::GetTime()-last>.25||enabled!=last_enabled){rid=a.remote_id.snapshot();last=ImGui::GetTime();last_enabled=enabled;}
+                draw_remote_id(rid);
+            }
+            if(ImGui::CollapsingHeader("Coverage and independent diagnostic controls")) {
+                ImGui::Text("Native offered: %llu | not selected: %llu | unusable captures: %llu | discontinuities: %llu",
+                    (unsigned long long)a.native_offered.load(),(unsigned long long)a.native_omitted.load(),
+                    (unsigned long long)a.native_unhealthy.load(),(unsigned long long)native.discontinuities);
+                ImGui::Text("Maximum native observer copy: %.3f ms (receiver processing lane)",a.native_max_observer_ns.load()*1e-6);
+                ImGui::Text("Legacy offered: %llu | not selected: %llu | unusable captures: %llu",
+                    (unsigned long long)a.offered.load(),(unsigned long long)a.omitted.load(),(unsigned long long)a.unhealthy.load());
+                ImGui::TextWrapped("Legacy fallback samples up to four separate 20 ms windows (2M samples each). Counters are samples/jobs, not a probability of detecting every drone. Independent controls are available when the unified service is stopped.");
+                ImGui::BeginDisabled(a.unified);
+                if(a.live.running()){if(ImGui::Button("Stop legacy DJI diagnostic"))a.live.stop();}
+                else if(ImGui::Button("Start legacy DJI diagnostic"))a.live.start();
+                bool rid_enabled=a.remote_id.enabled();if(ImGui::Checkbox("Independent Wi-Fi Remote ID",&rid_enabled))a.remote_id.enable(rid_enabled);
+                ImGui::EndDisabled();
+            }
             ImGui::EndTabItem();
         }
         if(ImGui::BeginTabItem("Offline IQ review", nullptr, select_tab && std::string(select_tab)=="Offline IQ review" ? ImGuiTabItemFlags_SetSelected : 0)) {

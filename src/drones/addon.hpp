@@ -4,18 +4,70 @@
 #include "security/wifi_frame_event.hpp"
 #include <fstream>
 #include <filesystem>
+#include <functional>
+#include <sstream>
 
 namespace drone {
 // Optional observer only: never owns, configures or waits for the radio.
 class Addon {
 public:
-    Detector live, replay;
+    struct ClassifierState { bool enabled=false, ready=false; std::string detail="Classifier connection unavailable"; };
+    // Hooks share the existing inference worker; no second model/radio process.
+    std::function<bool()> start_classifier; // true only if this service started it
+    std::function<void()> stop_classifier;
+    std::function<ClassifierState()> classifier_state;
+    bool unified=false;
+    Detector live, replay, native;
+    std::atomic<uint64_t> native_offered{0}, native_omitted{0}, native_unhealthy{0}, native_max_observer_ns{0};
+    void start_unified() {
+        if(unified)return;
+        native_offered=0;native_omitted=0;native_unhealthy=0;native_max_observer_ns=0;
+        owned_classifier_=start_classifier ? start_classifier() : false;
+        owned_live_=!live.running();owned_rid_=!remote_id.enabled();
+        if(owned_live_){offered=0;omitted=0;unhealthy=0;live.start();}
+        if(owned_rid_)remote_id.enable(true);
+        native.start(true);unified=true;
+    }
+    void stop_unified() {
+        native.stop();
+        if(owned_live_)live.stop();
+        if(owned_rid_)remote_id.enable(false);
+        if(owned_classifier_&&stop_classifier)stop_classifier();
+        owned_classifier_=owned_live_=owned_rid_=false;unified=false;
+    }
     RemoteIdMonitor remote_id;
     std::atomic<uint64_t> offered{0}, omitted{0}, unhealthy{0};
     std::atomic<bool> replay_busy{false};
-    ~Addon() { cancel_=true; if(loader_.joinable()) loader_.join(); replay.stop(); live.stop(); }
+    ~Addon() { cancel_=true; if(loader_.joinable()) loader_.join(); replay.stop(); live.stop(); native.stop(); }
     void observe(const std::vector<std::complex<float>>& iq,
                  const rfmon::wifi_security::CaptureRecord& c) noexcept {
+        if(native.running()) {
+            const auto observer_start=std::chrono::steady_clock::now();
+            try {
+                native_offered+=iq.size();
+                if(!c.contiguous() || c.samples_received!=iq.size() || c.clock!=rfmon::wifi_security::ClockDomain::UsrpDevice ||
+                   !std::isfinite(c.sample_rate_hz)||c.sample_rate_hz<10e6||c.sample_rate_hz>250e6) {
+                    ++native_unhealthy;native_omitted+=iq.size();++native_epoch_;
+                } else {
+                    std::ostringstream key;key.precision(17);
+                    key<<c.run_id<<'/'<<c.radio_session<<'/'<<c.source<<'/'<<c.band<<'/'<<c.device<<'/'<<c.antenna
+                       <<'/'<<c.actual_rf_hz<<'/'<<c.actual_dsp_hz<<'/'<<c.capture_center_hz<<'/'<<c.sample_rate_hz;
+                    if(c.gain_db)key<<"/gain="<<*c.gain_db;
+                    if(c.retuned||key.str()!=native_source_){native_source_=key.str();++native_epoch_;}
+                    // One contiguous prefix; retain O4 history only over actual contiguous samples.
+                    const size_t n=std::min<size_t>(iq.size(),std::min<size_t>(40000000,size_t(c.sample_rate_hz*.160)));
+                    native_omitted+=iq.size()-n;
+                    const double center=c.actual_rf_hz!=0?c.actual_rf_hz+c.actual_dsp_hz:c.capture_center_hz;
+                    if(n)native.submit(iq.data(),n,c.sample_rate_hz,center,c.device_time_ns*1e-9,native_epoch_,
+                        "LIVE / run "+c.run_id+" / session "+std::to_string(c.radio_session)+
+                        " / capture "+std::to_string(c.capture_seq)+" / sample 0");
+                }
+            } catch(...) { ++native_unhealthy;++native_epoch_; }
+            const uint64_t elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now()-observer_start).count();
+            auto previous=native_max_observer_ns.load();
+            while(previous<elapsed&&!native_max_observer_ns.compare_exchange_weak(previous,elapsed)){}
+        }
         if(!live.running()) return;
         try {
             offered+=iq.size();
@@ -74,6 +126,9 @@ public:
         });
     }
 private:
+    bool owned_classifier_=false,owned_live_=false,owned_rid_=false;
+    uint64_t native_epoch_=0;
+    std::string native_source_;
     std::atomic<bool> cancel_{false};
     uint64_t epoch_=0; // single scanner processing lane
     std::thread loader_;

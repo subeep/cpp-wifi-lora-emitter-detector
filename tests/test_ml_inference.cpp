@@ -4,7 +4,16 @@
 #include <thread>
 using namespace rfmon;
 void require(bool condition,const char* why){if(!condition)throw std::runtime_error(why);}
-template<class F>void until(F f){for(int i=0;i<300&&!f();++i)std::this_thread::sleep_for(std::chrono::milliseconds(10));require(f(),"deadline waiting for fixture");}
+static const ml::Inference* inspected_worker=nullptr;
+template<class F>void until_at(int line,F f){
+    for(int i=0;i<300&&!f();++i)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if(!f()) {
+        const auto s=inspected_worker->snapshot();
+        throw std::runtime_error("deadline at line "+std::to_string(line)+": "+s.state+" / "+s.error+
+            " processed="+std::to_string(s.processed)+" dropped="+std::to_string(s.dropped));
+    }
+}
+#define until(...) until_at(__LINE__, __VA_ARGS__)
 int main(int argc,char** argv) {
     require(argc==2,"fixture path required");
     auto selection=ml::select_intervals(20000000,160000,true);
@@ -12,7 +21,7 @@ int main(int argc,char** argv) {
     require(ml::select_intervals(20000000,4000000,true).count==1,"copy budget exceeded");
     require(ml::select_intervals(160000,160000,true).count==1,"short capture duplicated");
     require(ml::select_intervals(20000000,160000,false).count==1,"legacy selection changed");
-    ml::Inference worker;
+    ml::Inference worker;inspected_worker=&worker;
     wifi_security::CaptureRecord c;c.run_id="fixture";c.radio_session=1;c.capture_seq=9007199254740993ull;
     c.samples_received=160000;c.sample_rate_hz=20e6;c.capture_center_hz=2440e6;c.band="wifi_2g4";
     std::vector<std::complex<float>> iq(160000,{1,2}),before=iq;

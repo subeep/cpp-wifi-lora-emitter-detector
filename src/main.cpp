@@ -358,6 +358,26 @@ int main() {
     ml::Inference model_inference; // Outlives scanner; disabled until explicitly started.
 #ifdef RFMON_ENABLE_DJI_DRONEID
     drone::Addon drones; // Outlives scanner and its processing lane.
+    drones.start_classifier=[&] {
+        if(model_inference.snapshot().enabled)return false;
+        ml::Options options;
+        options.model=std::string(PROJECT_ROOT_DIR)+"/data/drone_ml/2026-10-14/expanded_training_01/residual_model/model.pt";
+        options.python=std::string(PROJECT_ROOT_DIR)+"/data/drone_ml/runtime-2026-10-14/bin/python";
+        options.script=std::string(PROJECT_ROOT_DIR)+"/tools/drone_ml/live_worker.py";
+        return model_inference.start(options);
+    };
+    drones.stop_classifier=[&]{model_inference.stop();};
+    drones.classifier_state=[&] {
+        const auto s=model_inference.snapshot();
+        drone::Addon::ClassifierState state;state.enabled=s.enabled;state.ready=s.ready;
+        state.detail=s.state+" | processed "+std::to_string(s.processed)+" | dropped "+std::to_string(s.dropped)+
+            " | invalid "+std::to_string(s.invalid)+" | selected samples "+std::to_string(s.submitted_samples)+
+            " / offered "+std::to_string(s.offered_samples);
+        if(!s.error.empty())state.detail+=" | "+s.error;
+        if(!s.model_hash.empty())state.detail+=" | model "+s.model_hash.substr(0,12)+" / "+s.architecture;
+        if(!s.history.empty())state.detail+=" | Last candidate (not accepted): "+s.history.front().candidate;
+        return state;
+    };
     Scanner scanner([&](const auto& iq, const auto& record) { drones.observe(iq, record); model_inference.observe(iq, record); },
                     [&](const auto& frame) { drones.remote_id.submit(frame); });
 #else

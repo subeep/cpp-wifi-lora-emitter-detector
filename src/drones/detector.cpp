@@ -19,8 +19,9 @@
 extern char** environ;
 namespace drone {
 Detector::~Detector() { stop(); }
-void Detector::start() {
+void Detector::start(bool native_backend) {
     stop();
+    native_backend_=native_backend;
     { std::lock_guard<std::mutex> lock(mutex_); snapshot_ = {}; queue_.clear(); }
     dropped_=0; gap_=0; running_=true;
     thread_=std::thread(&Detector::run, this);
@@ -49,9 +50,9 @@ Snapshot Detector::snapshot() {
 void Detector::submit(const std::complex<float>* data, size_t count, double rate,
                       double frequency, double timestamp, uint64_t epoch, const std::string& source) {
     if (!running_) return;
-    if (!data || count == 0 || count > 2000000 || !std::isfinite(rate) || rate < 15.26e6 || rate > 100e6 || !std::isfinite(frequency) || !std::isfinite(timestamp)) { dropped_+=count; ++gap_; return; }
+    if (!data || count == 0 || count > (native_backend_?40000000u:2000000u) || !std::isfinite(rate) || rate < (native_backend_?10e6:15.26e6) || rate > (native_backend_?250e6:100e6) || (native_backend_ && count/rate>.160001) || !std::isfinite(frequency) || !std::isfinite(timestamp)) { dropped_+=count; ++gap_; return; }
     std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
-    if (!lock || queue_.size() >= 4) {
+    if (!lock || queue_.size() >= (native_backend_?1u:4u)) {
         dropped_+=count; ++gap_; return;
     }
     // Each RX gap/reconfiguration and local queue loss starts a new continuity epoch.
@@ -98,10 +99,12 @@ void Detector::run() {
         posix_spawn_file_actions_addclose(&actions,sockets[0]);
         posix_spawn_file_actions_addclose(&actions,sockets[1]);
         const char* args[]={DETECTOR_PYTHON,"-u",DETECTOR_SCRIPT,"--turbo",DETECTOR_TURBO,nullptr};
-        int rc=posix_spawn(&child,DETECTOR_PYTHON,&actions,nullptr,const_cast<char* const*>(args),environ);
+        const char* native_args[]={DETECTOR_NATIVE,nullptr};
+        int rc=posix_spawn(&child,native_backend_?DETECTOR_NATIVE:DETECTOR_PYTHON,&actions,nullptr,
+                           const_cast<char* const*>(native_backend_?native_args:args),environ);
         posix_spawn_file_actions_destroy(&actions);
         close(sockets[1]); sockets[1]=-1;
-        if (rc) throw std::runtime_error("Cannot launch Python decoder: "+std::string(strerror(rc)));
+        if (rc) throw std::runtime_error("Cannot launch decoder: "+std::string(strerror(rc)));
         // Nonblocking local IPC with SIGPIPE blocked only in this worker thread.
         sigset_t blocked;
         sigemptyset(&blocked); sigaddset(&blocked,SIGPIPE);
@@ -114,7 +117,7 @@ void Detector::run() {
         boost::property_tree::ptree hello;
         std::istringstream handshake(response); boost::property_tree::read_json(handshake,hello);
         if (!hello.get<bool>("ready",false)) throw std::runtime_error("Invalid decoder handshake");
-        status("Ready: DJI DroneID (checksum validated; sender unauthenticated)",true);
+        status(native_backend_?"Native DJI packets and experimental O4 evidence ready":"Ready: DJI DroneID (checksum validated; sender unauthenticated)",true);
         Chunk batch;
         uint64_t continuity=0;
         bool have_previous=false;
@@ -147,7 +150,7 @@ void Detector::run() {
             else batch.data.insert(batch.data.end(),part.data.begin(),part.data.end());
 
             const auto processing_start=std::chrono::steady_clock::now();
-            uint32_t count=static_cast<uint32_t>(std::min<size_t>(batch.data.size(),2000000));
+            uint32_t count=static_cast<uint32_t>(std::min<size_t>(batch.data.size(),native_backend_?40000000:2000000));
             char header[40]; memcpy(header,"DDIQ",4); memcpy(header+4,&count,4);
             memcpy(header+8,&batch.rate,8); memcpy(header+16,&batch.frequency,8);
             memcpy(header+24,&batch.timestamp,8); memcpy(header+32,&batch.epoch,8);
@@ -166,6 +169,26 @@ void Detector::run() {
             snapshot_.candidates+=result.get<uint64_t>("candidates",0);
             snapshot_.rejected+=result.get<uint64_t>("rejected",0);
             if (auto error=result.get_optional<std::string>("error")) { ++snapshot_.analysis_errors; snapshot_.status="Analysis error: "+*error; }
+            if(native_backend_) {
+                snapshot_.native_rows_omitted+=result.get<uint64_t>("packet_rows_omitted",0);
+                for(auto& item:result.get_child("native_packets")) {
+                    auto packet=item.second;
+                    packet.put("receiver_source",batch.source);
+                    packet.put("receiver_epoch",batch.receiver_epoch);
+                    std::ostringstream out;boost::property_tree::write_json(out,packet,false);
+                    if(snapshot_.native_packets.size()>=64)snapshot_.native_packets.erase(snapshot_.native_packets.begin());
+                    snapshot_.native_packets.push_back(out.str());++snapshot_.native_packet_count;
+                }
+                for(const auto& item:result.get_child("o4_evidence")) {
+                    ++snapshot_.o4_windows;
+                    snapshot_.o4_candidates+=item.second.get<bool>("candidate",false);
+                    auto evidence=item.second;
+                    evidence.put("receiver_source",batch.source);evidence.put("receiver_epoch",batch.receiver_epoch);
+                    evidence.put("sample_rate_hz",batch.rate);evidence.put("center_hz",batch.frequency);
+                    std::ostringstream out;boost::property_tree::write_json(out,evidence,false);
+                    snapshot_.o4_latest=out.str();
+                }
+            }
             for (auto& item:result.get_child("events")) {
                 auto& v=item.second;
                 Observation o;

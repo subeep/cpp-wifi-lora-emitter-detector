@@ -1,0 +1,100 @@
+{
+  "source": "/home/sudeep/Music/punjdrone",
+  "git_head": "89ad1ab19e368bcdf5077b52868ee0e661f4d68c",
+  "import_date": "2026-11-01",
+  "scope": "Linux passive DJI DSP and O4; no radio owner, UI, Windows or transmit tools",
+  "files": [
+    {
+      "path": "COPYING",
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+    },
+    {
+      "path": "THIRD_PARTY.md",
+      "sha256": "8fff5d9e2ddbaf637736f5486d03f322709873fe8533cb40101444eee769b74d"
+    },
+    {
+      "path": "include/droneid/dji.h",
+      "sha256": "d8feb6366239de3f257dbb4383683c64719914c2071e64c602f8d992f160caf1"
+    },
+    {
+      "path": "include/droneid/types.h",
+      "sha256": "3070f93ca41a2a853d0218da8dd22567640adbc167051e3a136b43833a2b97a3"
+    },
+    {
+      "path": "include/droneid/logging.h",
+      "sha256": "0cce17791956470e704c97d7ba66e1457d4ed3e87261c4e05a08a9c226fab470"
+    },
+    {
+      "path": "include/droneid/file_source.h",
+      "sha256": "af059b5280a801f329091e97c2451679951ed8f73c3f2a002a8a000d74450fee"
+    },
+    {
+      "path": "include/droneid/iq_source.h",
+      "sha256": "e2e51093da22ac6ae27f44e6cf88d05a4e9b33053b7f9d722edf14871e8fd029"
+    },
+    {
+      "path": "include/droneid/o4_detector.h",
+      "sha256": "f1b6766ecb1d8b1005d845a47374005a8e36198b464684c754835c9b272cee69"
+    },
+    {
+      "path": "src/dji/params.cpp",
+      "sha256": "23a7776faabd8e8266e65a51a599c2eefd3329d61a5cc5b213786346150b8172"
+    },
+    {
+      "path": "src/dji/dsp.cpp",
+      "sha256": "615e30f7b29ff35ba06d622a9d1abd936851b7b2841545919f74e984c4785460"
+    },
+    {
+      "path": "src/dji/dsp.hpp",
+      "sha256": "be475f9a32b784e0d69edfc5684ecbb9dd332e8a1979b93c2f8942954575a5a2"
+    },
+    {
+      "path": "src/dji/decode.cpp",
+      "sha256": "0e699d106b738ea4d7cbde7c07b87ffc4e338feb24aa31cec45b6f6c1c6afbf0"
+    },
+    {
+      "path": "src/fec/scrambler.cpp",
+      "sha256": "0917fcc0347fc59c8d8b660266051eb7fc54f710abcd161c1f9fc4070d5d0036"
+    },
+    {
+      "path": "src/fec/turbo.cpp",
+      "sha256": "054316eb7b344553ec5d74698db08ddbc44404b046d982f889faa0995530a883"
+    },
+    {
+      "path": "src/proto/frame.cpp",
+      "sha256": "1bb1c961b69dea47ce4b6fb4ac0919d6062ca73aba14d35744653237862e4702"
+    },
+    {
+      "path": "src/sdr/file_source.cpp",
+      "sha256": "9267b2d68bc0b135244f0fa8b911992d8a134ff55c1d95a00575efa914fe0d33"
+    },
+    {
+      "path": "src/o4/o4_detector.cpp",
+      "sha256": "39125030cc54a09de802f964dc43d5c43e7a36a2b8fb458cb927c51bd4b0a820"
+    },
+    {
+      "path": "third_party/crcpp/CRC.h",
+      "sha256": "01dd72f855dc1764c69a31df12f582ba02522830a1c2eecb1441a470d2fd8205"
+    },
+    {
+      "path": "third_party/crcpp/LICENSE",
+      "sha256": "954e7c6730168114b296fbcc60532fa7ce64236e1adf17c147878bb7949be09e"
+    },
+    {
+      "path": "tests/test_o4_detector.cpp",
+      "sha256": "37617e3963143a4cac0a2726ae47d4cbf4ff9c89942b065379c268fed5b8384c"
+    },
+    {
+      "path": "tests/test_resampler.cpp",
+      "sha256": "dbd8aa45947677b99cfed766db6662a699d54f4eb800da9d53f0de0d62637edf"
+    },
+    {
+      "path": "include/droneid/test/microtest.h",
+      "sha256": "3b262ccd613a522f377da92e5a4b5eb9e426df5fac114b32983662ad10e8d872"
+    },
+    {
+      "path": "tests/o4_fixture.h",
+      "sha256": "2565ada05ebd9b53336b8d7055ff23c88518b71ce252bc3c6ac4dbad0831caea"
+    }
+  ]
+}
