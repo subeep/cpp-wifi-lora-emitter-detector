@@ -19,6 +19,7 @@
 #include "backends/imgui_impl_opengl3.h"
 
 #ifdef RFMON_ENABLE_DJI_DRONEID
+#include "coordinated_panel.hpp"
 #include "drones/panel.hpp"
 #endif
 #include "config.hpp"
@@ -380,6 +381,8 @@ int main() {
     };
     Scanner scanner([&](const auto& iq, const auto& record) { drones.observe(iq, record); model_inference.observe(iq, record); },
                     [&](const auto& frame) { drones.remote_id.submit(frame); });
+    coordinated::PanelState coordinated_panel;
+    coordinated_panel.export_dir=std::string(PROJECT_ROOT_DIR)+"/data/drone_evidence";
 #else
     Scanner scanner([&](const auto& iq, const auto& record) { model_inference.observe(iq, record); });
 #endif
@@ -417,8 +420,16 @@ int main() {
         ScannerStatus status = scanner.status();
         std::string active_band = scanner.active_band();
         static std::string previous_model_source;
-        const auto model_source=active_band+"/"+status.active_step_label+"/"+std::to_string(status.connected)+
+        // Coordinated visits change every ~0.5 s; the worker's own per-capture
+        // source key already separates them, so only the mode is keyed here.
+        const bool coordinated_mode=active_band==BAND_COORDINATED;
+        const auto model_source=active_band+"/"+(coordinated_mode?std::string():status.active_step_label)+"/"+std::to_string(status.connected)+
             "/"+std::to_string(status.wifi_fixed_channel.value_or(-1));
+#ifdef RFMON_ENABLE_DJI_DRONEID
+        // Coordinated mode offers each whole visit to the native DJI/O4
+        // backend as consecutive messages; band modes keep the 160 ms prefix.
+        drones.native_max_capture_s=coordinated_mode?3600.0:0.160;
+#endif
         if(model_source!=previous_model_source){model_inference.invalidate();previous_model_source=model_source;}
         DeviceProfile profile = device_profile(selected_device);
         const bool drones_available =
@@ -543,6 +554,7 @@ int main() {
             {"Wi-Fi 2.4GHz", BAND_WIFI_2G4},
             {"Wi-Fi 5GHz", BAND_WIFI_5G},
             {"Wi-Fi both bands", BAND_WIFI_BOTH},
+            {"Coordinated (Sub-GHz > 2.4 > 5 GHz)", BAND_COORDINATED},
         };
         for (size_t i = 0; i < modes.size(); ++i) {
             bool selected = active_band == modes[i].second;
@@ -766,7 +778,8 @@ int main() {
             }ImGui::PopID();
         };
         auto draw_lora = [&] {
-            if(active_band!=BAND_SUB_GHZ){gui::note("Viewing retained LoRa data; receiver is monitoring another band.",true);
+            if(active_band==BAND_COORDINATED)gui::note("Coordinated mode: LoRa is decoded from each sub-GHz visit on derived channels; packets longer than a visit (slow SF11-12) can be cut.",true);
+            else if(active_band!=BAND_SUB_GHZ){gui::note("Viewing retained LoRa data; receiver is monitoring another band.",true);
                 if(ImGui::Button("Monitor LoRa band"))monitor_band(BAND_SUB_GHZ);}
             if(scanner.lora_laboratory_mode())gui::note("Nonstandard laboratory mode is active.",true);
             gui::note("LoRaWAN is structural parsing only. Attack rules, MIC verification and authenticated identity are unavailable.");
@@ -830,7 +843,11 @@ int main() {
             const auto enrollment_health=scanner.wifi_enrolment_health();
             if(enrollment_health.dropped_batches)gui::note("Wi-Fi inventory input was dropped; coverage is incomplete.",true);
             gui::Overview data;
-            data.captures=security->captures_ingested;data.groups=rf_rows[active_band].size();
+            // Coordinated mode feeds all three band registries; show them all.
+            const std::vector<std::string> overview_bands=active_band==BAND_COORDINATED?
+                std::vector<std::string>{BAND_SUB_GHZ,BAND_WIFI_2G4,BAND_WIFI_5G}:std::vector<std::string>{active_band};
+            data.captures=security->captures_ingested;data.groups=0;
+            for(const auto& b:overview_bands)data.groups+=rf_rows[b].size();
             data.queue_depth=security_queue.depth;data.queue_peak=security_queue.high_water;
             data.queue_loss=security->queue_events_dropped||security->queue_captures_dropped;
             data.lane_enabled=status.wifi_lane_enabled;data.lane_wait=status.wifi_lane_wait_s;data.lane_peak=status.wifi_lane_high_water;
@@ -839,7 +856,7 @@ int main() {
 #endif
             gui::draw_overview(ui,context,data,drones_available,[&]{
                 if(active_band==BAND_SUB_GHZ && scanner.lora_lock_freq())gui::note("Frequency lock active: wideband map is retained; wideband scan is skipped.",true);
-                for(const auto& range:track_ranges_for_band(active_band))draw_frequency_track(range,rf_rows[active_band]);
+                for(const auto& b:overview_bands)for(const auto& range:track_ranges_for_band(b))draw_frequency_track(range,rf_rows[b]);
             });
         };
         gui::draw_workspace(ui,context,drones_available,[&](gui::Page page){
@@ -851,7 +868,7 @@ int main() {
                     if(ImGui::BeginTabItem("Captures")){draw_captures();ImGui::EndTabItem();}
                     if(ImGui::BeginTabItem("Model Inference")){ml::draw_panel(model_inference,status.connected,active_band);ImGui::EndTabItem();}
 #ifdef RFMON_ENABLE_DJI_DRONEID
-                    if(ImGui::BeginTabItem("Drones")){drone::draw_panel(drones,gui::band_label(active_band),status.connected);ImGui::EndTabItem();}
+                    if(ImGui::BeginTabItem("Drones")){coordinated::draw_section(coordinated_panel,scanner,drones,model_inference,status.connected);drone::draw_panel(drones,gui::band_label(active_band),status.connected);ImGui::EndTabItem();}
 #endif
                     if(ImGui::BeginTabItem("Display")){if(ImGui::Button("Return to modern workspace"))ui.legacy=false;ImGui::EndTabItem();}
                     ImGui::EndTabBar();
@@ -868,6 +885,7 @@ int main() {
             case gui::Page::Count:break;
             case gui::Page::Drones:
 #ifdef RFMON_ENABLE_DJI_DRONEID
+                coordinated::draw_section(coordinated_panel,scanner,drones,model_inference,status.connected);
                 drone::draw_panel(drones,gui::band_label(active_band),status.connected,ui.drones_offline?"Offline IQ review":nullptr);ui.drones_offline=false;
 #endif
                 break;

@@ -8,6 +8,7 @@ std::string band_label(const std::string& band) {
     if(band=="wifi_2g4")return "Wi-Fi 2.4 GHz";
     if(band=="wifi_5g")return "Wi-Fi 5 GHz";
     if(band=="sub_ghz_ism")return "LoRa / Sub-GHz ISM";
+    if(band=="coordinated")return "Coordinated Sub-GHz > 2.4 > 5 GHz";
     return band;
 }
 const char* page_name(Page p) {

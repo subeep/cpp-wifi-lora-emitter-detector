@@ -5,11 +5,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <future>
 
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#include "channelize.hpp"
 #include "classifier.hpp"
 #include "fingerprint.hpp"
 #include "lora_phy.hpp"
@@ -471,8 +473,6 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
     provenance.device_args=profile.device_args;provenance.antenna=profile.antenna;provenance.overflow=overflow;
     provenance.run_id=security_run_id_;provenance.radio_session=radio_session_;
     provenance.capture_seq=++lora_security_capture_seq_;provenance.timing=received.timing;
-    const bool skip_sync_check=lora_laboratory_mode();
-    std::vector<LoraPacketRow> security_rows;
     note_capture_health(!iq_raw.empty());
     std::string save_directory;
     {
@@ -495,10 +495,25 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
         std::lock_guard<std::mutex> lock(status_mutex_);
         status_.last_overflow = overflow;
     }
+    decode_lora_iq(iq_raw, provenance, threshold_db, detections, /*energy_segments=*/true);
+}
+
+// The LoRa decode half of run_lora_listen_step(), unchanged, also used by
+// coordinated mode on channels derived from the sub-GHz visit capture. With
+// energy_segments false the 500 kHz energy map is skipped: the wideband
+// sub-GHz visit already feeds the Active emitters table.
+void Scanner::decode_lora_iq(const std::vector<std::complex<float>>& iq_raw, const LoraCapture& provenance,
+                             double threshold_db, std::vector<Detection>& detections, bool energy_segments) {
+    const double actual_rate = provenance.sample_rate_hz;
+    const double freq_hz = provenance.requested_center_hz;
+    const bool overflow = provenance.overflow;
+    const bool skip_sync_check = lora_laboratory_mode();
+    std::vector<LoraPacketRow> security_rows;
     if (iq_raw.empty()) {
         lora_security_->submit(lora_security::make_batch(provenance,0,{},skip_sync_check));return;
     }
 
+    if (energy_segments) {
     // Feed the Active emitters table from this same capture rather
     // than requiring a separate wideband one - this is the only
     // capture taken at all while locked to one frequency (see run()'s
@@ -521,6 +536,7 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
         for (const auto& seg : segments) {
             detections.push_back(Detection{BAND_SUB_GHZ, seg, classify(BAND_SUB_GHZ, seg)});
         }
+    }
     }
 
     std::string ts = current_time_hhmmss();
@@ -1131,6 +1147,18 @@ void Scanner::run_wifi_lane_job(WifiStepJob& job) {
         status_.last_overflow = job.last_overflow;
         return;
     }
+    if (job.observer_only) {
+        if (wifi_iq_observer_)
+            for (size_t i = 0; i < job.captures.size() && i < job.capture_records.size(); ++i) {
+                try { wifi_iq_observer_(job.captures[i], job.capture_records[i]); } catch (...) {}
+            }
+        retain_captures(job, job.capture_records);
+        return;
+    }
+    // Processing moves each record into the security monitor; keep a copy of
+    // the provenance for retained captures first.
+    std::vector<wifi_security::CaptureRecord> records_for_retention;
+    if (iq_retention()) records_for_retention = job.capture_records;
     for (auto& r : job.empty_records) security_->submit(std::move(r));
     if (!job.captures.empty()) {
         std::vector<Detection> detections;
@@ -1141,6 +1169,418 @@ void Scanner::run_wifi_lane_job(WifiStepJob& job) {
 #endif
                               );
     }
+    retain_captures(job, records_for_retention);
+}
+
+void Scanner::retain_captures(WifiStepJob& job, const std::vector<wifi_security::CaptureRecord>& records) {
+    std::lock_guard<std::mutex> lock(retention_mutex_);
+    if (!iq_retention_) return;
+    for (size_t i = 0; i < job.captures.size() && i < records.size(); ++i) {
+        retained_.push_back({records[i],
+                             std::make_shared<const std::vector<std::complex<float>>>(std::move(job.captures[i]))});
+        while (retained_.size() > iq_retention_) retained_.pop_front();
+    }
+}
+
+void Scanner::set_iq_retention(size_t captures) {
+    std::lock_guard<std::mutex> lock(retention_mutex_);
+    iq_retention_ = std::min<size_t>(captures, 64);
+    while (retained_.size() > iq_retention_) retained_.pop_front();
+}
+
+size_t Scanner::iq_retention() const {
+    std::lock_guard<std::mutex> lock(retention_mutex_);
+    return iq_retention_;
+}
+
+std::optional<Scanner::RetainedCapture> Scanner::retained_capture(uint64_t capture_seq) const {
+    std::lock_guard<std::mutex> lock(retention_mutex_);
+    for (const auto& r : retained_)
+        if (r.record.capture_seq == capture_seq) return r;
+    return std::nullopt;
+}
+
+std::vector<uint64_t> Scanner::retained_capture_seqs() const {
+    std::lock_guard<std::mutex> lock(retention_mutex_);
+    std::vector<uint64_t> out;
+    for (const auto& r : retained_) out.push_back(r.record.capture_seq);
+    return out;
+}
+
+double Scanner::now_steady_s() { return now_seconds(); }
+
+void Scanner::set_coordinated_schedule(std::optional<coord::Schedule> schedule) {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    coordinated_schedule_ = std::move(schedule);
+    ++coordinated_schedule_version_;
+}
+
+std::optional<coord::Schedule> Scanner::coordinated_schedule() const {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    return coordinated_schedule_;
+}
+
+namespace {
+double default_wifi_rate(const DeviceProfile& profile, std::optional<double> override_hz) {
+    return override_hz.value_or(
+        std::min(std::max(WIFI_2G4_SAMPLE_RATE_HZ, WIFI_5G_SAMPLE_RATE_HZ), profile.max_sample_rate_hz));
+}
+}  // namespace
+
+coord::Schedule Scanner::effective_coordinated_schedule() const {
+    std::lock_guard<std::mutex> lock(config_mutex_);
+    if (coordinated_schedule_) return *coordinated_schedule_;
+    return coord::default_schedule(default_wifi_rate(device_profile(device_type_), wifi_sample_rate_hz_));
+}
+
+CoordinatedStatus Scanner::coordinated_status() const {
+    std::lock_guard<std::mutex> lock(status_mutex_);
+    return coordinated_status_;
+}
+
+std::deque<coord::VisitRecord> Scanner::coordinated_visits() const {
+    std::lock_guard<std::mutex> lock(status_mutex_);
+    return coordinated_visits_;
+}
+
+// Sub-GHz lane: the same energy-segment processing a sub-GHz scan step gets,
+// then LoRa decoding on each LoRa channel derived from this one capture. Runs
+// on a SerialLane, so nothing may escape (an exception would terminate).
+void Scanner::run_subghz_visit_job(SubGhzVisitJob& job) {
+    try {
+        std::vector<wifi_security::CaptureRecord> no_records;  // sub-GHz steps have none
+        process_step_captures(job.step, BAND_SUB_GHZ, job.threshold, job.actual_rate, job.captures, no_records,
+                              coordinated_subghz_detections_);
+    } catch (...) {
+    }
+    try {
+        const auto& wide = job.captures.front();
+        const double half_span = coord::usable_half_span(job.actual_rate);
+        // The widest LoRa hypothesis; narrower ones are decimated from it in
+        // decode_lora_iq(), exactly as for the 500 kHz LoRa listen capture.
+        const double lora_rate = *std::max_element(LORA_LISTEN_BW_LIST_HZ.begin(), LORA_LISTEN_BW_LIST_HZ.end());
+        const double ratio = job.actual_rate / lora_rate;
+        if (ratio >= 1 && std::abs(ratio - std::round(ratio)) < 1e-9) {
+            const size_t decim = size_t(std::llround(ratio));
+            std::vector<double> channels;
+            for (double f : LORA_LISTEN_CHANNELS_HZ)
+                if (std::abs(f - job.step.center_hz) + lora_rate / 2 <= half_span) channels.push_back(f);
+            std::vector<std::future<std::vector<std::complex<float>>>> derived;
+            for (double f : channels)
+                derived.push_back(std::async(std::launch::async, [&wide, &job, f, lora_rate] {
+                    return derive_channel(wide, job.actual_rate, f - job.step.center_hz, lora_rate);
+                }));
+            for (size_t i = 0; i < channels.size(); ++i) {
+                std::vector<std::complex<float>> iq = derived[i].get();
+                LoraCapture provenance;
+                provenance.sample_rate_hz = lora_rate;
+                provenance.requested_sample_rate_hz = lora_rate;
+                provenance.requested_center_hz = channels[i];
+                provenance.requested_duration_s = double(iq.size()) / lora_rate;
+                provenance.host_start_unix_s = job.host_start_unix_s;
+                provenance.requested_gain_db = job.gain_db;
+                provenance.device_args = job.device_args;
+                provenance.antenna = job.antenna;
+                provenance.overflow = job.overflow;
+                provenance.run_id = security_run_id_;
+                provenance.radio_session = job.radio_session;
+                provenance.capture_seq = ++lora_security_capture_seq_;
+                // Output sample k is input sample k*decim (channelize.hpp), so
+                // device time is unchanged and sample indices scale by decim.
+                CaptureTiming t = job.timing;
+                t.requested_samples /= decim;
+                for (auto& o : t.overflows) o.at_sample /= decim;
+                t.actual_dsp_hz += channels[i] - job.step.center_hz;
+                provenance.timing = t;
+                decode_lora_iq(iq, provenance, job.threshold, coordinated_subghz_detections_, /*energy_segments=*/false);
+            }
+        }
+    } catch (...) {
+    }
+    if (job.cycle_end) {
+        registry_lora_.update_cycle(coordinated_subghz_detections_, now_seconds());
+        coordinated_subghz_detections_.clear();
+    }
+}
+
+void Scanner::run_coordinated(const DeviceProfile& profile, std::optional<double> wifi_rate_override) {
+    const double wifi_rate = default_wifi_rate(profile, wifi_rate_override);
+    const auto lower_priority = [] { (void)setpriority(PRIO_PROCESS, id_t(syscall(SYS_gettid)), WIFI_LANE_NICE); };
+    coordinated_subghz_detections_.clear();
+    // Lanes are declared after everything their jobs touch and are drained
+    // (destroyed) before this function returns, so no job outlives the mode.
+    SerialLane<WifiStepJob> wifi_lane([this](WifiStepJob& j) { run_wifi_lane_job(j); }, lower_priority);
+    SerialLane<SubGhzVisitJob> sub_lane([this](SubGhzVisitJob& j) { run_subghz_visit_job(j); }, lower_priority);
+    // One job running plus one queued per lane; a third visit is dropped and
+    // counted rather than making acquisition wait.
+    constexpr size_t kLaneOutstanding = 2;
+
+    coord::Schedule schedule;
+    uint64_t version = ~uint64_t(0);
+    std::vector<size_t> cursors;
+    std::vector<double> first_wrap_s;         // per slot, -1 until the cursor first wraps
+    std::vector<uint64_t> first_wrap_visits;  // slot visit count at that wrap
+    uint64_t cycle = 0, visit_seq = 0;
+    {
+        std::lock_guard<std::mutex> lock(status_mutex_);
+        coordinated_status_ = CoordinatedStatus{};
+        coordinated_status_.active = true;
+        coordinated_visits_.clear();
+        status_.cycle_count = 0;
+    }
+    std::fprintf(stderr, "Coordinated mode: started\n");
+    const auto still_coordinated = [this] {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        return active_band_ == BAND_COORDINATED;
+    };
+    const auto publish_visit = [this](const coord::VisitRecord& r) {
+        std::lock_guard<std::mutex> lock(status_mutex_);
+        if (!coordinated_visits_.empty() && coordinated_visits_.back().visit_seq == r.visit_seq) coordinated_visits_.back() = r;
+        else coordinated_visits_.push_back(r);
+        while (coordinated_visits_.size() > 160) coordinated_visits_.pop_front();
+        if (r.in_progress) coordinated_status_.current = r;
+        else coordinated_status_.current.reset();
+    };
+
+    while (!stop_flag_.load() && still_coordinated()) {
+        double threshold;
+        std::string conflict;
+        bool new_schedule = false;
+        {
+            std::lock_guard<std::mutex> lock(config_mutex_);
+            threshold = threshold_db_;
+            if (wifi_fixed_channel_) conflict = "A fixed Wi-Fi channel is set; clear it to run coordinated mode.";
+            else if (lora_lock_freq_) conflict = "A LoRa frequency lock is set; clear it to run coordinated mode.";
+            if (coordinated_schedule_version_ != version) {
+                version = coordinated_schedule_version_;
+                schedule = coordinated_schedule_.value_or(coord::default_schedule(wifi_rate));
+                new_schedule = true;
+            }
+            if (gain_dirty_) {
+                sdr_->set_gain(gain_db_);
+                gain_dirty_ = false;
+            }
+        }
+        const std::string error = coord::validate(schedule, std::max(profile.max_sample_rate_hz, wifi_rate));
+        if (new_schedule) {
+            // A schedule change is a new configuration: cursors and measured
+            // sweeps restart; earlier visit records stay as history.
+            cursors.assign(schedule.slots.size(), 0);
+            first_wrap_s.assign(schedule.slots.size(), -1.0);
+            first_wrap_visits.assign(schedule.slots.size(), 0);
+            std::lock_guard<std::mutex> lock(status_mutex_);
+            coordinated_status_.config_hash = coord::schedule_hash(schedule);
+            coordinated_status_.estimate = coord::estimate(schedule);
+            coordinated_status_.slots.clear();
+            for (const auto& slot : schedule.slots) {
+                CoordinatedSlotStatus s;
+                s.band = slot.band;
+                s.enabled = slot.enabled;
+                s.list_size = slot.visits.size();
+                coordinated_status_.slots.push_back(s);
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(status_mutex_);
+            coordinated_status_.conflict = conflict;
+            coordinated_status_.config_error = error;
+            if (!conflict.empty() || !error.empty()) {
+                status_.active_band = BAND_COORDINATED;
+                status_.active_step_label = conflict.empty() ? "Coordinated: invalid schedule" : "Coordinated: refused (conflict)";
+            }
+        }
+        if (!conflict.empty() || !error.empty()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            continue;
+        }
+
+        // Plan the whole cycle first so the last sub-GHz visit can commit the
+        // sub-GHz registry (one commit per cycle, as the sub-GHz mode does).
+        struct Planned { size_t slot, visit; bool last_of_slot; };
+        std::vector<Planned> planned;
+        std::vector<bool> wrapped(schedule.slots.size(), false);
+        for (size_t si = 0; si < schedule.slots.size(); ++si) {
+            const size_t before = cursors[si];
+            const auto idx = coord::next_visits(schedule.slots[si], cursors[si]);
+            const size_t n = schedule.slots[si].visits.size();
+            wrapped[si] = !idx.empty() && before + idx.size() >= n;
+            for (size_t k = 0; k < idx.size(); ++k) planned.push_back({si, idx[k], k + 1 == idx.size()});
+        }
+
+        const double cycle_start = now_seconds();
+        bool abandoned = false;
+        bool any_overflow = false;
+        for (const auto& p : planned) {
+            if (stop_flag_.load() || !still_coordinated()) { abandoned = true; break; }
+            {
+                std::lock_guard<std::mutex> lock(config_mutex_);
+                if (coordinated_schedule_version_ != version || wifi_fixed_channel_ || lora_lock_freq_) { abandoned = true; }
+            }
+            if (abandoned) break;
+            const coord::Slot& slot = schedule.slots[p.slot];
+            const coord::Visit& v = slot.visits[p.visit];
+            coord::VisitRecord rec;
+            rec.cycle = cycle;
+            rec.visit_seq = ++visit_seq;
+            rec.band = v.band;
+            rec.label = v.label;
+            rec.kind = v.kind;
+            rec.center_hz = v.center_hz;
+            rec.rate_hz = v.sample_rate_hz;
+            rec.usable_half_span_hz = coord::usable_half_span(v.sample_rate_hz);
+            rec.start_s = now_seconds();
+            rec.in_progress = true;
+            publish_visit(rec);
+            {
+                std::lock_guard<std::mutex> lock(status_mutex_);
+                status_.active_band = v.band;
+                status_.active_step_label = v.label;
+            }
+            const double host_start = std::chrono::duration<double>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            const double capture_s = slot.dwell_s + schedule.preroll_s;
+            CaptureResult cr = sdr_->capture_detailed(v.center_hz, v.sample_rate_hz, capture_s, schedule.settle_s,
+                                                      /*retune_always=*/true);
+            rec.end_s = now_seconds();
+            rec.in_progress = false;
+            const double actual_rate = cr.sample_rate_hz;
+            if (std::isfinite(actual_rate) && actual_rate > 0) {
+                rec.rate_hz = actual_rate;
+                rec.usable_half_span_hz = coord::usable_half_span(actual_rate);
+                rec.acquired_s = double(cr.samples.size()) / actual_rate;
+            }
+            rec.valid = !cr.samples.empty() && !cr.overflow && !cr.timing.timed_out && !cr.timing.exception;
+            any_overflow = any_overflow || cr.overflow;
+            note_capture_health(!cr.samples.empty());
+            const ScanStep step{v.band, v.center_hz, v.sample_rate_hz, v.label};
+            bool admitted = false;
+            if (v.kind == coord::VisitKind::SubGhz) {
+                if (!cr.samples.empty()) {
+                    SubGhzVisitJob job;
+                    job.step = step;
+                    job.threshold = threshold;
+                    job.actual_rate = actual_rate;
+                    job.host_start_unix_s = host_start;
+                    job.gain_db = gain();
+                    job.timing = cr.timing;
+                    job.overflow = cr.overflow;
+                    job.radio_session = radio_session_;
+                    job.device_args = profile.device_args;
+                    job.antenna = profile.antenna;
+                    // Commit the registry with the slot's last visit; a dropped
+                    // last visit leaves detections for the next commit.
+                    job.cycle_end = p.last_of_slot;
+                    job.captures.push_back(std::move(cr.samples));
+                    admitted = sub_lane.try_push(job, kLaneOutstanding);
+                }
+            } else {
+                WifiStepJob job;
+                job.step = step;
+                job.band = v.band;
+                job.threshold = threshold;
+                job.actual_rate = actual_rate;
+                job.observer_only = v.kind == coord::VisitKind::DroneOnly;
+                auto record = new_capture_record(step, profile, v.sample_rate_hz, capture_s, cr);
+                rec.capture_seq = record.capture_seq;  // links detector evidence back to this visit
+                if (v.kind == coord::VisitKind::WifiChannel) {
+                    std::lock_guard<std::mutex> lock(status_mutex_);
+                    status_.wifi_requested_rate_hz = v.sample_rate_hz;
+                    status_.wifi_actual_rate_hz = !cr.samples.empty() && std::isfinite(actual_rate) && actual_rate > 0
+                        ? std::optional<double>(actual_rate) : std::nullopt;
+                }
+#ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
+                if (!job.observer_only && !cr.samples.empty() && cyclo_shadow_.enabled()) {
+                    cyclo::CaptureContext context;
+                    context.band_ghz = v.band == BAND_WIFI_2G4 ? 2 : 5;
+                    context.radio_session = record.radio_session;
+                    context.capture_sequence = record.capture_seq;
+                    context.submission_epoch = cyclo_shadow_.epoch();
+                    context.sample_rate_hz = cr.sample_rate_hz;
+                    context.capture_center_hz = v.center_hz;
+                    context.source_samples = cr.samples.size();
+                    context.device_time_valid = cr.timing.device_time_valid;
+                    context.first_device_time_ns = cr.timing.device_time_ns;
+                    context.capture_overflow = cr.overflow;
+                    context.timed_out = cr.timing.timed_out;
+                    const auto prefix = cyclo::continuous_capture_prefix(cr.timing, cr.samples.size(), cr.overflow);
+                    job.cyclo_inputs[0] = {context, prefix};
+                }
+#endif
+                if (cr.samples.empty()) {
+                    // Empty capture: still coverage for the security monitor,
+                    // submitted through the lane so records stay in order.
+                    if (!job.observer_only) job.empty_records.push_back(std::move(record));
+                } else {
+                    job.capture_records.push_back(std::move(record));
+                    job.captures.push_back(std::move(cr.samples));
+                }
+                const bool has_iq = !job.captures.empty();
+                if (has_iq || !job.empty_records.empty())
+                    admitted = wifi_lane.try_push(job, kLaneOutstanding) && has_iq;
+            }
+            rec.analysed = admitted;
+            publish_visit(rec);
+            {
+                std::lock_guard<std::mutex> lock(status_mutex_);
+                auto& s = coordinated_status_.slots[p.slot];
+                ++s.visits;
+                if (rec.valid) { ++s.valid_visits; s.acquired_s += rec.acquired_s; }
+                if (admitted) { ++s.analysed_visits; s.analysed_s += rec.acquired_s; }
+                else if (rec.acquired_s > 0) ++s.lane_drops;
+                s.cursor = cursors[p.slot];
+                s.last_visit_end_s = rec.end_s;
+                if (cr.overflow) ++coordinated_status_.overflows;
+                if (rec.acquired_s == 0) ++coordinated_status_.empty_captures;
+                if (p.last_of_slot && wrapped[p.slot]) {
+                    // Wrap points fall 3 or 4 cycles apart for 14 centres at
+                    // 4 per cycle, so average from the first wrap onwards.
+                    if (first_wrap_s[p.slot] < 0) {
+                        first_wrap_s[p.slot] = rec.end_s;
+                        first_wrap_visits[p.slot] = s.visits;
+                    } else if (s.visits > first_wrap_visits[p.slot]) {
+                        s.last_sweep_s = (rec.end_s - first_wrap_s[p.slot]) * double(s.list_size) /
+                                         double(s.visits - first_wrap_visits[p.slot]);
+                    }
+                }
+            }
+        }
+        if (abandoned) continue;  // restarts with the new schedule / exits on mode change
+        ++cycle;
+        {
+            std::lock_guard<std::mutex> lock(status_mutex_);
+            coordinated_status_.cycle = cycle;
+            coordinated_status_.last_cycle_s = now_seconds() - cycle_start;
+            status_.cycle_count = int(cycle);
+            status_.last_overflow = any_overflow;
+        }
+        // Same sustained-RX-stall recovery as the band modes.
+        if (rx_fail_streak_ >= kRxStallThreshold && !stop_flag_.load()) {
+            SdrDeviceType reconnect_type;
+            std::optional<double> reconnect_gain;
+            {
+                std::lock_guard<std::mutex> lock(config_mutex_);
+                reconnect_type = device_type_;
+                reconnect_gain = gain_db_;
+            }
+            if (connect_sdr(device_profile(reconnect_type), reconnect_gain)) {
+                rx_fail_streak_ = 0;
+                std::lock_guard<std::mutex> lock(status_mutex_);
+                status_.rx_stalled = false;
+            }
+        }
+    }
+
+    wifi_lane.close();
+    sub_lane.close();
+    const auto ws = wifi_lane.stats();
+    const auto ss = sub_lane.stats();
+    std::fprintf(stderr, "Coordinated mode: stopped after %llu cycles; Wi-Fi lane %llu jobs, sub-GHz lane %llu jobs\n",
+                 static_cast<unsigned long long>(cycle), static_cast<unsigned long long>(ws.jobs_done),
+                 static_cast<unsigned long long>(ss.jobs_done));
+    coordinated_subghz_detections_.clear();
+    std::lock_guard<std::mutex> lock(status_mutex_);
+    coordinated_status_.active = false;
+    coordinated_status_.current.reset();
 }
 
 void Scanner::run() {
@@ -1215,6 +1655,15 @@ void Scanner::run() {
             }
         }
         const std::string requested_band = band;
+        if (band == BAND_COORDINATED) {
+            // Explicit coordinated mode owns its own lanes; finish any queued
+            // band-mode Wi-Fi work first so the two never run together.
+            if (wifi_lane) wifi_lane->wait_idle();
+            run_coordinated(profile, wifi_rate_override);
+            last_band_seen = requested_band;
+            band_cycle_count = 0;
+            continue;
+        }
         if (band == BAND_WIFI_BOTH) {
             band = next_wifi_5g ? BAND_WIFI_5G : BAND_WIFI_2G4;
             next_wifi_5g = !next_wifi_5g;

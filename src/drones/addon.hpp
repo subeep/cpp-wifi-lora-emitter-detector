@@ -2,6 +2,7 @@
 #include "detector.hpp"
 #include "remote_id.hpp"
 #include "security/wifi_frame_event.hpp"
+#include <algorithm>
 #include <fstream>
 #include <filesystem>
 #include <functional>
@@ -19,6 +20,14 @@ public:
     bool unified=false;
     Detector live, replay, native;
     std::atomic<uint64_t> native_offered{0}, native_omitted{0}, native_unhealthy{0}, native_max_observer_ns{0};
+    // Contiguous input offered to the native backend per capture, as
+    // consecutive <=160 ms messages (the message bound is separate from the
+    // observed duration). 0.160 keeps the band modes' single-prefix
+    // behaviour; coordinated mode raises it to cover each whole visit. The
+    // backend's own timestamp check turns any message it drops into a
+    // discontinuity, so later chunks never bridge a gap.
+    std::atomic<double> native_max_capture_s{0.160};
+    std::atomic<uint64_t> native_chunks{0};
     void start_unified() {
         if(unified)return;
         native_offered=0;native_omitted=0;native_unhealthy=0;native_max_observer_ns=0;
@@ -54,13 +63,20 @@ public:
                        <<'/'<<c.actual_rf_hz<<'/'<<c.actual_dsp_hz<<'/'<<c.capture_center_hz<<'/'<<c.sample_rate_hz;
                     if(c.gain_db)key<<"/gain="<<*c.gain_db;
                     if(c.retuned||key.str()!=native_source_){native_source_=key.str();++native_epoch_;}
-                    // One contiguous prefix; retain O4 history only over actual contiguous samples.
-                    const size_t n=std::min<size_t>(iq.size(),std::min<size_t>(40000000,size_t(c.sample_rate_hz*.160)));
-                    native_omitted+=iq.size()-n;
+                    // Consecutive contiguous messages from the capture start; retain O4 history
+                    // only over actual contiguous samples.
+                    const size_t chunk=std::min<size_t>(40000000,size_t(c.sample_rate_hz*.160));
+                    const double limit_s=std::clamp(native_max_capture_s.load(),.160,3600.);
+                    const size_t total=std::min<size_t>(iq.size(),size_t(c.sample_rate_hz*limit_s));
+                    native_omitted+=iq.size()-total;
                     const double center=c.actual_rf_hz!=0?c.actual_rf_hz+c.actual_dsp_hz:c.capture_center_hz;
-                    if(n)native.submit(iq.data(),n,c.sample_rate_hz,center,c.device_time_ns*1e-9,native_epoch_,
-                        "LIVE / run "+c.run_id+" / session "+std::to_string(c.radio_session)+
-                        " / capture "+std::to_string(c.capture_seq)+" / sample 0");
+                    for(size_t offset=0;chunk&&offset<total;offset+=chunk) {
+                        const size_t n=std::min(chunk,total-offset);
+                        ++native_chunks;
+                        native.submit(iq.data()+offset,n,c.sample_rate_hz,center,c.device_time_ns*1e-9+offset/c.sample_rate_hz,native_epoch_,
+                            "LIVE / run "+c.run_id+" / session "+std::to_string(c.radio_session)+
+                            " / capture "+std::to_string(c.capture_seq)+" / sample "+std::to_string(offset));
+                    }
                 }
             } catch(...) { ++native_unhealthy;++native_epoch_; }
             const uint64_t elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(

@@ -37,6 +37,10 @@ constexpr const char* BAND_SUB_GHZ = "sub_ghz_ism";
 constexpr const char* BAND_WIFI_2G4 = "wifi_2g4";
 constexpr const char* BAND_WIFI_5G = "wifi_5g";
 constexpr const char* BAND_WIFI_BOTH = "wifi_both";
+// Explicit coordinated mode: sub-GHz -> 2.4 GHz -> 5 GHz -> repeat, with every
+// applicable module fed from each visit (coordinated_schedule.hpp). Uses the
+// three bands' own registries; it has none of its own.
+constexpr const char* BAND_COORDINATED = "coordinated";
 
 // --- Sub-GHz ISM band (India) ---
 // WPC de-licensed 865-867 MHz band used by LoRaWAN IN865, with a few

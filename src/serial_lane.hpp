@@ -77,6 +77,22 @@ public:
         return waited ? wait_s : 0.0;
     }
 
+    // Non-blocking push: queues the job only if fewer than `max_outstanding`
+    // jobs are queued or running. Returns false (job not taken) otherwise, so
+    // a producer that must never wait can count the loss instead.
+    bool try_push(Job& job, size_t max_outstanding) {
+        assert(max_outstanding >= 1);
+        assert(std::this_thread::get_id() != worker_id_.load());
+        std::unique_lock<std::mutex> lock(mu_);
+        assert(!closing_);
+        if (q_.size() + running_ >= max_outstanding) return false;
+        q_.push_back(std::move(job));
+        if (q_.size() + running_ > stats_.high_water) stats_.high_water = q_.size() + running_;
+        lock.unlock();
+        work_cv_.notify_one();
+        return true;
+    }
+
     // Blocks until every pushed job has run and been destroyed.
     void wait_idle() {
         assert(std::this_thread::get_id() != worker_id_.load());
