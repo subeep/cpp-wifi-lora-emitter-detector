@@ -142,6 +142,14 @@ What this shows: coordinated mode runs all three bands from one radio with zero 
 - The GUI section on the real desktop with the real receiver (no desktop automation available here); it is verified offscreen with the production panel code and live through the same `Scanner` API. Open **Drones → Start coordinated detection** to see it. The Export button itself was not clicked in a test; the export function it calls is tested offline and live.
 - A live DJI DroneID packet, a live Remote ID broadcast, or a live LoRa packet in coordinated mode — none were on air (ESP32 Remote ID rig not connected).
 
+## Side addition — Bluetooth & Zigbee page (3 Nov 2026)
+
+Receive-only BLE advertising and 802.15.4 / Zigbee decoding from the existing
+2.4 GHz captures, a new workspace page and Bluetooth Remote ID on the Drones page.
+Live X310: thousands of CRC-valid BLE adverts, 0 dropped captures with the final
+queue; no 802.15.4 traffic heard (real-radio Zigbee not yet verified). Details:
+[docs/SHORTRANGE_BLUETOOTH_ZIGBEE_2026-11-03.md](docs/SHORTRANGE_BLUETOOTH_ZIGBEE_2026-11-03.md).
+
 ## Known limits (unchanged by this work)
 
 - One receiver, time-shared: a transmission entirely between visits is missed; no schedule guarantees detection.

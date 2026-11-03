@@ -70,7 +70,7 @@ public:
                     const double limit_s=std::clamp(native_max_capture_s.load(),.160,3600.);
                     const size_t total=std::min<size_t>(iq.size(),size_t(c.sample_rate_hz*limit_s));
                     native_omitted+=iq.size()-total;
-                    const double center=c.actual_rf_hz!=0?c.actual_rf_hz+c.actual_dsp_hz:c.capture_center_hz;
+                    const double center=c.stream_center_hz();
                     for(size_t offset=0;chunk&&offset<total;offset+=chunk) {
                         const size_t n=std::min(chunk,total-offset);
                         ++native_chunks;
@@ -98,7 +98,7 @@ public:
             omitted+=iq.size()-windows*n;
             for(size_t i=0;i<windows;++i) {
                 const size_t offset=windows==1?0:i*(iq.size()-n)/(windows-1);
-                const double center=c.actual_rf_hz!=0 ? c.actual_rf_hz+c.actual_dsp_hz : c.capture_center_hz;
+                const double center=c.stream_center_hz();
                 live.submit(iq.data()+offset,n,c.sample_rate_hz,center,
                     c.device_time_ns*1e-9+offset/c.sample_rate_hz,++epoch_,
                     "LIVE / run "+c.run_id+" / session "+std::to_string(c.radio_session)+

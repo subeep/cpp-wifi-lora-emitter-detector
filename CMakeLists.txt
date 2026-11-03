@@ -111,6 +111,32 @@ target_include_directories(test_dsp PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_dsp PRIVATE PkgConfig::KISSFFT)
 
 # ---------------------------------------------------------------------------
+# Bluetooth LE advertising and IEEE 802.15.4 / Zigbee decoders (receive-only,
+# fed by the existing 2.4 GHz captures). wifi_vendor.cpp comes from the
+# GUI's own source glob; the test adds it explicitly.
+# ---------------------------------------------------------------------------
+add_library(rfmon_shortrange STATIC
+  src/shortrange/ble.cpp
+  src/shortrange/ieee802154.cpp
+  src/shortrange/assigned_numbers.cpp
+  src/shortrange/monitor.cpp
+)
+target_include_directories(rfmon_shortrange PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(rfmon_shortrange PUBLIC Threads::Threads)
+target_link_libraries(rf_monitor_gui PRIVATE rfmon_shortrange)
+add_executable(test_shortrange_dsp tests/test_shortrange_dsp.cpp src/wifi_vendor.cpp)
+target_link_libraries(test_shortrange_dsp PRIVATE rfmon_shortrange)
+add_test(NAME shortrange_dsp COMMAND test_shortrange_dsp)
+set_tests_properties(shortrange_dsp PROPERTIES TIMEOUT 120)
+target_sources(rf_monitor_gui PRIVATE src/shortrange/panel.cpp)
+add_executable(test_shortrange_panel tests/test_shortrange_panel.cpp src/shortrange/panel.cpp src/wifi_vendor.cpp
+  ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp ${IMGUI_DIR}/imgui_widgets.cpp)
+target_include_directories(test_shortrange_panel PRIVATE ${IMGUI_DIR})
+target_link_libraries(test_shortrange_panel PRIVATE rfmon_shortrange)
+add_test(NAME shortrange_panel COMMAND test_shortrange_panel)
+set_tests_properties(shortrange_panel PROPERTIES TIMEOUT 120)
+
+# ---------------------------------------------------------------------------
 # Synthetic LoRa PHY codec correctness test - pure software, no hardware.
 # Direct C++ port of the validated Python prototype's tests/test_lora_phy.py.
 # ---------------------------------------------------------------------------
@@ -689,6 +715,15 @@ if(Python3_Interpreter_FOUND)
 endif()
 get_target_property(LORA_SCANNER_TEST_SOURCES test_scanner_wifi_lane SOURCES)
 list(REMOVE_ITEM LORA_SCANNER_TEST_SOURCES tests/test_scanner_wifi_lane.cpp)
+# Receive-only live check of the Bluetooth LE / 802.15.4 decoders (not a ctest).
+add_executable(shortrange_live_check tools/shortrange_live_check.cpp ${LORA_SCANNER_TEST_SOURCES})
+foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
+  get_target_property(value test_scanner_wifi_lane ${property})
+  if(value)
+    set_target_properties(shortrange_live_check PROPERTIES ${property} "${value}")
+  endif()
+endforeach()
+target_link_libraries(shortrange_live_check PRIVATE rfmon_shortrange)
 add_executable(test_scanner_coordinated tests/test_scanner_coordinated.cpp ${LORA_SCANNER_TEST_SOURCES})
 foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
   get_target_property(value test_scanner_wifi_lane ${property})

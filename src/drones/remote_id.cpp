@@ -69,6 +69,7 @@ bool frame(const Bytes& b,uint8_t subtype){return b.size()>=28&&(u16(b.data())&2
 bool match(const uint8_t* p,std::initializer_list<uint8_t> expected){return std::equal(expected.begin(),expected.end(),p);}
 std::string address(const Bytes& b){std::string s;for(int i=10;i<16;++i){if(i>10)s+=':';s+=hex(&b[i],1);}return s;}
 }
+RidJson parse_odid_message(const uint8_t* r){return message(r);}
 RidJson parse_wifi_remote_id(const Bytes& b){
     J found=J::array();if(b.size()<28||b.size()>8192)return found;
     uint32_t crc=0xffffffff;for(size_t i=0;i<b.size()-4;++i){crc^=b[i];for(int bit=0;bit<8;++bit)crc=(crc>>1)^((crc&1)?0xedb88320:0);}

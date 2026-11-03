@@ -33,6 +33,7 @@
 #include "wifi_master.hpp"
 #include "wifi_gui.hpp"
 #include "security_gui.hpp"
+#include "shortrange/panel.hpp"
 #ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
 #include "cyclostationary/panel.hpp"
 #endif
@@ -357,6 +358,17 @@ int main() {
     // than the app silently connecting to whatever the default happens
     // to be the instant the window appears.
     ml::Inference model_inference; // Outlives scanner; disabled until explicitly started.
+    // Bluetooth LE / Zigbee decoding of the 2.4 GHz captures; outlives scanner, off until started.
+#ifdef RFMON_ENABLE_DJI_DRONEID
+    shortrange::Monitor shortrange_monitor([](const uint8_t* m) {
+        const auto j = drone::parse_odid_message(m);
+        return j.is_null() ? std::string() : j.dump();
+    });
+#else
+    shortrange::Monitor shortrange_monitor;
+#endif
+    shortrange::PanelState shortrange_panel;
+    shortrange_panel.export_dir = std::string(PROJECT_ROOT_DIR) + "/data/shortrange";
 #ifdef RFMON_ENABLE_DJI_DRONEID
     drone::Addon drones; // Outlives scanner and its processing lane.
     drones.start_classifier=[&] {
@@ -379,12 +391,13 @@ int main() {
         if(!s.history.empty())state.detail+=" | Last candidate (not accepted): "+s.history.front().candidate;
         return state;
     };
-    Scanner scanner([&](const auto& iq, const auto& record) { drones.observe(iq, record); model_inference.observe(iq, record); },
+    Scanner scanner([&](const auto& iq, const auto& record) {
+                        drones.observe(iq, record); model_inference.observe(iq, record); shortrange_monitor.observe(iq, record); },
                     [&](const auto& frame) { drones.remote_id.submit(frame); });
     coordinated::PanelState coordinated_panel;
     coordinated_panel.export_dir=std::string(PROJECT_ROOT_DIR)+"/data/drone_evidence";
 #else
-    Scanner scanner([&](const auto& iq, const auto& record) { model_inference.observe(iq, record); });
+    Scanner scanner([&](const auto& iq, const auto& record) { model_inference.observe(iq, record); shortrange_monitor.observe(iq, record); });
 #endif
     bool scanner_started = false;
     // Wi-Fi security monitor recording (opt-in). Applied on the next
@@ -871,6 +884,7 @@ int main() {
                     if(ImGui::BeginTabItem("Security")){draw_security();ImGui::EndTabItem();}
                     if(ImGui::BeginTabItem("Captures")){draw_captures();ImGui::EndTabItem();}
                     if(ImGui::BeginTabItem("Model Inference")){ml::draw_panel(model_inference,status.connected,active_band);ImGui::EndTabItem();}
+                    if(ImGui::BeginTabItem("Bluetooth & Zigbee")){shortrange::draw_page(shortrange_panel,shortrange_monitor,active_band,status.connected);ImGui::EndTabItem();}
 #ifdef RFMON_ENABLE_DJI_DRONEID
                     if(ImGui::BeginTabItem("Drones")){coordinated::draw_section(coordinated_panel,scanner,drones,model_inference,status.connected);drone::draw_panel(drones,gui::band_label(active_band),status.connected);ImGui::EndTabItem();}
 #endif
@@ -882,6 +896,7 @@ int main() {
             case gui::Page::Overview:draw_overview();break;
             case gui::Page::Wifi24:draw_wifi(BAND_WIFI_2G4);break;
             case gui::Page::Wifi5:draw_wifi(BAND_WIFI_5G);break;
+            case gui::Page::ShortRange:shortrange::draw_page(shortrange_panel,shortrange_monitor,active_band,status.connected);break;
             case gui::Page::Lora:draw_lora();break;
             case gui::Page::Security:draw_security();break;
             case gui::Page::Captures:draw_captures();break;
@@ -891,6 +906,7 @@ int main() {
 #ifdef RFMON_ENABLE_DJI_DRONEID
                 coordinated::draw_section(coordinated_panel,scanner,drones,model_inference,status.connected);
                 drone::draw_panel(drones,gui::band_label(active_band),status.connected,ui.drones_offline?"Offline IQ review":nullptr);ui.drones_offline=false;
+                if(ImGui::CollapsingHeader("Bluetooth Remote ID",ImGuiTreeNodeFlags_DefaultOpen))shortrange::draw_remote_id_section(shortrange_monitor.snapshot());
 #endif
                 break;
             case gui::Page::Settings:

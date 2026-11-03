@@ -104,6 +104,11 @@ struct CaptureRecord {
                std::isfinite(sample_rate_hz) && sample_rate_hz > 0 && analysed_seconds() > 0;
     }
     bool contiguous() const { return overflows.empty() && !timed_out && !exception && samples_received > 0; }
+    // Frequency at the centre (DC) of the delivered samples. UHD's RX tune
+    // result has the DSP shift the RF LO output down by actual_dsp, so the
+    // stream is centred at actual_rf - actual_dsp (= get_rx_freq(); checked on
+    // the X310). Falls back to the requested centre when the tune is unknown.
+    double stream_center_hz() const { return actual_rf_hz != 0 ? actual_rf_hz - actual_dsp_hz : capture_center_hz; }
 };
 
 struct FrameEvent {

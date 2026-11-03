@@ -1290,7 +1290,9 @@ void Scanner::run_subghz_visit_job(SubGhzVisitJob& job) {
                 CaptureTiming t = job.timing;
                 t.requested_samples /= decim;
                 for (auto& o : t.overflows) o.at_sample /= decim;
-                t.actual_dsp_hz += channels[i] - job.step.center_hz;
+                // UHD RX convention: centre = actual_rf - actual_dsp, so a channel
+                // centred higher by (channel - step centre) has a smaller DSP shift.
+                t.actual_dsp_hz -= channels[i] - job.step.center_hz;
                 provenance.timing = t;
                 decode_lora_iq(iq, provenance, job.threshold, coordinated_subghz_detections_, /*energy_segments=*/false);
             }

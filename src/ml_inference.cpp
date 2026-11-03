@@ -222,7 +222,7 @@ void Inference::run(Options options) {
             meta.put("device_time_anchor","capture_first_sample; add offset_samples / sample_rate_hz");
             meta.put("capture_seq",c.capture_seq);meta.put("radio_session",c.radio_session);
             meta.put("generation",working_.generation);meta.put("run_id",c.run_id);
-            meta.put("center_hz",c.actual_rf_hz?c.actual_rf_hz+c.actual_dsp_hz:c.capture_center_hz);
+            meta.put("center_hz",c.stream_center_hz());
             meta.put("device",c.device);meta.put("source",c.source);meta.put("band",c.band);
             meta.put("clock_domain",int(c.clock));meta.put("device_time_ns",c.device_time_ns);
             meta.put("host_before_ns",c.host_before_ns);meta.put("host_after_ns",c.host_after_ns);
