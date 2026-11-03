@@ -748,14 +748,18 @@ int main() {
             if(ImGui::Button("Security workspace")){ui.page=gui::Page::Security;ui.security_first=true;}
             ImGui::SameLine();gui::note("Security uses the complete run, not this filtered view.");
             if(ImGui::BeginTabBar("Wi-Fi views")) {
-                if(ImGui::BeginTabItem("RF observations")){if(band==BAND_WIFI_BOTH){
+                if(ImGui::BeginTabItem("RF observations")){
+                    // Both bands side by side in every receive mode (display only);
+                    // a band not being received shows its retained (possibly empty) list.
                     const float width=std::max(250.f,(ImGui::GetContentRegionAvail().x-12)/2);
                     for(const auto& b:{BAND_WIFI_2G4,BAND_WIFI_5G}){
                         if(b==BAND_WIFI_5G)ImGui::SameLine();
                         ImGui::BeginChild(b,ImVec2(width,0),ImGuiChildFlags_Borders);
-                        ImGui::TextUnformatted(gui::band_label(b).c_str());draw_rf(b);ImGui::EndChild();
+                        const bool receiving=active_band==b || active_band==BAND_WIFI_BOTH || active_band==BAND_COORDINATED;
+                        ImGui::Text("%s%s",gui::band_label(b).c_str(),receiving?"":" (retained; not currently received)");
+                        draw_rf(b);ImGui::EndChild();
                     }
-                }else draw_rf(band);ImGui::EndTabItem();}
+                    ImGui::EndTabItem();}
                 if(ImGui::BeginTabItem("Packets")){
                     std::vector<WifiPacketRow> viewed;
                     for(const auto& row:wifi_rows)if(band==BAND_WIFI_BOTH || (band==BAND_WIFI_2G4 && row.freq_mhz>=2400 && row.freq_mhz<2500)||
