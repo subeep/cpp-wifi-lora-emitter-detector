@@ -24,6 +24,11 @@ try:
         result=dict(schema='rfmon.ml.result.v1',request=r,status='identification_unavailable',
                   accepted_class='unqualified_identity',candidate='synthetic',top_candidates=[dict(label='synthetic',score=.99999)],
                   processing_ms=1,selected_offset_hz=0,reason=['synthetic_fixture'])
+        if r.get('dsp_triage') in (True,'true','1'):
+            result['dsp_triage']=dict(schema='rfmon.ml.dsp_triage.v1',mode='observe',route='model',
+                assessment='unresolved_activity',review_flag='noise_like_review_only',reason='fixture',
+                model_invoked=True,processing_ms=.1,non_drone_rejection_enabled=False,thresholds_validated=False)
+            if a.model.endswith('badtriage'):result['dsp_triage']['route']='non_drone'
         if r.get('want_stft_preview') in (True,'true','1'):
             result['stft_preview']=dict(schema='rfmon.ml.stft.v1',rows=256,cols=625,bytes=160000,
                 encoding='u8_frequency_time',db_min=-100,db_max=20,rate_hz=20000000,nfft=256,hop=256,

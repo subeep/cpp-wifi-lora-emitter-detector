@@ -47,6 +47,7 @@ public:
     RemoteIdMonitor remote_id;
     std::atomic<uint64_t> offered{0}, omitted{0}, unhealthy{0};
     std::atomic<bool> replay_busy{false};
+    std::atomic<bool> replay_native{false}; // backend of the latest offline load
     ~Addon() { cancel_=true; if(loader_.joinable()) loader_.join(); replay.stop(); live.stop(); native.stop(); }
     void observe(const std::vector<std::complex<float>>& iq,
                  const rfmon::wifi_security::CaptureRecord& c) noexcept {
@@ -106,13 +107,17 @@ public:
         } catch(...) { ++unhealthy; } // An optional observer cannot terminate scanning.
     }
     std::string replay_status() { std::lock_guard<std::mutex> l(message_mutex_); return message_; }
-    void load(const std::string& path,double rate,double frequency,double offset) {
+    // native=false: legacy decoder, at most 2M samples (40 ms cap).
+    // native=true: native packets + O4 evidence, at most 160 ms / 40M samples.
+    void load(const std::string& path,double rate,double frequency,double offset,bool native=false) {
         if(replay_busy.exchange(true)) return;
         if(loader_.joinable()) loader_.join();
         cancel_=false;
-        loader_=std::thread([this,path,rate,frequency,offset] {
+        replay_native=native;
+        loader_=std::thread([this,path,rate,frequency,offset,native] {
             try {
-                if(!std::isfinite(rate)||rate<15.26e6||rate>100e6||!std::isfinite(frequency)||
+                const double min_rate=native?10e6:15.26e6, max_rate=native?250e6:100e6;
+                if(!std::isfinite(rate)||rate<min_rate||rate>max_rate||!std::isfinite(frequency)||
                    !((frequency>2.3e9&&frequency<2.6e9)||(frequency>5.6e9&&frequency<6e9))||
                    !std::isfinite(offset)||offset<0||offset>86400) throw std::runtime_error("Invalid rate, band or offset");
                 if(!std::filesystem::is_regular_file(path)) throw std::runtime_error("Select a regular raw little-endian complex-float32 IQ file");
@@ -120,13 +125,15 @@ public:
                 if(bytes%8) throw std::runtime_error("IQ file length is not a whole complex-float32 sample");
                 const uint64_t first=uint64_t(offset*rate);
                 if(first>=bytes/8) throw std::runtime_error("Offset is beyond the recording");
-                const size_t count=std::min<uint64_t>({bytes/8-first,2000000,uint64_t(rate*.04)});
+                const size_t count=native?std::min<uint64_t>({bytes/8-first,40000000,uint64_t(rate*.16)})
+                                         :std::min<uint64_t>({bytes/8-first,2000000,uint64_t(rate*.04)});
                 std::vector<std::complex<float>> data(count);
                 std::ifstream file(path,std::ios::binary); file.seekg(first*8);
                 if(!file.read(reinterpret_cast<char*>(data.data()),count*8)) throw std::runtime_error("Cannot read IQ interval");
                 if(cancel_) throw std::runtime_error("Cancelled");
-                replay.start();
-                const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(40);
+                replay.start(native);
+                // Native analysis of 160 ms runs well slower than real time.
+                const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(native?120:40);
                 while(!cancel_ && replay.running() && !replay.snapshot().ready && std::chrono::steady_clock::now()<deadline)
                     std::this_thread::sleep_for(std::chrono::milliseconds(20));
                 if(cancel_ || !replay.snapshot().ready) throw std::runtime_error("Replay decoder unavailable: "+replay.snapshot().status);
@@ -136,7 +143,7 @@ public:
                 const auto result=replay.snapshot();
                 replay.stop();
                 if(result.samples<count || result.analysis_errors) throw std::runtime_error("Replay incomplete: "+result.status);
-                message("Completed "+std::to_string(count/rate*1000)+" ms at offset "+std::to_string(first/rate)+" s. Offline results only.");
+                message(std::string(native?"Native: completed ":"Completed ")+std::to_string(count/rate*1000)+" ms at offset "+std::to_string(first/rate)+" s. Offline results only.");
             } catch(const std::exception& e) { replay.stop(); message(e.what()); }
             replay_busy=false;
         });

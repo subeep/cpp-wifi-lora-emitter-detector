@@ -14,6 +14,11 @@
 
 namespace rfmon::ml {
 struct Candidate { std::string label; double score=0; };
+struct DspTriage {
+    bool available=false, model_invoked=false;
+    std::string assessment, route, review_flag, reason;
+    double processing_ms=0;
+};
 struct StftPreview {
     int rows=256, cols=625;
     double db_min=0, db_max=0, rate_hz=20e6, duration_seconds=.008;
@@ -30,6 +35,7 @@ struct Result {
     double selected_offset=0;
     bool selected_offset_available=false;
     std::vector<Candidate> top;
+    DspTriage triage;
     std::shared_ptr<const StftPreview> stft;
     std::chrono::steady_clock::time_point completed{};
     bool current=false;
@@ -42,6 +48,7 @@ struct Snapshot {
     uint64_t offered=0, submitted=0, dropped=0, invalid=0, stale=0, processed=0;
     uint64_t offered_samples=0, submitted_samples=0;
     uint64_t submitted_jobs=0;
+    uint64_t triage_observed=0, triage_flagged=0, triage_insufficient=0, triage_errors=0;
     double max_observer_ms=0;
     size_t queued=0;
     std::vector<Result> history;
@@ -50,6 +57,7 @@ struct Options {
     std::string python, script, model; int deadline_ms=15000;
     std::string audit_root, audit_context="unlabelled", audit_notes;
     bool dispersed_intervals=true;
+    bool dsp_triage=true; // Observation only; no non-drone rejection policy.
 };
 struct IntervalSelection {
     std::array<size_t,3> offsets{};

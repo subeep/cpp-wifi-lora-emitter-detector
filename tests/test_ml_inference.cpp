@@ -37,6 +37,7 @@ int main(int argc,char** argv) {
     require(iq==before,"observer modified receiver IQ");
     require(s.history[0].capture==c.capture_seq,"64-bit provenance lost");
     require(s.history[0].accepted.empty()&&s.history[0].top[0].score==.99999,"candidate became identity");
+    require(s.history[0].triage.available&&s.history[0].triage.model_invoked&&s.triage_observed==1&&s.triage_flagged==1,"triage routing not preserved");
     require(s.history[0].stft&&s.history[0].stft->pixels.size()==160000,"STFT frame missing");
     require(s.history[0].stft->pixels[255]==255&&s.history[0].stft->pixels[256]==0,"STFT transport corrupted");
     require(std::string(ml::observation_decision(s.history[0])).find("presence undetermined")!=std::string::npos,"candidate became presence");
@@ -68,6 +69,10 @@ int main(int argc,char** argv) {
     until([&]{return worker.snapshot().ready;});worker.observe(iq,c);
     until([&]{return worker.snapshot().state=="Failed";});
     require(worker.snapshot().error.find("STFT preview contract")!=std::string::npos,"bad STFT dimensions accepted");
+    options.model="/badtriage";require(worker.start(options),"bad triage fixture start failed");
+    until([&]{return worker.snapshot().ready;});worker.observe(iq,c);
+    until([&]{return worker.snapshot().state=="Failed";});
+    require(worker.snapshot().error.find("DSP triage routing")!=std::string::npos,"unqualified non-drone route accepted");
     options.model="/slow";require(worker.start(options),"restart failed");until([&]{return worker.snapshot().ready;});
     worker.observe(iq,c);until([&]{return worker.snapshot().state=="Failed";});
     require(worker.snapshot().error.find("timeout")!=std::string::npos,"deadline not enforced");

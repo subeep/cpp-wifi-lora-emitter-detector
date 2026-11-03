@@ -95,6 +95,7 @@ void draw_panel(Inference& inference,bool connected,const std::string& band) {
     static char audit_root[2048]{},audit_notes[1024]{};
     static bool record_audit=false;
     static bool dispersed_intervals=true;
+    static bool dsp_triage=true;
     static int audit_context=0;
     static const char* contexts[]={"unlabelled","background_observation","controller_only","mini2_linked_idle","mini2_linked_video"};
     static bool initialized=false;
@@ -111,6 +112,8 @@ void draw_panel(Inference& inference,bool connected,const std::string& band) {
     ImGui::InputText("Model checkpoint",model,sizeof(model));
     ImGui::InputText("Python runtime",python,sizeof(python));
     ImGui::Checkbox("Sample across each capture (up to 3 separate intervals)",&dispersed_intervals);
+    ImGui::Checkbox("DSP triage (observation only)",&dsp_triage);
+    ImGui::TextWrapped("Measures spectral shape and sample quality before inference. Tone/noise review flags still go to the model; they do not mean non-drone. Only nonfinite or constant IQ bypasses the engine as insufficient evidence. No protocol-based rejection is enabled.");
     ImGui::TextWrapped("First/middle/end sampling improves temporal coverage; each model input remains 8 ms. Views share a capture and are not independent votes. The existing IQ-copy budget may reduce the interval count at high rates.");
     ImGui::Checkbox("Record exact inference inputs for review",&record_audit);
     if(record_audit) {
@@ -124,6 +127,7 @@ void draw_panel(Inference& inference,bool connected,const std::string& band) {
         if(ImGui::Button("Start Inference")) {
             Options o;o.model=model;o.python=python;
             o.dispersed_intervals=dispersed_intervals;
+            o.dsp_triage=dsp_triage;
             o.script=std::string(PROJECT_ROOT_DIR)+"/tools/drone_ml/live_worker.py";
             if(record_audit){o.audit_root=audit_root;o.audit_context=contexts[audit_context];o.audit_notes=audit_notes;}
             inference.start(o);
@@ -143,6 +147,10 @@ void draw_panel(Inference& inference,bool connected,const std::string& band) {
         ImGui::TextWrapped("Waiting for a processed IQ interval. Connect the receiver and Start Inference to display the model's STFT.");
     }
     ImGui::SeparatorText("Runtime and coverage");
+    ImGui::Text("DSP intervals %llu | Review flags %llu | Insufficient IQ %llu | Diagnostic failures %llu",
+        (unsigned long long)s.triage_observed,(unsigned long long)s.triage_flagged,
+        (unsigned long long)s.triage_insufficient,(unsigned long long)s.triage_errors);
+    ImGui::TextWrapped("DSP counters cover completed current-generation results across this app session. They are not drone counts or measured false-alarm rates. Enable audit recording to retain exact IQ, DSP measurements and model results for labelled review.");
     ImGui::Text("Queue %zu/1 (+ one processing) | Offered %llu | Submitted %llu | Processed %llu",
         s.queued,(unsigned long long)s.offered,(unsigned long long)s.submitted,(unsigned long long)s.processed);
     ImGui::Text("Skipped busy/rate limit %llu | Invalid/short %llu | Stale results %llu",
@@ -157,6 +165,14 @@ void draw_panel(Inference& inference,bool connected,const std::string& band) {
         ImGui::Text("%s | %.1f seconds old",r.current?"Recent result":"Historical / stale",
             std::chrono::duration<double>(std::chrono::steady_clock::now()-r.completed).count());
         ImGui::TextWrapped("%s",observation_decision(r));
+        ImGui::SeparatorText("DSP routing for this interval");
+        if(r.triage.available) {
+            ImGui::Text("Route: %s | Engine invoked: %s | DSP %.3f ms",r.triage.route.c_str(),
+                r.triage.model_invoked?"yes":"no",r.triage.processing_ms);
+            ImGui::TextWrapped("Assessment: %s | Review: %s",r.triage.assessment.c_str(),r.triage.review_flag.c_str());
+            ImGui::TextWrapped("Reason: %s",r.triage.reason.c_str());
+            ImGui::TextWrapped("Non-drone rejection disabled. Review flags are unvalidated signal-shape hypotheses. Detailed measurements are included in result JSON and optional audits.");
+        } else ImGui::TextWrapped("DSP triage disabled or unavailable from this worker.");
         ImGui::TextWrapped("A qualified drone-presence detector is not available. This observation cannot establish no drone, an unknown drone, or a known drone model.");
         if(ImGui::CollapsingHeader("Experimental model ranking (not detections)")) {
             ImGui::TextWrapped("Engine status: %s",r.status.c_str());

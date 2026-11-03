@@ -89,6 +89,29 @@ void draw_results(const Snapshot& s, bool offline) {
     else ImGui::TextDisabled("Selected observation no longer retained; select another row.");
     ImGui::PopID();
 }
+void draw_native_results(const Snapshot& native, bool offline) {
+    ImGui::PushID(offline?"native offline":"native live");
+    ImGui::Text("CRC24 packets: %llu | O4 windows: %llu | candidate windows: %llu (not drone count)",
+        (unsigned long long)native.native_packet_count,(unsigned long long)native.o4_windows,(unsigned long long)native.o4_candidates);
+    ImGui::Text("Processed samples: %llu | queue: %zu | dropped samples: %llu | errors: %llu",
+        (unsigned long long)native.samples,native.queue_depth,(unsigned long long)native.dropped,(unsigned long long)native.analysis_errors);
+    ImGui::Text("Native compute: %.1f ms | queue age: %.1f ms | end-to-end: %.1f ms",native.processing_ms,native.queue_age_ms,native.end_to_end_ms);
+    if(offline) ImGui::TextWrapped("One contiguous interval of at most 160 ms. Strongest-channel selection can miss a weaker emitter; a shorter interval around a packet can decode where a longer one does not. O4 windows need 80/160 ms supporting history; no candidates is not proof of absence.");
+    else ImGui::TextWrapped("At most 160 ms contiguous input per capture; queue holds one job. Gaps reset temporal evidence. Strongest-channel selection can miss a simultaneous weaker emitter. O4 windows need 80/160 ms supporting history; no candidates is not proof of absence.");
+    if(!native.o4_latest.empty()&&ImGui::TreeNode("Latest O4 evidence (retained; not an identity)")) {
+        ImGui::TextWrapped("%s",native.o4_latest.c_str());ImGui::TreePop();
+    }
+    if(ImGui::TreeNode("Native packet inspector (last 64 receptions)")) {
+        ImGui::Text("Packet rows omitted at worker: %llu",(unsigned long long)native.native_rows_omitted);
+        for(size_t i=0;i<native.native_packets.size();++i) {
+            ImGui::PushID(int(i));
+            if(ImGui::TreeNode("Packet")){ImGui::TextWrapped("%s",native.native_packets[i].c_str());ImGui::TreePop();}
+            ImGui::PopID();
+        }
+        ImGui::TreePop();
+    }
+    ImGui::PopID();
+}
 void draw_remote_id(const RidJson& s) {
     ImGui::TextWrapped("Unauthenticated broadcast claims. Aircraft category is not exact-model classification. Accuracy is transmitter-reported.");
     if(!s.value("enabled",false))ImGui::TextDisabled("Decoder disabled; retained observations are historical.");
@@ -188,24 +211,7 @@ void draw_panel(Addon& a,const std::string& band,bool connected, const char* sel
             ImGui::TextWrapped("Native backend: %s | legacy fallback: %s | Wi-Fi Remote ID: %s",native.status.c_str(),a.live.running()?"running":"OFF",a.remote_id.enabled()?"enabled":"OFF");
             if(ImGui::CollapsingHeader("Native DJI packets and O4 structure evidence",ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::TextWrapped("DJI DroneID packet parsing is not full O1/O2/O3/O3+ control/video decoding. Native telemetry covers fewer packet formats than the retained legacy fallback. O4 is experimental; O4+ remains unqualified.");
-                ImGui::Text("CRC24 packets: %llu | O4 windows: %llu | candidate windows: %llu (not drone count)",
-                    (unsigned long long)native.native_packet_count,(unsigned long long)native.o4_windows,(unsigned long long)native.o4_candidates);
-                ImGui::Text("Processed samples: %llu | queue: %zu | dropped samples: %llu | errors: %llu",
-                    (unsigned long long)native.samples,native.queue_depth,(unsigned long long)native.dropped,(unsigned long long)native.analysis_errors);
-                ImGui::Text("Native compute: %.1f ms | queue age: %.1f ms | end-to-end: %.1f ms",native.processing_ms,native.queue_age_ms,native.end_to_end_ms);
-                ImGui::TextWrapped("At most 160 ms contiguous input per capture; queue holds one job. Gaps reset temporal evidence. Strongest-channel selection can miss a simultaneous weaker emitter. O4 windows need 80/160 ms supporting history; no candidates is not proof of absence.");
-                if(!native.o4_latest.empty()&&ImGui::TreeNode("Latest O4 evidence (retained; not an identity)")) {
-                    ImGui::TextWrapped("%s",native.o4_latest.c_str());ImGui::TreePop();
-                }
-                if(ImGui::TreeNode("Native packet inspector (last 64 receptions)")) {
-                    ImGui::Text("Packet rows omitted at worker: %llu",(unsigned long long)native.native_rows_omitted);
-                    for(size_t i=0;i<native.native_packets.size();++i) {
-                        ImGui::PushID(int(i));
-                        if(ImGui::TreeNode("Packet")){ImGui::TextWrapped("%s",native.native_packets[i].c_str());ImGui::TreePop();}
-                        ImGui::PopID();
-                    }
-                    ImGui::TreePop();
-                }
+                draw_native_results(native,false);
             }
             if(ImGui::CollapsingHeader("DJI broadcast telemetry / legacy fallback",ImGuiTreeNodeFlags_DefaultOpen))
                 draw_results(a.live.snapshot(),false);
@@ -234,15 +240,21 @@ void draw_panel(Addon& a,const std::string& band,bool connected, const char* sel
         }
         if(ImGui::BeginTabItem("Offline IQ review", nullptr, select_tab && std::string(select_tab)=="Offline IQ review" ? ImGuiTabItemFlags_SetSelected : 0)) {
             static char path[1024]=""; static double rate=50e6,frequency=2444.5e6,offset=0;
-            ImGui::TextWrapped("Raw little-endian complex-float32 IQ only. Enter the recording's actual metadata. Reads at most 40 ms / 2M samples; source files are not modified. Results remain separate from live broadcasts.");
+            static int decoder=0; // 0 legacy, 1 native
+            ImGui::TextWrapped("Raw little-endian complex-float32 IQ only. Enter the recording's actual metadata. Legacy reads at most 40 ms / 2M samples; native reads at most 160 ms / 40M samples. Source files are not modified. Results remain separate from live broadcasts.");
+            ImGui::TextUnformatted("Decoder");ImGui::SameLine();
+            ImGui::RadioButton("Legacy DJI (telemetry)",&decoder,0);ImGui::SameLine();
+            ImGui::RadioButton("Native DJI packets + O4 evidence",&decoder,1);
             ImGui::TextUnformatted("Raw IQ file path");
             ImGui::SetNextItemWidth(-1); ImGui::InputText("##IQ path",path,sizeof(path));
             ImGui::SetNextItemWidth(180); ImGui::InputDouble("Sample rate (Hz)",&rate,0,0,"%.0f");
             ImGui::SetNextItemWidth(180); ImGui::InputDouble("Centre frequency (Hz)",&frequency,0,0,"%.0f");
             ImGui::SetNextItemWidth(180); ImGui::InputDouble("Offset (seconds)",&offset,0,0,"%.6f");
-            ImGui::BeginDisabled(a.replay_busy); if(ImGui::Button("Decode interval")) a.load(path,rate,frequency,offset); ImGui::EndDisabled();
+            ImGui::BeginDisabled(a.replay_busy); if(ImGui::Button("Decode interval")) a.load(path,rate,frequency,offset,decoder==1); ImGui::EndDisabled();
             ImGui::TextWrapped("%s",a.replay_status().c_str());
-            draw_results(a.replay.snapshot(),true);
+            const auto result=a.replay.snapshot();
+            if(a.replay_native){ImGui::TextWrapped("%s",result.status.c_str());draw_native_results(result,true);}
+            else draw_results(result,true);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

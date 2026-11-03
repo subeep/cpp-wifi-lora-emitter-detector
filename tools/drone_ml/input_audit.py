@@ -17,6 +17,7 @@ from .common import read_source, sha256, stamp
 from .live_audit import write_new_json
 from .predict import InferenceEngine
 from .presence import apply_unqualified_policy
+from .dsp_triage import predict_with_triage
 
 
 def read_json(path):
@@ -54,7 +55,7 @@ def quality(iq):
                 clipping_interpretation='near-full-scale proxy, not proof of clipping')
 
 
-def evaluate(engine, iq, rate, offset, sweep):
+def evaluate(engine, iq, rate, offset, sweep, triage=False):
     original = engine.config
     rows = []
     configs = [('checkpoint', original)]
@@ -65,7 +66,7 @@ def evaluate(engine, iq, rate, offset, sweep):
     try:
         for kind, config in configs:
             engine.config = config
-            result = apply_unqualified_policy(engine.predict_iq(iq, rate, offset))
+            result = apply_unqualified_policy(predict_with_triage(engine, iq, rate, offset, enabled=triage))
             rows.append(dict(view=kind, result=result))
     finally:
         engine.config = original
@@ -78,6 +79,8 @@ def summarize(rows, expected_label=None):
               for r in primary]
     scores = [x for x in scores if x is not None]
     return dict(intervals=len(rows), candidate_counts=dict(Counter(r.get('candidate', 'unavailable') for r in primary)),
+                dsp_review_flags=dict(Counter(r['dsp_triage']['review_flag'] for r in primary if 'dsp_triage' in r)),
+                dsp_routes=dict(Counter(r['dsp_triage']['route'] for r in primary if 'dsp_triage' in r)),
                 engine_status_counts=dict(Counter(r['status'] for r in primary)),
                 expected_context_label=expected_label,
                 expected_label_top_candidate_count=sum(r.get('candidate') == expected_label for r in primary) if expected_label else None,
@@ -129,9 +132,16 @@ def audit_session(engine, directory, model_hash):
         iq, digest = read_interval(iq_path, rate, 0, engine.config.duration_seconds)
         if digest != item['iq_sha256'] or iq.nbytes != item['iq_bytes'] or iq_path.stat().st_size != iq.nbytes:
             raise ValueError('audit IQ integrity mismatch')
-        views = evaluate(engine, iq, rate, offset, False)
+        views = evaluate(engine, iq, rate, offset, False,
+                         triage=item['request'].get('dsp_triage',False) in (True,'true','1'))
         replay = views[0]['result']
         saved = item['result']
+        # Timing naturally varies on replay; deterministic DSP routing/features
+        # should reproduce exactly on this implementation, independently of ML.
+        def triage_evidence(result):
+            return {k:v for k,v in result.get('dsp_triage',{}).items() if k!='processing_ms'}
+        triage_parity = (triage_evidence(saved)==triage_evidence(replay)
+                        if 'dsp_triage' in saved else None)
         parity = None
         if model_hash == session['model_sha256']:
             a, b = saved.get('class_scores', []), replay.get('class_scores', [])
@@ -141,6 +151,7 @@ def audit_session(engine, directory, model_hash):
                       and len(a) == len(b)
                       and all(x['label'] == y['label'] and abs(x['score'] - y['score']) <= 1e-6 for x, y in zip(a, b)))
         rows.append(dict(interval=path.stem, request=item['request'], iq_sha256=digest,
+                         dsp_triage_replay_matches_saved=triage_parity,
                          saved_result=saved, replay_matches_saved=parity, quality=quality(iq), views=views))
     if not rows:
         raise ValueError('no complete recorded intervals')

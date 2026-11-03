@@ -50,6 +50,15 @@ int main(int argc,char** argv) {
     require(s.observations.at(0).model=="Mavic Air 2","wrong decoded model");
     require(s.observations.at(0).source.find("OFFLINE")!=std::string::npos,"missing provenance");
     require(a.live.snapshot().decoded==1,"offline evidence leaked into live state");
+    require(!a.replay_native,"legacy offline load must report the legacy backend");
+    a.load(std::string(PROJECT_ROOT_DIR)+"/tests/fixtures/drones/dji_mavic_air_2.fc32",50e6,2444.5e6,0,true);
+    wait_until([&]{return !a.replay_busy;});
+    const auto native=a.replay.snapshot();
+    require(a.replay_native,"native offline load must report the native backend");
+    require(native.native_packet_count==1&&native.analysis_errors==0,"native offline decode failed");
+    require(native.native_packets.at(0).find("1WNBH3900201N1")!=std::string::npos,"native packet serial missing");
+    require(native.native_packets.at(0).find("OFFLINE")!=std::string::npos,"native packet provenance missing");
+    require(a.replay_status().find("Native")!=std::string::npos,"native completion not reported");
     a.load("/no/such/recording",50e6,2444.5e6,0); wait_until([&]{return !a.replay_busy;});
     require(a.replay_status().find("regular")!=std::string::npos,"file error not exposed");
     drone::RidJson frames;
@@ -79,6 +88,9 @@ int main(int argc,char** argv) {
         const std::string text=ImGui::GetCurrentContext()->LogBuffer.c_str(); ImGui::LogFinish();
         require(text.find("Mavic Air 2")!=std::string::npos,"model missing from GUI");
         require(text.find("OFFLINE")!=std::string::npos,"offline label missing from GUI");
+        ImGui::LogToBuffer(); drone::draw_native_results(native,true);
+        const std::string native_text=ImGui::GetCurrentContext()->LogBuffer.c_str(); ImGui::LogFinish();
+        require(native_text.find("CRC24 packets: 1")!=std::string::npos,"native offline count missing from GUI");
         ImGui::End(); ImGui::Render(); require(ImGui::GetDrawData()->TotalVtxCount>0,"empty GUI");
     }
     // Exercise the native Remote ID inspector independently of the DJI view.
