@@ -134,6 +134,51 @@ void entry_tests() {
                 entries[1].conflicts.empty(),
             "Conflicting reported models stay visible on both rows");
     require(entries[0].relations.size() == 1, "No relationship from frequency, product name or timing alone");
+    {
+        // Native worker output as the detector stores it (boost ptree JSON:
+        // every value a string), O4 evidence and Bluetooth Remote ID.
+        drone::Snapshot n2 = native;
+        const std::string acquired = std::to_string(now - 5);
+        auto pkt = [&](const std::string& serial, const std::string& env, const std::string& capture) {
+            return std::string("{\"center_hz\":\"5745000000.0\",\"envelope\":\"") + env + "\",\"inner_crc16\":\"true\",\"outer_crc24\":\"true\"," +
+                   "\"reported_serial\":\"" + serial + "\",\"reported_model\":\"\",\"telemetry_parsed\":\"" + (serial.empty() ? "false" : "true") +
+                   "\",\"timestamp\":\"0.1\",\"receiver_source\":\"LIVE / run r1 / session 1 / capture " + capture +
+                   " / sample 0\",\"acquired_steady_s\":\"" + acquired + "\"}";
+        };
+        n2.native_packets = {pkt("3YTBJ3Q0030J2X", "v2", "11"), pkt("", "infp", "12"), pkt("3YTBJ3Q0030J2X", "v2", "13")};
+        n2.o4_windows = 40;
+        n2.o4_candidates = 3;
+        n2.o4_latest = "{\"candidate\":\"true\",\"reason\":\"candidate\",\"center_hz\":\"5760000000\",\"receiver_source\":\"LIVE / run r1 / session 1 / capture 13 / sample 0\",\"acquired_steady_s\":\"" + acquired + "\"}";
+        rfmon::shortrange::Snapshot ble;
+        rfmon::shortrange::BleDevice d;
+        d.key = "C0:FF:EE:12:34:56 (random)";
+        d.address = "C0:FF:EE:12:34:56";
+        d.address_kind = "Random static";
+        d.packets = 53;
+        d.channel_counts = {{38, 41}, {39, 8}};
+        d.last_seen = at(now - 3);
+        d.last_source = "LIVE / run r1 / capture 14 / 2423.5 MHz";
+        d.remote_id["Basic ID / id type 1"] = R"({"type":"Basic ID","reported_id":"SYNTHETIC123","ua_type_name":"Helicopter / multirotor"})";
+        d.remote_id["Location"] = R"({"type":"Location","latitude":12.3456789,"longitude":76.54321})";
+        ble.ble.push_back(d);
+        const auto all = coordinated::build_entries(n2, legacy, rid, model, visits, now, 60, &ble);
+        auto find = [&](const std::string& source, const std::string& text) {
+            return std::find_if(all.begin(), all.end(), [&](const coordinated::Entry& e) { return e.source == source && (e.identity + e.evidence).find(text) != std::string::npos; });
+        };
+        const auto air2s = find("DJI native packets", "3YTBJ3Q0030J2X"), infp = find("DJI native packets", "infp");
+        const auto o4 = find("DJI native O4 structure", "3 candidate windows of 40"), bt = find("Bluetooth Remote ID", "SYNTHETIC123");
+        require(all.size() == entries.size() + 4, "Native packets (2 rows), O4 and Bluetooth Remote ID are listed");
+        require(air2s != all.end() && air2s->count == 2 && air2s->capture_seq == 13u && std::abs(air2s->frequency_hz - 5745e6) < 1 &&
+                    std::abs(air2s->last_seen_s - (now - 5)) < 0.01 && air2s->evidence.find("CRC16 OK") != std::string::npos,
+                "Native packets grouped by reported serial with count, latest capture, centre and acquisition time");
+        require(infp != all.end() && infp->identity.find("no serial") != std::string::npos && infp->count == 1,
+                "Packet without a serial keeps its own row and says identity was not decoded");
+        require(o4 != all.end() && o4->identity.find("no identity") != std::string::npos && o4->count == 3,
+                "O4 structure evidence listed as evidence only");
+        require(bt != all.end() && bt->count == 53 && std::abs(bt->frequency_hz - 2426e6) < 1 && bt->capture_seq == 14u &&
+                    has(bt->relations, "Wi-Fi Remote ID: same reported identifier"),
+                "Bluetooth Remote ID row relates to the Wi-Fi Remote ID row with the same reported ID");
+    }
     g_entries = entries;
     g_visits = visits;
     g_visits.front().capture_seq = 7;  // the DJI evidence's own visit

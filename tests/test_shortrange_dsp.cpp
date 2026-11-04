@@ -149,6 +149,27 @@ int main() {
         unknown.capture_center_hz = 2437e6;
         check(ok && unknown.stream_center_hz() == 2437e6, "capture centre: actual_rf - actual_dsp (X310 tune results)");
     }
+    // Energy gate vs traffic beside the channel: the wide first stage passes
+    // about +/-3 MHz, so near-continuous Wi-Fi next to BLE 37 used to set the
+    // gate's "floor" and skip real packets (found on the X310 bench, 2026-11-04).
+    {
+        std::vector<cf> cap(size_t(rate * 0.02)), wifi(cap.size());
+        for (auto& v : wifi) v = cf(noise(rng), noise(rng));
+        const auto h = rfmon::blackman_lowpass(0.8e6 / rate, 0.2e6 / rate);  // ~1.6 MHz wide interferer
+        for (size_t n = 0; n < cap.size(); ++n) {
+            cf acc(0, 0);
+            for (size_t k = 0; k < h.size() && k <= n; ++k) acc += h[k] * wifi[n - k];
+            const double ph = 2 * M_PI * 3.2e6 * double(n) / rate;  // 2404.2 MHz: 2.2 MHz above BLE 37
+            const bool on = (n / 20000) % 10 != 3;                    // busy 90% of the time
+            cap[n] = cf(noise(rng), noise(rng)) * 0.002f + (on ? 0.6f : 0.f) * acc * cf(float(std::cos(ph)), float(std::sin(ph)));
+        }
+        place(cap, 100000, ble::modulate(ble_adv_pdu(), 37), 2402e6 - 2401e6, 0.05);
+        Monitor m;
+        m.process(cap.data(), cap.size(), rate, 2401e6, "TEST / adjacent Wi-Fi");
+        const auto s = m.snapshot();
+        check(s.ble.size() == 1 && s.ble_coverage[0].packets == 1, "gate: BLE 37 decoded beside busy adjacent traffic",
+              std::to_string(s.ble_coverage[0].packets) + " packets");
+    }
     // Coverage planning for the existing capture centres (Wi-Fi channel + 1.5 MHz, 20 MSps).
     {
         auto has = [](const std::vector<Monitor::Target>& t, bool b, int c) {

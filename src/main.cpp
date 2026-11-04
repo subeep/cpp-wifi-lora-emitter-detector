@@ -886,7 +886,7 @@ int main() {
                     if(ImGui::BeginTabItem("Model Inference")){ml::draw_panel(model_inference,status.connected,active_band);ImGui::EndTabItem();}
                     if(ImGui::BeginTabItem("Bluetooth & Zigbee")){shortrange::draw_page(shortrange_panel,shortrange_monitor,active_band,status.connected);ImGui::EndTabItem();}
 #ifdef RFMON_ENABLE_DJI_DRONEID
-                    if(ImGui::BeginTabItem("Drones")){coordinated::draw_section(coordinated_panel,scanner,drones,model_inference,status.connected);drone::draw_panel(drones,gui::band_label(active_band),status.connected);ImGui::EndTabItem();}
+                    if(ImGui::BeginTabItem("Drones")){coordinated::draw_section(coordinated_panel,scanner,drones,model_inference,status.connected,&shortrange_monitor);drone::draw_panel(drones,gui::band_label(active_band),status.connected);ImGui::EndTabItem();}
 #endif
                     if(ImGui::BeginTabItem("Display")){if(ImGui::Button("Return to modern workspace"))ui.legacy=false;ImGui::EndTabItem();}
                     ImGui::EndTabBar();
@@ -904,7 +904,7 @@ int main() {
             case gui::Page::Count:break;
             case gui::Page::Drones:
 #ifdef RFMON_ENABLE_DJI_DRONEID
-                coordinated::draw_section(coordinated_panel,scanner,drones,model_inference,status.connected);
+                coordinated::draw_section(coordinated_panel,scanner,drones,model_inference,status.connected,&shortrange_monitor);
                 drone::draw_panel(drones,gui::band_label(active_band),status.connected,ui.drones_offline?"Offline IQ review":nullptr);ui.drones_offline=false;
                 if(ImGui::CollapsingHeader("Bluetooth Remote ID",ImGuiTreeNodeFlags_DefaultOpen))shortrange::draw_remote_id_section(shortrange_monitor.snapshot());
 #endif
