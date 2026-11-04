@@ -129,7 +129,7 @@ treat a merged row as "probably one device".
 
 Automated (76/76 suite passes):
 
-- `shortrange_dsp` (46 checks): Bluetooth assigned-number lookups, the
+- `shortrange_dsp` (47 checks): Bluetooth assigned-number lookups, the
   CRC-16/KERMIT check value, and a BLE round trip.
   - A BLE advert, a Zigbee beacon and a Zigbee data frame are modulated into a
     20 MSps capture with ±60–70 kHz carrier offset, noise and a CW interferer,
@@ -153,11 +153,70 @@ Real adverts decoded with valid CRC include named earbuds ("Nothing Ear",
 AirPlay, Google Fast Pair, Microsoft CDP, scan requests/responses, extended
 advertising headers. Exports: `data/shortrange_validation/`.
 
+## Bench verification — 4 November 2026
+
+Receive-only on the X310 plus two test transmitters (HackRF One serial
+`…234f0ac3`, Heltec WiFi LoRa 32 V3 / ESP32-S3 MAC `70:af:09:d6:82:c4`).
+
+**Zigbee / 802.15.4, independent signal source.** Test frames: beacon request,
+Zigbee PRO beacon, association request/response, data request, unencrypted NWK
+link status, network-key-encrypted NWK data, ack, 6LoWPAN/ICMPv6, MAC-encrypted
+data. Wireshark's dissectors (tshark 3.6.2) accept all ten as well-formed with
+correct FCS. IQ was generated with the system GNU Radio 3.10 using the transmit
+chain and chip table of gr-ieee802-15-4 (maint-3.10; read as data, none of its
+code run), so the waveform does not come from this project's modulator.
+
+| Check | Result |
+|---|---|
+| 4 MSps baseband, direct demodulation | 10/10 frames byte-exact, 10 syncs, 0 FCS failures |
+| 8 MSps HackRF schedule (signal 2 MHz above LO), full Monitor path | 20/20 byte-exact; list shows PAN coordinator, router/end device with IEEE address and TI vendor, joining device |
+| Over the air from the HackRF | **Not achieved.** No HackRF signal reached any X310 port by cable; the user chose over the air, but the HackRF has no antenna fitted: its built-in full-power carrier arrived at only −81.9 dBFS, below a Zigbee frame's in-band noise. Needs a 2.4 GHz antenna on the HackRF (or the 30 dB cable into RF A RX2). |
+
+Bench files: `~/Documents/zigbee_hackrf_bench/` (`frames.py`, `gen_iq.py`,
+`decode_check.cpp`, `run_rf.sh`, `analyze.py`, `diag/`).
+
+**Bluetooth Remote ID from a real transmitter.** The Heltec was backed up first
+(8 MB, verified against the device:
+`data/esp32_wifi_validation/2026-11-04/pre-remoteid/current_8MB.bin`, sha256
+`64a85d8e…`), then flashed with a test broadcaster (`~/Documents/remoteid_ble_test/`):
+ASTM F3411 Bluetooth 4 legacy adverts (ADV_NONCONN_IND, service data 0xFFFA),
+random static address `C0:FF:EE:12:34:56`, −24 dBm, cycling Basic ID, Location,
+Self ID, System and Operator ID with fixed test values (serial
+`RFMON-RID-TEST-0001`). Messages are encoded from the standard's byte layout,
+independent of the project's parser.
+
+- Coordinated, 120 s: the broadcaster is listed as Random static, tagged Remote
+  ID, 53 packets on channels 37/38/39. Every message's 25 bytes match the
+  firmware's, and the existing parser (`drone::parse_odid_message`) returns the
+  transmitted values: ID and UA type, position 12.3456789 / 76.54321, altitudes
+  150 / 160 m, height 50 m, 5 m/s, +1 m/s, 90°, accuracy codes, operator
+  position, area, timestamp 247449600, operator ID and self-ID text.
+- Not covered: Authentication messages, message packs, Bluetooth 5 Long Range
+  (not decoded by design), and the GUI's Drones-page section rendering this
+  live source (unit-tested headless).
+
+**Bug found and fixed: energy gate on the wrong signal.** The broadcaster was
+never decoded on channel 37, even when advertising only there, although its
+bursts arrived at about −28 dBFS. The gate measured power after the wide first
+filter stage (about ±3 MHz), so Wi-Fi channel 1 traffic next to 2402 MHz set the
+"floor" and the gate skipped real packets. The gate now measures the narrow
+channel output.
+
+| Same 3 s capture at 2401 MHz | Before | After |
+|---|---|---|
+| BLE 37 packets (all senders) | 294 | 686 |
+| Broadcaster packets | 0 | 18 |
+
+In the 120 s Coordinated live run, BLE 37 rose from 227 to 391 packets. A new
+regression test (Wi-Fi-like traffic 2.2 MHz beside BLE 37, busy 90% of the time)
+fails on the old code and passes now.
+
 ## Not verified
 
-- **Zigbee on real radios.** No 802.15.4 sync occurred on any channel in ~5 minutes
-  of live runs, consistent with no Zigbee network nearby but not proof. The
-  demodulator is validated only against its own synthetic modulator; a real
-  Zigbee/Thread device (hub + bulb, ESP32-C6/H2, nRF52840 or CC2531) is needed.
-- **Bluetooth Remote ID on air** (needs the ESP32 rig or a compliant drone).
+- **Zigbee over the air / from a real chip.** The decoder is verified against an
+  independent waveform offline; RF reception needs an antenna on the HackRF (or
+  the cable), and a real Zigbee/Thread chip (ESP32-C6/H2, nRF52840, CC2531, or a
+  hub + bulb) remains the final check.
+- **Bluetooth Remote ID beyond legacy BT4 basics:** authentication pages, message
+  packs, a commercial module or drone.
 - **Clicking through the page in the running GUI** (headless render only).

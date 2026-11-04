@@ -175,6 +175,8 @@ void Detector::run() {
                     auto packet=item.second;
                     packet.put("receiver_source",batch.source);
                     packet.put("receiver_epoch",batch.receiver_epoch);
+                    // Steady-clock seconds the samples were queued (acquisition time for the combined table).
+                    packet.put("acquired_steady_s",std::chrono::duration<double>(batch.enqueued.time_since_epoch()).count());
                     std::ostringstream out;boost::property_tree::write_json(out,packet,false);
                     if(snapshot_.native_packets.size()>=64)snapshot_.native_packets.erase(snapshot_.native_packets.begin());
                     snapshot_.native_packets.push_back(out.str());++snapshot_.native_packet_count;
@@ -185,6 +187,7 @@ void Detector::run() {
                     auto evidence=item.second;
                     evidence.put("receiver_source",batch.source);evidence.put("receiver_epoch",batch.receiver_epoch);
                     evidence.put("sample_rate_hz",batch.rate);evidence.put("center_hz",batch.frequency);
+                    evidence.put("acquired_steady_s",std::chrono::duration<double>(batch.enqueued.time_since_epoch()).count());
                     std::ostringstream out;boost::property_tree::write_json(out,evidence,false);
                     snapshot_.o4_latest=out.str();
                 }

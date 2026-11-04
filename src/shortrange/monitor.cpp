@@ -243,10 +243,14 @@ void Monitor::process(const std::complex<float>* iq, size_t n, double rate, doub
             const auto& f1 = t.ble ? ble1 : zb1;
             const auto& f2 = t.ble ? ble2 : zb2;
             const auto stage1 = ddc(iq, n, rate, t.frequency_hz - center, f1);
+            const auto full = ddc(stage1.data(), stage1.size(), kOutRate, 0, f2);
             // Demodulate only where the channel rises above its own noise
-            // floor; quiet stretches cannot hold a decodable packet.
-            for (const auto& [a, b] : active_spans(stage1, 128, kGateDb, t.ble ? 400 : 800)) {
-                const auto channel = ddc(stage1.data() + a, b - a, kOutRate, 0, f2);
+            // floor; quiet stretches cannot hold a decodable packet. The gate
+            // measures the narrow channel: the wide first stage passes about
+            // +/-3 MHz, so traffic beside the channel (Wi-Fi channel 1 next to
+            // BLE 37, found on the X310 bench) set the "floor" and hid packets.
+            for (const auto& [a, b] : active_spans(full, 128, kGateDb, t.ble ? 400 : 800)) {
+                const std::vector<std::complex<float>> channel(full.begin() + ptrdiff_t(a), full.begin() + ptrdiff_t(b));
                 if (t.ble) {
                     ble::DemodStats st;
                     for (auto p : ble::demodulate(channel, t.channel, &st)) { p.sample += a; r.ble.push_back(std::move(p)); }
@@ -654,6 +658,15 @@ std::string Monitor::export_json(const std::string& directory) const {
         e["cfo_history_hz"] = d.cfo_history;
         e["power_history_db"] = d.power_history;
         j["bluetooth_le"].push_back(e);
+    }
+    // Recent packets (newest first, bounded by Limits::recent_packets) with raw bytes.
+    for (const auto* q : {&s.recent_ble, &s.recent_zigbee}) {
+        J rows = J::array();
+        for (const auto& r : *q)
+            rows.push_back({{"protocol", r.protocol}, {"channel", r.channel}, {"age_s", age(r.at)}, {"host_ns", r.host_ns},
+                            {"sender", r.source}, {"power_db", r.power_db}, {"cfo_hz", r.cfo_hz}, {"summary", r.summary},
+                            {"hex", r.hex}});
+        j[q == &s.recent_ble ? "recent_ble_packets" : "recent_802154_frames"] = rows;
     }
     j["ieee802154"] = J::array();
     for (const auto& d : s.zigbee) {

@@ -2,10 +2,12 @@
 #include "coordinated_panel.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <future>
+#include <map>
 
 #include "gui/app_shell.hpp"
 #include "imgui.h"
@@ -51,13 +53,142 @@ void add_detector(std::vector<Entry>& out, const drone::Snapshot& s, const char*
         out.push_back(std::move(e));
     }
 }
+
+// Native worker JSON (written by boost::property_tree, so values are strings).
+std::string jtext(const nlohmann::json& j, const char* k) {
+    if (!j.is_object() || !j.contains(k)) return "";
+    return j[k].is_string() ? j[k].get<std::string>() : j[k].dump();
+}
+double jnum(const nlohmann::json& j, const char* k) {
+    const auto t = jtext(j, k);
+    char* end = nullptr;
+    const double v = std::strtod(t.c_str(), &end);
+    return end != t.c_str() && std::isfinite(v) ? v : 0;
+}
+bool jbool(const nlohmann::json& j, const char* k) { const auto t = jtext(j, k); return t == "true" || t == "1"; }
+std::vector<std::pair<std::string, std::string>> all_fields(const nlohmann::json& j) {
+    std::vector<std::pair<std::string, std::string>> f;
+    for (const auto& [k, v] : j.items()) f.push_back({k, v.is_string() ? v.get<std::string>() : v.dump()});
+    return f;
+}
+// End of the visit that produced capture `seq` (the evidence's acquisition time).
+double capture_time(const std::optional<uint64_t>& seq, const std::deque<coord::VisitRecord>& visits) {
+    if (seq)
+        for (const auto& v : visits)
+            if (v.capture_seq == *seq) return v.in_progress ? v.start_s : v.end_s;
+    return 0;
+}
+
+// CRC-valid DJI DroneID packets from the native worker (it reports them as
+// packets, not observations): one row per reported serial, or per envelope
+// and centre when the envelope carries no serial.
+void add_native_packets(std::vector<Entry>& out, const drone::Snapshot& s, const std::deque<coord::VisitRecord>& visits) {
+    std::map<std::string, Entry> rows;
+    std::vector<std::string> order;
+    for (const auto& text : s.native_packets) {
+        const auto j = nlohmann::json::parse(text, nullptr, false);
+        if (j.is_discarded()) continue;
+        const std::string serial = jtext(j, "reported_serial"), model = jtext(j, "reported_model"), envelope = jtext(j, "envelope");
+        const double center = jnum(j, "center_hz");
+        const std::string key = "native-packet/" + (serial.empty() ? envelope + "/" + std::to_string(std::llround(center / 1e3)) : "serial:" + serial);
+        if (!rows.count(key)) order.push_back(key);
+        Entry& e = rows[key];
+        e.key = key;
+        e.source = "DJI native packets";
+        ++e.count;
+        e.evidence = std::string("DroneID packet: CRC24 OK") + (jbool(j, "inner_crc16") ? ", CRC16 OK" : "") + ", envelope " +
+                     (envelope.empty() ? "?" : envelope) + (jbool(j, "telemetry_parsed") ? ", telemetry parsed" : ", telemetry not parsed");
+        e.identity = serial.empty() ? "no serial in this envelope; identity not decoded"
+                                    : "reported serial " + serial + (model.empty() ? "" : " / reported model " + model) + " (unauthenticated)";
+        e.reported_id = serial;
+        e.reported_model = model;
+        e.frequency_hz = center;
+        e.capture_seq = evidence::capture_from_source(jtext(j, "receiver_source"));
+        const double visit = capture_time(e.capture_seq, visits);
+        e.last_seen_s = visit > 0 ? visit : jnum(j, "acquired_steady_s");
+        if (const double t = jnum(j, "timestamp"); t > 0) e.event_device_time_s = t;
+        e.fields = all_fields(j);
+        e.raw_json = text;
+    }
+    for (const auto& k : order) out.push_back(std::move(rows[k]));
+}
+
+// Experimental O4 structure evidence: one row while any window has been a
+// candidate or the latest window shows structure. Never an identity.
+void add_native_o4(std::vector<Entry>& out, const drone::Snapshot& s, const std::deque<coord::VisitRecord>& visits) {
+    if (s.o4_latest.empty()) return;
+    const auto j = nlohmann::json::parse(s.o4_latest, nullptr, false);
+    if (j.is_discarded()) return;
+    const bool structure = jbool(j, "candidate") || jbool(j, "structure_match") || jbool(j, "weak_structure_match");
+    if (s.o4_candidates == 0 && !structure) return;
+    Entry e;
+    e.key = "native-o4";
+    e.source = "DJI native O4 structure";
+    e.evidence = std::to_string(s.o4_candidates) + " candidate windows of " + std::to_string(s.o4_windows) +
+                 " (experimental O4 structure); latest: " + jtext(j, "reason");
+    e.identity = "no identity (structure evidence only)";
+    e.frequency_hz = jnum(j, "center_hz");
+    e.count = s.o4_candidates;
+    e.capture_seq = evidence::capture_from_source(jtext(j, "receiver_source"));
+    const double visit = capture_time(e.capture_seq, visits);
+    e.last_seen_s = visit > 0 ? visit : jnum(j, "acquired_steady_s");
+    if (const double t = jnum(j, "timestamp"); t > 0) e.event_device_time_s = t;
+    e.fields = all_fields(j);
+    e.raw_json = s.o4_latest;
+    out.push_back(std::move(e));
+}
+
+// ASTM F3411 over Bluetooth LE from the Bluetooth & Zigbee decoder.
+void add_bluetooth_rid(std::vector<Entry>& out, const shortrange::Snapshot& b) {
+    for (const auto& d : b.ble) {
+        if (d.remote_id.empty()) continue;
+        Entry e;
+        e.key = "ble-rid/" + d.key;
+        e.source = "Bluetooth Remote ID";
+        e.evidence = "CRC-valid BLE legacy advertising, ASTM F3411, " + std::to_string(d.remote_id.size()) + " message types from " +
+                     d.address + " (" + d.address_kind + ")";
+        e.identity = "ID unavailable";
+        nlohmann::json raw = nlohmann::json::object();
+        for (const auto& [type, text] : d.remote_id) {
+            const auto m = nlohmann::json::parse(text, nullptr, false);
+            raw[type] = m.is_discarded() ? nlohmann::json(text) : m;
+            if (m.is_discarded()) { e.fields.push_back({type, text}); continue; }
+            if (m.value("type", std::string()) == "Basic ID" && e.reported_id.empty()) {
+                e.reported_id = m.value("reported_id", m.value("reported_id_hex", std::string()));
+                e.identity = "reported ID " + e.reported_id + " (" + m.value("ua_type_name", std::string("category not reported")) +
+                             ", unauthenticated)";
+            }
+            std::string summary;
+            for (const auto& [k, v] : m.items())
+                if (k != "type" && k != "raw_hex" && !v.is_object() && !v.is_array())
+                    summary += (summary.empty() ? "" : ", ") + k + "=" + (v.is_string() ? v.get<std::string>() : v.dump());
+            e.fields.push_back({type, summary});
+        }
+        int best = 0;
+        uint64_t most = 0;
+        for (const auto& [c, k] : d.channel_counts)
+            if (k > most) { most = k; best = c; }
+        e.frequency_hz = shortrange::ble::adv_channel_frequency(best);
+        e.last_seen_s = steady_s(d.last_seen);
+        e.count = d.packets;
+        e.capture_seq = evidence::capture_from_source(d.last_source);
+        e.fields.push_back({"Advertiser", d.address + " (" + d.address_kind + ")"});
+        e.fields.push_back({"Power last / max (dBFS, relative)", std::to_string(d.last_power_db) + " / " + std::to_string(d.max_power_db)});
+        e.fields.push_back({"Receiver source", d.last_source});
+        e.raw_json = raw.dump();
+        out.push_back(std::move(e));
+    }
+}
 }  // namespace
 
 std::vector<Entry> build_entries(const drone::Snapshot& native, const drone::Snapshot& legacy, const drone::RidJson& rid,
                                  const ml::Snapshot& model, const std::deque<coord::VisitRecord>& visits, double now_s,
-                                 double expire_s) {
+                                 double expire_s, const shortrange::Snapshot* bluetooth) {
     std::vector<Entry> out;
     add_detector(out, native, "DJI native");
+    add_native_packets(out, native, visits);
+    add_native_o4(out, native, visits);
+    if (bluetooth) add_bluetooth_rid(out, *bluetooth);
     add_detector(out, legacy, "DJI fallback");
     if (rid.is_object() && rid.contains("tracks"))
         for (const auto& t : rid["tracks"]) {
@@ -230,19 +361,60 @@ void draw_editor(PanelState& state, Scanner& scanner, double max_rate) {
     ImGui::PopID();
 }
 
+std::string lower_text(std::string s) {
+    for (auto& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+// Drag handle under a table: changes `height`.
+void height_handle(const char* id, float& height) {
+    ImGui::InvisibleButton(id, ImVec2(-1, 8));
+    const bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+    if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+    if (ImGui::IsItemActive()) height = std::clamp(height + ImGui::GetIO().MouseDelta.y, 120.f, 4000.f);
+    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+    ImGui::GetWindowDrawList()->AddLine({a.x, (a.y + b.y) / 2}, {b.x, (a.y + b.y) / 2},
+                                        ImGui::GetColorU32(hot ? ImGuiCol_SeparatorActive : ImGuiCol_Separator), 2);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drag to make the table taller or shorter");
+}
+
 void draw_entries(PanelState& state, const std::vector<Entry>& entries, double now) {
+    std::map<std::string, size_t> per_source;
+    for (const auto& e : entries) ++per_source[e.source];
     ImGui::Text("Entries: %zu (rows are observations, not a count of physical aircraft). Select a row to inspect it.", entries.size());
+    std::string sources;
+    for (const auto& [src, n] : per_source) sources += (sources.empty() ? "" : " | ") + src + " " + std::to_string(n);
+    ImGui::TextDisabled("%s", sources.empty() ? "No source has reported anything yet." : sources.c_str());
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##entries filter", "Search source, evidence, identity, frequency", state.entries_filter,
+                             sizeof state.entries_filter);
+    const std::string filter = lower_text(state.entries_filter);
+    if (state.entries_height <= 0) state.entries_height = 260;
+    // Resizable / reorderable / hideable columns (right-click a header); the
+    // drag handle below sets the height.
     if (!ImGui::BeginTable("Combined drone entries", 8,
-                           ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY |
-                               ImGuiTableFlags_SizingStretchProp,
-                           ImVec2(0, 220)))
+                           ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_Resizable |
+                               ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_ScrollX | ImGuiTableFlags_ScrollY,
+                           ImVec2(0, state.entries_height)))
         return;
-    for (const char* h : {"#", "Source", "Evidence", "Identity (claim / candidate)", "Band / MHz", "Count", "Last seen", "Freshness"})
-        ImGui::TableSetupColumn(h);
-    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoHide, 50);
+    ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed, 160);
+    ImGui::TableSetupColumn("Evidence", ImGuiTableColumnFlags_WidthFixed, 340);
+    ImGui::TableSetupColumn("Identity (claim / candidate)", ImGuiTableColumnFlags_WidthFixed, 300);
+    ImGui::TableSetupColumn("Band / MHz", ImGuiTableColumnFlags_WidthFixed, 140);
+    ImGui::TableSetupColumn("Count", ImGuiTableColumnFlags_WidthFixed, 60);
+    ImGui::TableSetupColumn("Last seen", ImGuiTableColumnFlags_WidthFixed, 90);
+    ImGui::TableSetupColumn("Freshness", ImGuiTableColumnFlags_WidthFixed, 200);
+    ImGui::TableSetupScrollFreeze(1, 1);
     ImGui::TableHeadersRow();
     for (size_t i = 0; i < entries.size(); ++i) {
         const auto& e = entries[i];
+        if (!filter.empty()) {
+            char f[32];
+            std::snprintf(f, sizeof f, "%.3f", e.frequency_hz / 1e6);
+            const std::string hay = lower_text(e.source + " " + e.evidence + " " + e.identity + " " + band_of(e.frequency_hz) + " " + f);
+            if (hay.find(filter) == std::string::npos) continue;
+        }
         ImGui::PushID(e.key.c_str());
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
@@ -266,7 +438,8 @@ void draw_entries(PanelState& state, const std::vector<Entry>& entries, double n
         ImGui::PopID();
     }
     ImGui::EndTable();
-    ImGui::TextDisabled("~ provisional relationship to another row   ! conflicting claims");
+    height_handle("##entries height", state.entries_height);
+    ImGui::TextDisabled("~ provisional relationship to another row   ! conflicting claims   Right-click a header to show or hide columns.");
 }
 
 void draw_inspector(PanelState& state, Scanner& scanner, const std::vector<Entry>& entries,
@@ -373,7 +546,8 @@ void draw_entry_views(PanelState& state, Scanner& scanner, const std::vector<Ent
 }
 
 
-void draw_section(PanelState& state, Scanner& scanner, drone::Addon& drones, ml::Inference& model, bool connected) {
+void draw_section(PanelState& state, Scanner& scanner, drone::Addon& drones, ml::Inference& model, bool connected,
+                  shortrange::Monitor* bluetooth) {
     ImGui::SeparatorText("Coordinated detection: Sub-GHz -> 2.4 GHz -> 5 GHz -> repeat");
     const std::string band = scanner.active_band();
     const bool coordinated = band == BAND_COORDINATED;
@@ -426,8 +600,10 @@ void draw_section(PanelState& state, Scanner& scanner, drone::Addon& drones, ml:
     static drone::RidJson rid;
     static double rid_time = -1;
     if (rid.is_null() || ImGui::GetTime() - rid_time > .25) { rid = drones.remote_id.snapshot(); rid_time = ImGui::GetTime(); }
+    std::optional<shortrange::Snapshot> ble;
+    if (bluetooth) ble = bluetooth->snapshot();
     const auto entries = build_entries(drones.native.snapshot(), drones.live.snapshot(), rid, model.snapshot(),
-                                       scanner.coordinated_visits(), now, expire_s);
+                                       scanner.coordinated_visits(), now, expire_s, ble ? &*ble : nullptr);
     ImGui::SeparatorText("All detection entries");
     const auto visits = scanner.coordinated_visits();
     draw_entry_views(state, scanner, entries, visits, st.config_hash, now);
@@ -441,8 +617,9 @@ void draw_section(PanelState& state, Scanner& scanner, drone::Addon& drones, ml:
     ImGui::Text("Model: %s | processed %llu | dropped %llu | stale %llu | invalid %llu", ml.state.c_str(),
                 static_cast<unsigned long long>(ml.processed), static_cast<unsigned long long>(ml.dropped),
                 static_cast<unsigned long long>(ml.stale), static_cast<unsigned long long>(ml.invalid));
-    ImGui::Text("Wi-Fi Remote ID: %s | DJI fallback: %s", drones.remote_id.enabled() ? "enabled" : "OFF",
-                drones.live.running() ? "running" : "OFF");
+    ImGui::Text("Wi-Fi Remote ID: %s | DJI fallback: %s | Bluetooth Remote ID: %s", drones.remote_id.enabled() ? "enabled" : "OFF",
+                drones.live.running() ? "running" : "OFF",
+                !ble ? "not connected" : ble->enabled ? "decoding (Bluetooth & Zigbee page)" : "OFF - start it on the Bluetooth & Zigbee page");
     gui::note("Sub-GHz: energy scan + LoRa only. The drone model is not supported there (it needs 20 MSps 2.4/5 GHz views); no sub-GHz drone decision is made.", true);
     gui::note("LoRa is decoded from each sub-GHz visit on derived 500/250/125 kHz channels; packets longer than a visit (slow SF11-12) can be cut.");
     gui::note("Classifier running is not classifier qualified: no presence model is qualified, so no 'no drone' or confirmed-drone decision is shown.");
