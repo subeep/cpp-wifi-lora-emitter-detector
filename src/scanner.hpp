@@ -17,6 +17,8 @@
 #include <vector>
 
 #include "config.hpp"
+#include "coordinated_schedule.hpp"
+#include "lora_capture.hpp"
 #include "lora_master.hpp"
 #include "lora_observation.hpp"
 #include "registry.hpp"
@@ -55,6 +57,34 @@ struct ScannerStatus {
     size_t wifi_lane_high_water = 0;  // max jobs queued+running (bounded: one step + one marker)
     double wifi_requested_rate_hz = 0;
     std::optional<double> wifi_actual_rate_hz; // latest nonempty capture; absent on failure/start
+};
+
+// Coordinated mode coverage ledger (upgradedplan.md §4/§6). Times are
+// coord::now_steady_s() seconds. "Analysed" means admitted to the visit's
+// processing lane; a lane that is still busy drops the visit (counted) so
+// acquisition never waits for analysis.
+struct CoordinatedSlotStatus {
+    std::string band;
+    bool enabled = false;
+    uint64_t visits = 0, valid_visits = 0, analysed_visits = 0, lane_drops = 0;
+    double acquired_s = 0, analysed_s = 0;  // valid sample time / admitted sample time
+    size_t cursor = 0, list_size = 0;
+    double last_visit_end_s = -1;
+    // Measured average revisit per centre: time between the first and latest
+    // cursor wrap, divided by the list visits made in between.
+    double last_sweep_s = 0;
+};
+struct CoordinatedStatus {
+    bool active = false;          // the scan thread is executing coordinated mode
+    std::string conflict;         // non-empty: mode refused (fixed channel / LoRa lock set)
+    std::string config_error;     // non-empty: schedule invalid, nothing acquired
+    std::string config_hash;
+    uint64_t cycle = 0;           // cycles completed in this coordinated run
+    double last_cycle_s = 0;      // measured duration of the last completed cycle
+    coord::Estimate estimate;     // configured cycle/sweep times (no host overhead)
+    std::optional<coord::VisitRecord> current;  // visit being acquired now
+    std::vector<CoordinatedSlotStatus> slots;
+    uint64_t overflows = 0, empty_captures = 0;
 };
 
 // One detected Wi-Fi transmission - a single burst found by
@@ -116,6 +146,11 @@ public:
     // Same as Scanner(), with every persistent store rooted at `data_root`
     // instead of <project>/data (tests use a temporary directory).
     explicit Scanner(const std::string& data_root);
+    // Both: observers plus a separate data root (verification tools).
+    Scanner(const std::string& data_root, WifiIqObserver observer, WifiFrameObserver frames = {}) : Scanner(data_root) {
+        wifi_iq_observer_ = std::move(observer);
+        wifi_frame_observer_ = std::move(frames);
+    }
     ~Scanner();
 #ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
     bool set_wifi_cyclo_enabled(bool enable) { return cyclo_shadow_.set_enabled(enable); }
@@ -177,6 +212,31 @@ public:
 
     std::vector<DeviceRow> snapshot(const std::string& band) const;
     ScannerStatus status() const;
+
+    // Coordinated mode (BAND_COORDINATED). The schedule applies at the next
+    // cycle boundary and resets the rotating cursors; nullopt restores the
+    // device default (coord::default_schedule at the Wi-Fi rate in use).
+    void set_coordinated_schedule(std::optional<coord::Schedule> schedule);
+    std::optional<coord::Schedule> coordinated_schedule() const;
+    // The schedule a coordinated run would use with the current settings.
+    coord::Schedule effective_coordinated_schedule() const;
+    CoordinatedStatus coordinated_status() const;
+    // Recent visits (newest last, bounded), for coverage-aware freshness.
+    std::deque<coord::VisitRecord> coordinated_visits() const;
+    static double now_steady_s();
+
+    // Opt-in evidence retention: after the Wi-Fi processing lane has finished
+    // with a Wi-Fi/drone capture, keep its IQ (moved, not copied) for the most
+    // recent `captures` captures so an entry's exact samples can be exported.
+    // 0 (default) keeps nothing. Memory: captures x one capture's fc32 IQ.
+    struct RetainedCapture {
+        wifi_security::CaptureRecord record;
+        std::shared_ptr<const std::vector<std::complex<float>>> iq;
+    };
+    void set_iq_retention(size_t captures);
+    size_t iq_retention() const;
+    std::optional<RetainedCapture> retained_capture(uint64_t capture_seq) const;
+    std::vector<uint64_t> retained_capture_seqs() const;  // oldest first
 
     // Only populated while BAND_SUB_GHZ is active - see run()'s LoRa
     // PHY listen sub-loop, which runs alongside the usual energy scan.
@@ -241,6 +301,9 @@ private:
     // emitters table populated while locked to one frequency.
     void run_lora_listen_step(double freq_hz, const DeviceProfile& profile, double threshold_db,
                                std::vector<Detection>& detections);
+    // LoRa decode of one capture (provenance carries rate/centre/timing).
+    void decode_lora_iq(const std::vector<std::complex<float>>& iq, const LoraCapture& provenance,
+                        double threshold_db, std::vector<Detection>& detections, bool energy_segments);
     DeviceRegistry& registry_for(const std::string& band);
     // A Wi-Fi step handed from acquisition to the processing lane, or (with
     // cycle_end set) the end-of-cycle status marker for a Wi-Fi cycle.
@@ -261,8 +324,30 @@ private:
         bool cycle_end = false;
         int cycle_count = 0;
         bool last_overflow = false;
+        // Coordinated drone-only visit: hand the capture to the IQ observers
+        // (drones/ML) only; no Wi-Fi PHY, security or registry work.
+        bool observer_only = false;
     };
     void run_wifi_lane_job(WifiStepJob& job);
+    // Coordinated sub-GHz visit, processed off the acquisition thread:
+    // energy segments plus LoRa decoding on every configured LoRa channel
+    // inside the usable passband, derived from this one capture.
+    struct SubGhzVisitJob {
+        ScanStep step{};
+        double threshold = 0, actual_rate = 0, host_start_unix_s = 0;
+        std::optional<double> gain_db;
+        std::vector<std::vector<std::complex<float>>> captures;  // exactly one
+        CaptureTiming timing;
+        bool overflow = false;
+        uint64_t radio_session = 0;
+        std::string device_args, antenna;
+        bool cycle_end = false;  // last sub-GHz visit of the cycle: commit the registry
+    };
+    void run_subghz_visit_job(SubGhzVisitJob& job);
+    std::vector<Detection> coordinated_subghz_detections_;  // sub-GHz lane only
+    // Runs coordinated cycles until the mode changes or stop is requested.
+    // Owns its own processing lanes and drains them before returning.
+    void run_coordinated(const DeviceProfile& profile, std::optional<double> wifi_rate_override);
     // One step's spectrum/segments and (Wi-Fi) burst processing through the
     // per-hop registry flush - the former inline block of run(), unchanged.
     void process_step_captures(const ScanStep& step, const std::string& band, double threshold,
@@ -314,6 +399,15 @@ private:
 
     mutable std::mutex status_mutex_;
     ScannerStatus status_;
+    CoordinatedStatus coordinated_status_;           // guarded by status_mutex_
+    std::deque<coord::VisitRecord> coordinated_visits_; // guarded by status_mutex_
+    mutable std::mutex retention_mutex_;
+    size_t iq_retention_ = 0;                  // guarded by retention_mutex_
+    std::deque<RetainedCapture> retained_;     // guarded by retention_mutex_
+    // Wi-Fi lane, after processing; `records` index-aligned with job.captures.
+    void retain_captures(WifiStepJob& job, const std::vector<wifi_security::CaptureRecord>& records);
+    std::optional<coord::Schedule> coordinated_schedule_; // guarded by config_mutex_
+    uint64_t coordinated_schedule_version_ = 0;            // guarded by config_mutex_
 
     DeviceRegistry registry_lora_;
     DeviceRegistry registry_wifi24_;

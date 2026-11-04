@@ -111,6 +111,32 @@ target_include_directories(test_dsp PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_dsp PRIVATE PkgConfig::KISSFFT)
 
 # ---------------------------------------------------------------------------
+# Bluetooth LE advertising and IEEE 802.15.4 / Zigbee decoders (receive-only,
+# fed by the existing 2.4 GHz captures). wifi_vendor.cpp comes from the
+# GUI's own source glob; the test adds it explicitly.
+# ---------------------------------------------------------------------------
+add_library(rfmon_shortrange STATIC
+  src/shortrange/ble.cpp
+  src/shortrange/ieee802154.cpp
+  src/shortrange/assigned_numbers.cpp
+  src/shortrange/monitor.cpp
+)
+target_include_directories(rfmon_shortrange PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(rfmon_shortrange PUBLIC Threads::Threads)
+target_link_libraries(rf_monitor_gui PRIVATE rfmon_shortrange)
+add_executable(test_shortrange_dsp tests/test_shortrange_dsp.cpp src/wifi_vendor.cpp)
+target_link_libraries(test_shortrange_dsp PRIVATE rfmon_shortrange)
+add_test(NAME shortrange_dsp COMMAND test_shortrange_dsp)
+set_tests_properties(shortrange_dsp PROPERTIES TIMEOUT 120)
+target_sources(rf_monitor_gui PRIVATE src/shortrange/panel.cpp)
+add_executable(test_shortrange_panel tests/test_shortrange_panel.cpp src/shortrange/panel.cpp src/wifi_vendor.cpp
+  ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp ${IMGUI_DIR}/imgui_widgets.cpp)
+target_include_directories(test_shortrange_panel PRIVATE ${IMGUI_DIR})
+target_link_libraries(test_shortrange_panel PRIVATE rfmon_shortrange)
+add_test(NAME shortrange_panel COMMAND test_shortrange_panel)
+set_tests_properties(shortrange_panel PROPERTIES TIMEOUT 120)
+
+# ---------------------------------------------------------------------------
 # Synthetic LoRa PHY codec correctness test - pure software, no hardware.
 # Direct C++ port of the validated Python prototype's tests/test_lora_phy.py.
 # ---------------------------------------------------------------------------
@@ -411,6 +437,12 @@ target_link_libraries(test_bench_tx PRIVATE
 
 # LoRa observation semantics and versioned offline IQ capture/replay.
 target_sources(band_smoke_test PRIVATE src/lora_observation.cpp src/lora_capture.cpp)
+add_executable(test_coordinated_schedule tests/test_coordinated_schedule.cpp
+    src/lora_observation.cpp src/lora_capture.cpp src/lora_phy.cpp src/lora_phy_std.cpp)
+target_include_directories(test_coordinated_schedule PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+target_link_libraries(test_coordinated_schedule PRIVATE PkgConfig::KISSFFT)
+target_compile_definitions(test_coordinated_schedule PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
+add_test(NAME coordinated_schedule COMMAND test_coordinated_schedule)
 add_executable(test_lora_observation tests/test_lora_observation.cpp
     src/lora_observation.cpp src/lora_capture.cpp src/lora_phy.cpp src/lora_phy_std.cpp)
 target_include_directories(test_lora_observation PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
@@ -462,7 +494,7 @@ target_compile_definitions(test_wifi_ofdm PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOUR
 target_link_libraries(test_wifi_ofdm PRIVATE PkgConfig::KISSFFT Threads::Threads)
 
 # Shared production LoRa receiver: GUI, live scanner and offline replay.
-foreach(target band_smoke_test test_lora_observation lora_replay)
+foreach(target band_smoke_test test_lora_observation lora_replay test_coordinated_schedule)
   target_sources(${target} PRIVATE src/lora_receiver.cpp)
 endforeach()
 if(TARGET test_lora_gui)
@@ -683,6 +715,52 @@ if(Python3_Interpreter_FOUND)
 endif()
 get_target_property(LORA_SCANNER_TEST_SOURCES test_scanner_wifi_lane SOURCES)
 list(REMOVE_ITEM LORA_SCANNER_TEST_SOURCES tests/test_scanner_wifi_lane.cpp)
+# Receive-only live check of the Bluetooth LE / 802.15.4 decoders (not a ctest).
+add_executable(shortrange_live_check tools/shortrange_live_check.cpp ${LORA_SCANNER_TEST_SOURCES})
+foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
+  get_target_property(value test_scanner_wifi_lane ${property})
+  if(value)
+    set_target_properties(shortrange_live_check PROPERTIES ${property} "${value}")
+  endif()
+endforeach()
+target_link_libraries(shortrange_live_check PRIVATE rfmon_shortrange)
+add_executable(test_scanner_coordinated tests/test_scanner_coordinated.cpp ${LORA_SCANNER_TEST_SOURCES})
+foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
+  get_target_property(value test_scanner_wifi_lane ${property})
+  if(value)
+    set_target_properties(test_scanner_coordinated PROPERTIES ${property} "${value}")
+  endif()
+endforeach()
+add_test(NAME scanner_coordinated COMMAND test_scanner_coordinated)
+set_tests_properties(scanner_coordinated PROPERTIES TIMEOUT 180)
+# Receive-only live check of coordinated mode on the real receiver (not a ctest).
+if(TARGET rfmon_drones)
+  add_executable(coordinated_live_check tools/coordinated_live_check.cpp ${LORA_SCANNER_TEST_SOURCES} src/ml_inference.cpp)
+  foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
+    get_target_property(value test_scanner_wifi_lane ${property})
+    if(value)
+      set_target_properties(coordinated_live_check PROPERTIES ${property} "${value}")
+    endif()
+  endforeach()
+  target_link_libraries(coordinated_live_check PRIVATE rfmon_drones)
+  if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
+    add_executable(test_coordinated_panel tests/test_coordinated_panel.cpp ${LORA_SCANNER_TEST_SOURCES}
+      src/coordinated_panel.cpp src/gui/app_shell.cpp src/ml_inference.cpp src/ml_panel.cpp
+      ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp
+      ${IMGUI_DIR}/imgui_widgets.cpp ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
+    foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
+      get_target_property(value test_scanner_wifi_lane ${property})
+      if(value)
+        set_target_properties(test_coordinated_panel PROPERTIES ${property} "${value}")
+      endif()
+    endforeach()
+    target_include_directories(test_coordinated_panel PRIVATE ${IMGUI_DIR} ${WIFI_EGL_INCLUDE_DIR})
+    target_compile_definitions(test_coordinated_panel PRIVATE RFMON_ENABLE_DJI_DRONEID=1)
+    target_link_libraries(test_coordinated_panel PRIVATE rfmon_drones OpenGL::GL ${WIFI_EGL_LIBRARY} dl)
+    add_test(NAME coordinated_panel COMMAND test_coordinated_panel)
+    set_tests_properties(coordinated_panel PROPERTIES TIMEOUT 120)
+  endif()
+endif()
 add_executable(test_scanner_lora_security tests/test_scanner_lora_security.cpp ${LORA_SCANNER_TEST_SOURCES})
 foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
   get_target_property(value test_scanner_wifi_lane ${property})

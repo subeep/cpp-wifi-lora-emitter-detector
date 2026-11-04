@@ -8,12 +8,13 @@ std::string band_label(const std::string& band) {
     if(band=="wifi_2g4")return "Wi-Fi 2.4 GHz";
     if(band=="wifi_5g")return "Wi-Fi 5 GHz";
     if(band=="sub_ghz_ism")return "LoRa / Sub-GHz ISM";
+    if(band=="coordinated")return "Coordinated Sub-GHz > 2.4 > 5 GHz";
     return band;
 }
 const char* page_name(Page p) {
     switch(p) {
     case Page::Overview:return "Overview"; case Page::Wifi24:return "Wi-Fi";
-    case Page::Wifi5:return "Wi-Fi"; case Page::Lora:return "LoRa";
+    case Page::Wifi5:return "Wi-Fi"; case Page::ShortRange:return "Bluetooth & Zigbee"; case Page::Lora:return "LoRa";
     case Page::Drones:return "Drones"; case Page::Security:return "Security";
     case Page::Captures:return "Captures"; default:return "Settings";
     case Page::ModelInference:return "Model Inference";
@@ -23,6 +24,7 @@ const char* page_purpose(Page p) {
     switch(p) {
     case Page::Overview:return "Acquisition, observation health and evidence at a glance.";
     case Page::Wifi24:case Page::Wifi5:return "Sampled RF observations, decoded packets and claimed network identities.";
+    case Page::ShortRange:return "Bluetooth LE advertising and Zigbee / 802.15.4 addresses decoded from the 2.4 GHz captures.";
     case Page::Lora:return "RF observations, PHY hypotheses and provisional emitter clusters.";
     case Page::Drones:return "Reported broadcasts and telemetry. Identity is unauthenticated.";
     case Page::Security:return "Suspected activity and the coverage needed to interpret it.";
@@ -120,6 +122,7 @@ void draw_capabilities(bool drones,bool cyclo) {
     const struct {const char* name;const char* scope;} items[]={
         {"Acquisition","One selected radio/band at a time. B210 profile up to 56 MSps; X310 software profile up to 20 MSps. Requested rates are not actual hardware readbacks."},
         {"Wi-Fi channels","2.4 GHz: 1-13. 5 GHz: 36/40/44/48/149/153/157/161/165. No DFS/6 GHz scan plan. Sweep gaps remain."},
+        {"Bluetooth & Zigbee","Receive-only, off until started. BLE LE 1M advertising on 37/38/39 and 802.15.4 O-QPSK channels 11-26, CRC-checked, from existing 2.4 GHz captures (BLE 37 / Zigbee 11 only in Coordinated mode). 2,048 BLE / 256 802.15.4 addresses, 200 recent packets each; rotating BLE private addresses merged into probable devices by a provisional heuristic (layout, carrier offset, power, timing); a capture arriving while decoding is dropped and counted. No Classic Bluetooth, BLE connections, LE 2M / Coded, or decryption."},
         {"Wi-Fi PHY","1 Mbps DSSS / Barker-11 and legacy 20 MHz OFDM at 6/9/12/18/24/36/48/54 Mbps. No HT/VHT/HE/EHT payload decoding. Encrypted payload remains opaque."},
         {"Wi-Fi retention","1,000 packet rows; 400 normal / 4,000 extended security burst budget per capture. BSSID is a claimed network/interface; RF clusters are heuristic."},
         {"LoRa","SF7-12 explicit-header payloads; SF5/6 detection only. BW125/250/500, CR4/5-4/8. 200 hypothesis rows; no unique-aircraft/device claim."},
@@ -131,7 +134,7 @@ void draw_capabilities(bool drones,bool cyclo) {
     };
     for(const auto& item:items)if(section(item.name))note(item.scope);
     if(section("Cyclostationary"))note(cyclo?"Experimental opt-in. Four independent windows up to 65,536 samples each, total 262,144; two-second deadline. No independently validated named family. Offline-only evidence remains labelled offline.":"Not compiled in this build.");
-    if(section("Drones"))note(drones?"DJI and Wi-Fi Remote ID are independent, default-off add-ons. DJI: four distributed 20 ms windows, 2M samples/window; queue 4, 128 rows. Offline DJI: 40 ms / 2M samples. Remote ID: Beacon / supported NAN v0-2, queue 128, 64 sources, 32 message slots/source, per-message stale after 10 s. No Bluetooth or signature verification. Fresh live qualification is pending.":"Drones add-ons are not compiled in this build.");
+    if(section("Drones"))note(drones?"DJI and Wi-Fi Remote ID are independent, default-off add-ons. DJI: four distributed 20 ms windows, 2M samples/window; queue 4, 128 rows. Offline DJI: legacy 40 ms / 2M samples, native up to 160 ms. Remote ID: Beacon / supported NAN v0-2, queue 128, 64 sources, 32 message slots/source, per-message stale after 10 s; Bluetooth legacy advertising via the Bluetooth & Zigbee decoder. No signature verification. Fresh live qualification is pending.":"Drones add-ons are not compiled in this build.");
 }
 }
 

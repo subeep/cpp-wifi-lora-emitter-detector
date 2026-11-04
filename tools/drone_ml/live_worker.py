@@ -19,6 +19,7 @@ from tools.drone_ml.predict import InferenceEngine
 from tools.drone_ml.common import sha256
 from tools.drone_ml.presence import apply_unqualified_policy
 from tools.drone_ml.live_audit import AuditRecorder, CONTEXTS
+from tools.drone_ml.dsp_triage import predict_with_triage
 
 MAX_HEADER=8192
 MAX_SAMPLES=4_000_000
@@ -87,8 +88,9 @@ def serve(sock,model_path,audit_root=None,audit_context='unlabelled',audit_notes
         request,iq=receive(sock)
         started=time.perf_counter()
         want_preview=request.get('want_stft_preview') in (True,'true','1')
-        result=engine.predict_iq(iq,float(request['sample_rate_hz']),int(request.get('offset_samples',0)),
-                                 include_stft=want_preview)
+        result=predict_with_triage(engine,iq,float(request['sample_rate_hz']),int(request.get('offset_samples',0)),
+            include_stft=want_preview,
+            enabled=request.get('dsp_triage',False) in (True,'true','1'))
         image=result.pop('_stft_image',None)
         pixels=None
         if image is not None:

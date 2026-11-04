@@ -13,6 +13,8 @@ namespace drone {
 using RidJson=nlohmann::json;
 // Complete MPDU including FCS; independently verified before any parsing.
 RidJson parse_wifi_remote_id(const std::vector<uint8_t>& mpdu);
+// One 25-byte ASTM F3411 message (any transport); null when invalid.
+RidJson parse_odid_message(const uint8_t* message);
 class RemoteIdMonitor {
 public:
     RemoteIdMonitor()=default;

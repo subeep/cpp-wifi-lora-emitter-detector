@@ -84,6 +84,10 @@ int main(int argc,char** argv) {
         require(commands==1,"Scale/layout switch emitted command");
     }
     preview=true;ctx.error.clear();ctx.stalled=false;ctx.overflow=false;
+    state.page=Page::ModelInference;frame(true);
+    require(text.find("DSP triage (observation only)")!=std::string::npos,"DSP observation control missing");
+    require(text.find("No protocol-based rejection is enabled")!=std::string::npos,"DSP limits hidden");
+    require(!inference.snapshot().enabled,"DSP rendering started worker");
     stft_mode=true;state.page=Page::ModelInference;frame(true);
     require(text.find("Colour range")!=std::string::npos,"STFT preview missing");
     stft_result.current=false;frame(true);

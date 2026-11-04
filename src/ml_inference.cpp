@@ -215,13 +215,14 @@ void Inference::run(Options options) {
             const auto sample_offset=working_.selection.offsets[interval];
             Tree meta;meta.put("schema","rfmon.ml.iq.v1");meta.put("samples",samples);
             meta.put("want_stft_preview",true);
+            meta.put("dsp_triage",options.dsp_triage);
             meta.put("sample_rate_hz",c.sample_rate_hz);meta.put("offset_samples",sample_offset);
             meta.put("interval_index",interval);meta.put("interval_count",working_.selection.count);
             meta.put("selection","disjoint_capture_intervals_v1");
             meta.put("device_time_anchor","capture_first_sample; add offset_samples / sample_rate_hz");
             meta.put("capture_seq",c.capture_seq);meta.put("radio_session",c.radio_session);
             meta.put("generation",working_.generation);meta.put("run_id",c.run_id);
-            meta.put("center_hz",c.actual_rf_hz?c.actual_rf_hz+c.actual_dsp_hz:c.capture_center_hz);
+            meta.put("center_hz",c.stream_center_hz());
             meta.put("device",c.device);meta.put("source",c.source);meta.put("band",c.band);
             meta.put("clock_domain",int(c.clock));meta.put("device_time_ns",c.device_time_ns);
             meta.put("host_before_ns",c.host_before_ns);meta.put("host_after_ns",c.host_after_ns);
@@ -240,6 +241,25 @@ void Inference::run(Options options) {
                t.get<uint64_t>("request.offset_samples")!=sample_offset||
                t.get<std::string>("request.run_id")!=c.run_id)throw std::runtime_error("Mismatched model result");
             Result result;result.raw=raw;result.status=t.get<std::string>("status");
+            if(auto triage=t.get_child_optional("dsp_triage")) {
+                if(triage->get<std::string>("schema","")!="rfmon.ml.dsp_triage.v1"||
+                   triage->get<std::string>("mode","")!="observe"||
+                   triage->get<bool>("non_drone_rejection_enabled",true)||
+                   triage->get<bool>("thresholds_validated",true))
+                    throw std::runtime_error("Invalid DSP triage contract");
+                auto& d=result.triage;d.available=true;
+                d.route=triage->get<std::string>("route");
+                d.assessment=triage->get<std::string>("assessment");
+                d.review_flag=triage->get<std::string>("review_flag");
+                d.reason=triage->get<std::string>("reason");
+                d.model_invoked=triage->get<bool>("model_invoked");
+                d.processing_ms=triage->get<double>("processing_ms");
+                if(!std::isfinite(d.processing_ms)||d.processing_ms<0||
+                   (d.route!="model"&&d.route!="insufficient_evidence")||
+                   (d.route=="model"&&!d.model_invoked)||
+                   (d.route=="insufficient_evidence"&&(d.model_invoked||result.status!="insufficient_evidence")))
+                    throw std::runtime_error("Invalid DSP triage routing");
+            }
             result.candidate=t.get<std::string>("candidate","");
             if(auto preview=t.get_child_optional("stft_preview")) {
                 auto p=std::make_shared<StftPreview>();
@@ -291,6 +311,12 @@ void Inference::run(Options options) {
             state_.audit_saved=t.get<uint64_t>("audit.saved",state_.audit_saved);
             if(!enabled_||result.generation!=generation_){++state_.stale;continue;}
             result.model_hash=state_.model_hash;result.architecture=state_.architecture;
+            if(result.triage.available) {
+                ++state_.triage_observed;
+                if(result.triage.review_flag!="none")++state_.triage_flagged;
+                if(result.triage.route=="insufficient_evidence")++state_.triage_insufficient;
+                if(result.triage.assessment=="measurement_failed")++state_.triage_errors;
+            }
             ++state_.processed;
             // Only the latest observation retains display pixels. Snapshot
             // copies share this immutable buffer; history never copies grids.

@@ -60,6 +60,7 @@ class LiveTests(unittest.TestCase):
                 self.assertTrue(replay['session_replay_matches_saved'])
                 # New supervisors opt in; legacy requests above received only JSON.
                 header['want_stft_preview']='true'
+                header['dsp_triage']='true'
                 raw=json.dumps(header).encode()
                 a.sendall(struct.pack('<I',len(raw))+raw+iq.tobytes())
                 visible=response()
@@ -71,11 +72,21 @@ class LiveTests(unittest.TestCase):
                 restored=info['db_min']+pixels.astype(float)*(info['db_max']-info['db_min'])/255
                 np.testing.assert_allclose(restored,image,atol=(info['db_max']-info['db_min'])/510+1e-5)
                 self.assertEqual(visible['class_scores'],got['class_scores'])
+                self.assertEqual(visible['dsp_triage']['route'],'model')
+                self.assertEqual(visible['dsp_triage']['review_flag'],'noise_like_review_only')
+                saved=json.loads((audit_dir/'0001.json').read_text())
+                self.assertEqual(saved['result']['dsp_triage'],visible['dsp_triage'])
                 # Invalid IQ clears the preview; no obsolete pixels or extra frame.
                 a.sendall(struct.pack('<I',len(raw))+raw+np.zeros_like(iq).tobytes())
                 invalid=response()
                 self.assertEqual(invalid['presence_status'],'insufficient_evidence')
+                self.assertFalse(invalid['dsp_triage']['model_invoked'])
+                self.assertIsNone(invalid['drone_present'])
                 self.assertNotIn('stft_preview',invalid)
+                replay=audit_session(InferenceEngine(model),audit_dir,sha256(model))
+                self.assertTrue(replay['session_replay_matches_saved'])
+                self.assertTrue(replay['rows'][1]['dsp_triage_replay_matches_saved'])
+                self.assertTrue(replay['rows'][2]['dsp_triage_replay_matches_saved'])
                 # Same-size corruption must not silently replay as valid evidence.
                 with (audit_dir/'0000.cf32').open('r+b') as f:
                     f.write(b'\x00\x00\x00\x00')

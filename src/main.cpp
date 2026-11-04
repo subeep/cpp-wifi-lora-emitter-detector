@@ -19,6 +19,7 @@
 #include "backends/imgui_impl_opengl3.h"
 
 #ifdef RFMON_ENABLE_DJI_DRONEID
+#include "coordinated_panel.hpp"
 #include "drones/panel.hpp"
 #endif
 #include "config.hpp"
@@ -32,6 +33,7 @@
 #include "wifi_master.hpp"
 #include "wifi_gui.hpp"
 #include "security_gui.hpp"
+#include "shortrange/panel.hpp"
 #ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
 #include "cyclostationary/panel.hpp"
 #endif
@@ -356,6 +358,17 @@ int main() {
     // than the app silently connecting to whatever the default happens
     // to be the instant the window appears.
     ml::Inference model_inference; // Outlives scanner; disabled until explicitly started.
+    // Bluetooth LE / Zigbee decoding of the 2.4 GHz captures; outlives scanner, off until started.
+#ifdef RFMON_ENABLE_DJI_DRONEID
+    shortrange::Monitor shortrange_monitor([](const uint8_t* m) {
+        const auto j = drone::parse_odid_message(m);
+        return j.is_null() ? std::string() : j.dump();
+    });
+#else
+    shortrange::Monitor shortrange_monitor;
+#endif
+    shortrange::PanelState shortrange_panel;
+    shortrange_panel.export_dir = std::string(PROJECT_ROOT_DIR) + "/data/shortrange";
 #ifdef RFMON_ENABLE_DJI_DRONEID
     drone::Addon drones; // Outlives scanner and its processing lane.
     drones.start_classifier=[&] {
@@ -378,10 +391,13 @@ int main() {
         if(!s.history.empty())state.detail+=" | Last candidate (not accepted): "+s.history.front().candidate;
         return state;
     };
-    Scanner scanner([&](const auto& iq, const auto& record) { drones.observe(iq, record); model_inference.observe(iq, record); },
+    Scanner scanner([&](const auto& iq, const auto& record) {
+                        drones.observe(iq, record); model_inference.observe(iq, record); shortrange_monitor.observe(iq, record); },
                     [&](const auto& frame) { drones.remote_id.submit(frame); });
+    coordinated::PanelState coordinated_panel;
+    coordinated_panel.export_dir=std::string(PROJECT_ROOT_DIR)+"/data/drone_evidence";
 #else
-    Scanner scanner([&](const auto& iq, const auto& record) { model_inference.observe(iq, record); });
+    Scanner scanner([&](const auto& iq, const auto& record) { model_inference.observe(iq, record); shortrange_monitor.observe(iq, record); });
 #endif
     bool scanner_started = false;
     // Wi-Fi security monitor recording (opt-in). Applied on the next
@@ -417,8 +433,16 @@ int main() {
         ScannerStatus status = scanner.status();
         std::string active_band = scanner.active_band();
         static std::string previous_model_source;
-        const auto model_source=active_band+"/"+status.active_step_label+"/"+std::to_string(status.connected)+
+        // Coordinated visits change every ~0.5 s; the worker's own per-capture
+        // source key already separates them, so only the mode is keyed here.
+        const bool coordinated_mode=active_band==BAND_COORDINATED;
+        const auto model_source=active_band+"/"+(coordinated_mode?std::string():status.active_step_label)+"/"+std::to_string(status.connected)+
             "/"+std::to_string(status.wifi_fixed_channel.value_or(-1));
+#ifdef RFMON_ENABLE_DJI_DRONEID
+        // Coordinated mode offers each whole visit to the native DJI/O4
+        // backend as consecutive messages; band modes keep the 160 ms prefix.
+        drones.native_max_capture_s=coordinated_mode?3600.0:0.160;
+#endif
         if(model_source!=previous_model_source){model_inference.invalidate();previous_model_source=model_source;}
         DeviceProfile profile = device_profile(selected_device);
         const bool drones_available =
@@ -543,6 +567,7 @@ int main() {
             {"Wi-Fi 2.4GHz", BAND_WIFI_2G4},
             {"Wi-Fi 5GHz", BAND_WIFI_5G},
             {"Wi-Fi both bands", BAND_WIFI_BOTH},
+            {"Coordinated (Sub-GHz > 2.4 > 5 GHz)", BAND_COORDINATED},
         };
         for (size_t i = 0; i < modes.size(); ++i) {
             bool selected = active_band == modes[i].second;
@@ -736,14 +761,18 @@ int main() {
             if(ImGui::Button("Security workspace")){ui.page=gui::Page::Security;ui.security_first=true;}
             ImGui::SameLine();gui::note("Security uses the complete run, not this filtered view.");
             if(ImGui::BeginTabBar("Wi-Fi views")) {
-                if(ImGui::BeginTabItem("RF observations")){if(band==BAND_WIFI_BOTH){
+                if(ImGui::BeginTabItem("RF observations")){
+                    // Both bands side by side in every receive mode (display only);
+                    // a band not being received shows its retained (possibly empty) list.
                     const float width=std::max(250.f,(ImGui::GetContentRegionAvail().x-12)/2);
                     for(const auto& b:{BAND_WIFI_2G4,BAND_WIFI_5G}){
                         if(b==BAND_WIFI_5G)ImGui::SameLine();
                         ImGui::BeginChild(b,ImVec2(width,0),ImGuiChildFlags_Borders);
-                        ImGui::TextUnformatted(gui::band_label(b).c_str());draw_rf(b);ImGui::EndChild();
+                        const bool receiving=active_band==b || active_band==BAND_WIFI_BOTH || active_band==BAND_COORDINATED;
+                        ImGui::Text("%s%s",gui::band_label(b).c_str(),receiving?"":" (retained; not currently received)");
+                        draw_rf(b);ImGui::EndChild();
                     }
-                }else draw_rf(band);ImGui::EndTabItem();}
+                    ImGui::EndTabItem();}
                 if(ImGui::BeginTabItem("Packets")){
                     std::vector<WifiPacketRow> viewed;
                     for(const auto& row:wifi_rows)if(band==BAND_WIFI_BOTH || (band==BAND_WIFI_2G4 && row.freq_mhz>=2400 && row.freq_mhz<2500)||
@@ -766,7 +795,8 @@ int main() {
             }ImGui::PopID();
         };
         auto draw_lora = [&] {
-            if(active_band!=BAND_SUB_GHZ){gui::note("Viewing retained LoRa data; receiver is monitoring another band.",true);
+            if(active_band==BAND_COORDINATED)gui::note("Coordinated mode: LoRa is decoded from each sub-GHz visit on derived channels; packets longer than a visit (slow SF11-12) can be cut.",true);
+            else if(active_band!=BAND_SUB_GHZ){gui::note("Viewing retained LoRa data; receiver is monitoring another band.",true);
                 if(ImGui::Button("Monitor LoRa band"))monitor_band(BAND_SUB_GHZ);}
             if(scanner.lora_laboratory_mode())gui::note("Nonstandard laboratory mode is active.",true);
             gui::note("LoRaWAN is structural parsing only. Attack rules, MIC verification and authenticated identity are unavailable.");
@@ -830,7 +860,11 @@ int main() {
             const auto enrollment_health=scanner.wifi_enrolment_health();
             if(enrollment_health.dropped_batches)gui::note("Wi-Fi inventory input was dropped; coverage is incomplete.",true);
             gui::Overview data;
-            data.captures=security->captures_ingested;data.groups=rf_rows[active_band].size();
+            // Coordinated mode feeds all three band registries; show them all.
+            const std::vector<std::string> overview_bands=active_band==BAND_COORDINATED?
+                std::vector<std::string>{BAND_SUB_GHZ,BAND_WIFI_2G4,BAND_WIFI_5G}:std::vector<std::string>{active_band};
+            data.captures=security->captures_ingested;data.groups=0;
+            for(const auto& b:overview_bands)data.groups+=rf_rows[b].size();
             data.queue_depth=security_queue.depth;data.queue_peak=security_queue.high_water;
             data.queue_loss=security->queue_events_dropped||security->queue_captures_dropped;
             data.lane_enabled=status.wifi_lane_enabled;data.lane_wait=status.wifi_lane_wait_s;data.lane_peak=status.wifi_lane_high_water;
@@ -839,7 +873,7 @@ int main() {
 #endif
             gui::draw_overview(ui,context,data,drones_available,[&]{
                 if(active_band==BAND_SUB_GHZ && scanner.lora_lock_freq())gui::note("Frequency lock active: wideband map is retained; wideband scan is skipped.",true);
-                for(const auto& range:track_ranges_for_band(active_band))draw_frequency_track(range,rf_rows[active_band]);
+                for(const auto& b:overview_bands)for(const auto& range:track_ranges_for_band(b))draw_frequency_track(range,rf_rows[b]);
             });
         };
         gui::draw_workspace(ui,context,drones_available,[&](gui::Page page){
@@ -850,8 +884,9 @@ int main() {
                     if(ImGui::BeginTabItem("Security")){draw_security();ImGui::EndTabItem();}
                     if(ImGui::BeginTabItem("Captures")){draw_captures();ImGui::EndTabItem();}
                     if(ImGui::BeginTabItem("Model Inference")){ml::draw_panel(model_inference,status.connected,active_band);ImGui::EndTabItem();}
+                    if(ImGui::BeginTabItem("Bluetooth & Zigbee")){shortrange::draw_page(shortrange_panel,shortrange_monitor,active_band,status.connected);ImGui::EndTabItem();}
 #ifdef RFMON_ENABLE_DJI_DRONEID
-                    if(ImGui::BeginTabItem("Drones")){drone::draw_panel(drones,gui::band_label(active_band),status.connected);ImGui::EndTabItem();}
+                    if(ImGui::BeginTabItem("Drones")){coordinated::draw_section(coordinated_panel,scanner,drones,model_inference,status.connected);drone::draw_panel(drones,gui::band_label(active_band),status.connected);ImGui::EndTabItem();}
 #endif
                     if(ImGui::BeginTabItem("Display")){if(ImGui::Button("Return to modern workspace"))ui.legacy=false;ImGui::EndTabItem();}
                     ImGui::EndTabBar();
@@ -861,6 +896,7 @@ int main() {
             case gui::Page::Overview:draw_overview();break;
             case gui::Page::Wifi24:draw_wifi(BAND_WIFI_2G4);break;
             case gui::Page::Wifi5:draw_wifi(BAND_WIFI_5G);break;
+            case gui::Page::ShortRange:shortrange::draw_page(shortrange_panel,shortrange_monitor,active_band,status.connected);break;
             case gui::Page::Lora:draw_lora();break;
             case gui::Page::Security:draw_security();break;
             case gui::Page::Captures:draw_captures();break;
@@ -868,7 +904,9 @@ int main() {
             case gui::Page::Count:break;
             case gui::Page::Drones:
 #ifdef RFMON_ENABLE_DJI_DRONEID
+                coordinated::draw_section(coordinated_panel,scanner,drones,model_inference,status.connected);
                 drone::draw_panel(drones,gui::band_label(active_band),status.connected,ui.drones_offline?"Offline IQ review":nullptr);ui.drones_offline=false;
+                if(ImGui::CollapsingHeader("Bluetooth Remote ID",ImGuiTreeNodeFlags_DefaultOpen))shortrange::draw_remote_id_section(shortrange_monitor.snapshot());
 #endif
                 break;
             case gui::Page::Settings:
