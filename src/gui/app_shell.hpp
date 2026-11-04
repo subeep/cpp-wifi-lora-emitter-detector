@@ -32,6 +32,8 @@ void draw_workspace(State& state, const Context& context, bool drones_available,
 void draw_capabilities(bool drones_available, bool cyclo_available);
 bool section(const char* label, bool primary = false);
 void note(const char* text, bool warning = false);
+// Drag handle under a table: changes `height` (clamped to 120..4000 px).
+void height_handle(const char* id, float& height);
 }
 
 namespace rfmon::gui {
@@ -41,5 +43,5 @@ struct Overview {
     double lane_wait=0;
 };
 void draw_overview(State& state,const Context& context,const Overview& overview,bool drones_available,
-                   const std::function<void()>& draw_map);
+                   const std::function<void()>& draw_map,const std::function<void()>& draw_devices);
 }

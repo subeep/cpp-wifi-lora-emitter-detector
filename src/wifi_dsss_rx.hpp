@@ -23,6 +23,7 @@
 // WHICH networks they are, by name and BSSID - and the FCS makes the
 // answer self-validating rather than inferred.
 #pragma once
+#include "wifi_rf_features.hpp"
 
 #include <complex>
 #include <cstddef>
@@ -58,6 +59,9 @@ struct DsssDecodeResult {
     // Furthest stage reached, for decode-yield diagnostics - mirrors
     // OfdmDecodeResult::status. Never an identity claim.
     std::string status = "No DSSS preamble";
+    // Whole-frame RF features once the FCS passed: the despread phase
+    // followed symbol by symbol from SYNC to the last PSDU bit.
+    std::optional<FrameRfFeatures> rf;
 
     // For src/wifi_fingerprint.cpp - only populated when preamble_found.
     // Every Barker-despread symbol (the complex correlator output

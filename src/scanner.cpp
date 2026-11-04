@@ -356,6 +356,13 @@ std::vector<LoraPacketRow> Scanner::lora_packets() const {
     return lora_packet_log_;
 }
 
+std::vector<LoraDeviceRow> Scanner::lora_devices() const {
+    std::lock_guard<std::mutex> lock(lora_log_mutex_);
+    std::vector<LoraDeviceRow> out;
+    for(const auto& [key,d]:lora_devices_)out.push_back(d);
+    return out;
+}
+
 std::vector<lora_master::LoraMasterRow> Scanner::lora_master_snapshot() const {
     return lora_master_.snapshot();
 }
@@ -678,6 +685,21 @@ void Scanner::decode_lora_iq(const std::vector<std::complex<float>>& iq_raw, con
         provenance.run_id+"/session-"+std::to_string(provenance.radio_session)+"/capture-"+std::to_string(provenance.capture_seq));
     {
         std::lock_guard<std::mutex> lock(lora_log_mutex_);
+        // Devices named by CRC-valid LoRaWAN frames; hypotheses of one
+        // reception count once.
+        std::set<std::string> counted;
+        const int64_t now_ts=now_epoch_seconds();
+        for(const auto& row:display_rows){
+            if(row.crc!=LoraPacketRow::Crc::Valid||!row.lorawan_device_id)continue;
+            const std::string key=*row.lorawan_device_kind+" "+*row.lorawan_device_id;
+            if(!row.reception_id.empty()&&!counted.insert(key+"|"+row.reception_id).second)continue;
+            auto& d=lora_devices_[key];
+            if(!d.frames){d.kind=*row.lorawan_device_kind;d.id=*row.lorawan_device_id;d.first_seen_ts=now_ts;}
+            ++d.frames;++(row.lorawan_uplink?d.uplinks:d.downlinks);d.last_seen_ts=now_ts;
+            d.last_freq_hz=row.freq_mhz*1e6;d.last_bw_hz=row.bandwidth_khz*1e3;d.last_sf=row.sf;d.last_type=row.lorawan_candidate.value_or("");
+        }
+        while(lora_devices_.size()>LORA_DEVICES_MAX)
+            lora_devices_.erase(std::min_element(lora_devices_.begin(),lora_devices_.end(),[](const auto& a,const auto& b){return a.second.last_seen_ts<b.second.last_seen_ts;}));
         for(auto& row:display_rows)lora_packet_log_.push_back(std::move(row));
         if(lora_packet_log_.size()>size_t(LORA_PACKET_LOG_MAX))
             lora_packet_log_.erase(lora_packet_log_.begin(),lora_packet_log_.end()-LORA_PACKET_LOG_MAX);

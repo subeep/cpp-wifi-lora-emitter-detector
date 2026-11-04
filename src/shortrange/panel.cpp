@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdio>
 
+#include "gui/app_shell.hpp"
 #include "imgui.h"
 
 namespace rfmon::shortrange {
@@ -72,18 +73,6 @@ constexpr ImGuiTableFlags kListFlags = ImGuiTableFlags_BordersInnerH | ImGuiTabl
 // Columns whose values change with every packet start hidden, so a row's
 // visible change while updating is its packet count.
 constexpr ImGuiTableColumnFlags kLive = ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide;
-
-// Drag handle under a table: changes `height` (persisted in PanelState).
-void height_handle(const char* id, float& height) {
-    ImGui::InvisibleButton(id, ImVec2(-1, 8));
-    const bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
-    if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-    if (ImGui::IsItemActive()) height = std::clamp(height + ImGui::GetIO().MouseDelta.y, 120.f, 4000.f);
-    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-    const float y = (a.y + b.y) / 2;
-    ImGui::GetWindowDrawList()->AddLine({a.x, y}, {b.x, y}, ImGui::GetColorU32(hot ? ImGuiCol_SeparatorActive : ImGuiCol_Separator), 2);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drag to make the table taller or shorter");
-}
 
 void draw_coverage(const Snapshot& s) {
     const auto flags = ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_ScrollX;
@@ -174,7 +163,7 @@ void draw_ble(PanelState& st, const Snapshot& s, float height) {
         }
         ImGui::EndTable();
     }
-    height_handle("##ble table height", st.ble_table_height);
+    gui::height_handle("##ble table height", st.ble_table_height);
     if (!selected) {
         for (const auto& d : rows)
             if (d.key == st.selected_ble) selected = &d;
@@ -262,7 +251,7 @@ void draw_zigbee(PanelState& st, const Snapshot& s, float height) {
         }
         ImGui::EndTable();
     }
-    height_handle("##zigbee table height", st.zigbee_table_height);
+    gui::height_handle("##zigbee table height", st.zigbee_table_height);
     if (!selected) {
         for (const auto& d : s.zigbee)
             if (d.key == st.selected_zigbee) selected = &d;

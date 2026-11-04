@@ -69,6 +69,15 @@ void note(const char* text,bool warning) {
     ImGui::PushStyleColor(ImGuiCol_Text,warning?ImVec4(.98f,.73f,.38f,1):ImVec4(.67f,.76f,.84f,1));
     ImGui::TextWrapped("%s",text);ImGui::PopStyleColor();
 }
+void height_handle(const char* id,float& height) {
+    ImGui::InvisibleButton(id,ImVec2(-1,8));
+    const bool hot=ImGui::IsItemHovered()||ImGui::IsItemActive();
+    if(hot)ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+    if(ImGui::IsItemActive())height=std::clamp(height+ImGui::GetIO().MouseDelta.y,120.f,4000.f);
+    const ImVec2 a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();const float y=(a.y+b.y)/2;
+    ImGui::GetWindowDrawList()->AddLine({a.x,y},{b.x,y},ImGui::GetColorU32(hot?ImGuiCol_SeparatorActive:ImGuiCol_Separator),2);
+    if(ImGui::IsItemHovered())ImGui::SetTooltip("Drag to make the table taller or shorter");
+}
 void draw_workspace(State& s,const Context& c,bool drones,const std::function<void(Page)>& body) {
     const float scale=s.scale;
     ImGui::SetNextWindowPos({0,0});ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
@@ -139,7 +148,7 @@ void draw_capabilities(bool drones,bool cyclo) {
 }
 
 namespace rfmon::gui {
-void draw_overview(State& ui,const Context& context,const Overview& data,bool drones,const std::function<void()>& draw_map) {
+void draw_overview(State& ui,const Context& context,const Overview& data,bool drones,const std::function<void()>& draw_map,const std::function<void()>& draw_devices) {
     const int columns=ImGui::GetContentRegionAvail().x>850*ui.scale?4:2;
     if(ImGui::BeginTable("Overview summaries",columns,ImGuiTableFlags_SizingStretchSame)) {
         auto card=[&](const char* name,const std::string& value,const char* detail,Page page){
@@ -155,6 +164,7 @@ void draw_overview(State& ui,const Context& context,const Overview& data,bool dr
     }
     if(!context.connected)note("No active receiver observations. Open Monitoring setup and explicitly connect.");
     if(data.queue_loss)note("Coverage degraded by security queue loss; zero incidents is not an all-clear verdict.",true);
+    ImGui::SeparatorText("Devices with confirmed identifiers (Wi-Fi, Bluetooth, Zigbee, LoRaWAN)");draw_devices();
     ImGui::SeparatorText("Current acquisition frequency map");draw_map();
     if(section("Receiver and processing details")) {
         ImGui::Text("Processing lane: %s | Wait: %.3f s | High-water jobs: %zu",data.lane_enabled?"enabled":"disabled",data.lane_wait,data.lane_peak);

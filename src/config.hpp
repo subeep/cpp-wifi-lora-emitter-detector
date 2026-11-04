@@ -341,6 +341,7 @@ inline const std::vector<double> LORA_LISTEN_BW_LIST_HZ = {125e3, 250e3, 500e3};
 constexpr double LORA_LISTEN_DURATION_S = 6.0; // fits observed long-preamble SF12 packets
 inline const std::vector<int> LORA_LISTEN_SF_LIST = {5, 6, 7, 8, 9, 10, 11, 12};
 constexpr int LORA_PACKET_LOG_MAX = 200;
+constexpr size_t LORA_DEVICES_MAX = 1024;  // LoRaWAN devices kept by Scanner::lora_devices()
 
 // Wi-Fi burst/packet list (see WifiPacketRow in scanner.hpp). Larger
 // than the LoRa cap because Wi-Fi frame rates are orders of magnitude

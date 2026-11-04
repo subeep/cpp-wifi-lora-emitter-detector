@@ -325,6 +325,24 @@ int main(){
         check(same(r,p.mpdus)&&r.sig&&r.sig->streams==1&&r.sig->space_time_streams==1&&std::abs(r.data_rate_mbps-rate_lgi[mcs])<0.01&&
               r.rate_mbps==int(std::lround(rate_lgi[mcs]))&&r.status.find(vht?"A-MPDU 1/1 MPDUs FCS-valid":"MPDU FCS-valid")!=std::string::npos,name+": "+r.status);
     }
+    // Whole-frame RF features on verified frames: the channel adds a 23 kHz
+    // carrier offset and no sampling-clock offset.
+    {
+        bool ok=true;std::string last;
+        for(int vht=0;vht<2;++vht)for(int ldpc=0;ldpc<2;++ldpc)for(int mcs:{0,4,7}){
+            Ppdu p;p.vht=vht;p.ldpc=ldpc;p.mcs=mcs;p.aggregate=true;p.mpdus={fcs_frame(600,uint8_t(mcs))};
+            auto r=decode(transmit(p,32,seed++));
+            const bool good=r.fcs_valid&&r.rf&&std::abs(r.rf->cfo_hz-23e3)<30&&std::abs(r.rf->cfo_early_hz-23e3)<60&&std::abs(r.rf->sfo_ppm)<3&&r.rf->snr_db>20;
+            if(!good){ok=false;last=r.rf?("CFO "+std::to_string(r.rf->cfo_hz)+" Hz, SFO "+std::to_string(r.rf->sfo_ppm)+" ppm, SNR "+std::to_string(r.rf->snr_db)):"no features";}
+        }
+        check(ok,"whole-frame features: 23 kHz CFO recovered on 802.11n/ac BCC and LDPC "+last);
+        Ppdu stbc;stbc.vht=true;stbc.stbc=true;stbc.mcs=4;stbc.aggregate=true;stbc.mpdus={fcs_frame(300,1)};
+        auto r=decode(transmit(stbc,32,seed++));
+        check(r.fcs_valid&&!r.rf,"whole-frame features: not claimed for STBC (not implemented)");
+        Ppdu bad;bad.aggregate=true;bad.mcs=3;bad.mpdus={fcs_frame(200,7),fcs_frame(200,8)};bad.mpdus[1][40]^=0xFF;
+        r=decode(transmit(bad,32,seed++));
+        check(r.fcs_valid&&!r.rf,"whole-frame features: not fitted when an A-MPDU subframe failed its FCS");
+    }
     // Short GI, A-MPDU of three.
     {Ppdu p;p.mcs=5;p.sgi=true;p.aggregate=true;p.mpdus={fcs_frame(300,1),fcs_frame(97,2),fcs_frame(1500,3)};
      auto r=decode(transmit(p,32,seed++));

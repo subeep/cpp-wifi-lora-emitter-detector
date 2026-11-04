@@ -129,7 +129,7 @@ target_link_libraries(test_shortrange_dsp PRIVATE rfmon_shortrange)
 add_test(NAME shortrange_dsp COMMAND test_shortrange_dsp)
 set_tests_properties(shortrange_dsp PROPERTIES TIMEOUT 120)
 target_sources(rf_monitor_gui PRIVATE src/shortrange/panel.cpp)
-add_executable(test_shortrange_panel tests/test_shortrange_panel.cpp src/shortrange/panel.cpp src/wifi_vendor.cpp
+add_executable(test_shortrange_panel tests/test_shortrange_panel.cpp src/shortrange/panel.cpp src/gui/app_shell.cpp src/wifi_vendor.cpp
   ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp ${IMGUI_DIR}/imgui_widgets.cpp)
 target_include_directories(test_shortrange_panel PRIVATE ${IMGUI_DIR})
 target_link_libraries(test_shortrange_panel PRIVATE rfmon_shortrange)
@@ -192,6 +192,7 @@ target_include_directories(test_wifi_frame PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_executable(test_wifi_dsss_rx
   tests/test_wifi_dsss_rx.cpp
   src/wifi_dsss_rx.cpp
+  src/wifi_rf_features.cpp
   src/wifi_frame.cpp
 )
 target_include_directories(test_wifi_dsss_rx PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -231,6 +232,7 @@ add_executable(test_wifi_fingerprint
   src/wifi_fingerprint.cpp
   src/wifi_phy.cpp
   src/wifi_dsss_rx.cpp
+  src/wifi_rf_features.cpp
   src/wifi_frame.cpp
 )
 target_include_directories(test_wifi_fingerprint PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -308,6 +310,7 @@ add_executable(band_smoke_test
   src/wifi_phy.cpp
   src/wifi_frame.cpp
   src/wifi_dsss_rx.cpp
+  src/wifi_rf_features.cpp
   src/wifi_fingerprint.cpp
   src/wifi_master.cpp
   src/fingerprint.cpp
@@ -386,6 +389,7 @@ add_executable(wifi_test_bench
   src/wifi_fingerprint.cpp
   src/wifi_frame.cpp
   src/wifi_dsss_rx.cpp
+  src/wifi_rf_features.cpp
   src/spectrum.cpp
   ${IMGUI_SOURCES}
   ${IMPLOT_SOURCES}
@@ -421,6 +425,7 @@ add_executable(test_bench_tx
   src/wifi_phy.cpp
   src/wifi_frame.cpp
   src/wifi_dsss_rx.cpp
+  src/wifi_rf_features.cpp
   src/wifi_fingerprint.cpp
 )
 target_include_directories(test_bench_tx PRIVATE
@@ -481,18 +486,18 @@ add_executable(wifi_capture_cli tools/wifi_capture_cli.cpp src/sdr_capture.cpp s
 target_include_directories(wifi_capture_cli PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR} ${UHD_INCLUDE_DIRS})
 target_link_libraries(wifi_capture_cli PRIVATE Threads::Threads dl ${UHD_LIBRARIES})
 
-add_executable(wifi_ofdm_replay tools/wifi_ofdm_replay.cpp src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp src/wifi_phy.cpp src/wifi_frame.cpp src/wifi_iq_capture.cpp)
+add_executable(wifi_ofdm_replay tools/wifi_ofdm_replay.cpp src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp src/wifi_rf_features.cpp src/wifi_phy.cpp src/wifi_frame.cpp src/wifi_iq_capture.cpp)
 target_include_directories(wifi_ofdm_replay PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
 target_link_libraries(wifi_ofdm_replay PRIVATE PkgConfig::KISSFFT)
 
-target_sources(band_smoke_test PRIVATE src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp)
+target_sources(band_smoke_test PRIVATE src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp src/wifi_rf_features.cpp)
 
-add_executable(test_wifi_ofdm tests/test_wifi_ofdm.cpp src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp
+add_executable(test_wifi_ofdm tests/test_wifi_ofdm.cpp src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp src/wifi_rf_features.cpp
     src/wifi_phy.cpp src/wifi_frame.cpp src/wifi_master.cpp src/wifi_vendor.cpp)
 target_include_directories(test_wifi_ofdm PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
 target_compile_definitions(test_wifi_ofdm PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
 target_link_libraries(test_wifi_ofdm PRIVATE PkgConfig::KISSFFT Threads::Threads)
-add_executable(test_wifi_ht_payload tests/test_wifi_ht_payload.cpp src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp src/wifi_frame.cpp)
+add_executable(test_wifi_ht_payload tests/test_wifi_ht_payload.cpp src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp src/wifi_rf_features.cpp src/wifi_frame.cpp)
 target_include_directories(test_wifi_ht_payload PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(test_wifi_ht_payload PRIVATE PkgConfig::KISSFFT)
 
@@ -637,7 +642,7 @@ target_sources(test_wifi_dsss_rx PRIVATE src/security/wifi_mac_frame.cpp)
 # Offline security runner (package A step 4): replays monitor recordings or
 # receive-only IQ manifests through the same pipeline/state, no radio.
 set(WIFI_SECURITY_OFFLINE_SOURCES ${WIFI_SECURITY_MONITOR_SOURCES}
-  src/wifi_frame.cpp src/wifi_phy.cpp src/wifi_dsss_rx.cpp src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp)
+  src/wifi_frame.cpp src/wifi_phy.cpp src/wifi_dsss_rx.cpp src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp src/wifi_rf_features.cpp)
 add_executable(wifi_security_replay tools/wifi_security_replay.cpp src/wifi_iq_capture.cpp ${WIFI_SECURITY_OFFLINE_SOURCES})
 add_executable(test_wifi_security_events tests/test_wifi_security_events.cpp ${WIFI_SECURITY_OFFLINE_SOURCES})
 foreach(target wifi_security_replay test_wifi_security_events)
@@ -812,7 +817,7 @@ endif()
 # UI-only navigation qualification; no Scanner, SDR, worker or persisted store.
 if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
   add_executable(test_gui_shell tests/test_gui_shell.cpp src/gui/app_shell.cpp
-    src/ml_inference.cpp src/ml_panel.cpp
+    src/ml_inference.cpp src/ml_panel.cpp src/device_inventory.cpp src/device_inventory_panel.cpp src/wifi_frame.cpp
     ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
   target_include_directories(test_gui_shell PRIVATE ${CMAKE_SOURCE_DIR}/src ${IMGUI_DIR} ${WIFI_EGL_INCLUDE_DIR})
@@ -821,6 +826,22 @@ if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
   target_compile_definitions(test_gui_shell PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
   add_test(NAME gui_shell COMMAND test_gui_shell)
 endif()
+# Offline evaluation of whole-frame RF features for sender verification
+# (RF fingerprint plan, phase A). Receive-only; reads IQ captures.
+add_executable(wifi_rf_auth_eval tools/wifi_rf_auth_eval.cpp src/wifi_phy.cpp src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp
+  src/wifi_rf_features.cpp src/wifi_frame.cpp src/wifi_dsss_rx.cpp src/security/wifi_mac_frame.cpp)
+target_include_directories(wifi_rf_auth_eval PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(wifi_rf_auth_eval PRIVATE PkgConfig::KISSFFT Threads::Threads)
+
+add_executable(test_wifi_rf_features tests/test_wifi_rf_features.cpp src/wifi_rf_features.cpp)
+target_include_directories(test_wifi_rf_features PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME wifi_rf_features COMMAND test_wifi_rf_features)
+
+# Combined device list (Overview): builders and filters, no GUI.
+add_executable(test_device_inventory tests/test_device_inventory.cpp src/device_inventory.cpp src/wifi_frame.cpp)
+target_include_directories(test_device_inventory PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+target_link_libraries(test_device_inventory PRIVATE rfmon_shortrange)
+add_test(NAME device_inventory COMMAND test_device_inventory)
 
 add_executable(test_ml_inference tests/test_ml_inference.cpp src/ml_inference.cpp)
 target_include_directories(test_ml_inference PRIVATE ${CMAKE_SOURCE_DIR}/src)

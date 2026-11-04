@@ -232,6 +232,33 @@ std::vector<int> puncture_mask(int num,int den){
     if(num==5&&den==6)return {1,1,1,0,0,1,1,0,0,1};
     return {1,1};
 }
+// --- Re-encoding a verified frame (whole-frame RF features) ---------------
+// The encoder input: the descrambled bits as decoded, zero-extended to
+// `total`, scrambled with the frame's seed, tail bits zeroed after
+// scrambling at `tail_at` (-1: none, LDPC).
+std::vector<uint8_t> encoder_input(const std::vector<uint8_t>& descrambled,size_t known,size_t total,unsigned seed,long tail_at){
+    std::vector<uint8_t> b(total,0);
+    for(size_t i=0;i<std::min(known,total);++i)b[i]=descrambled[i];
+    unsigned st=seed;for(auto& v:b){const unsigned s=((st>>6)^(st>>3))&1;v^=uint8_t(s);st=((st<<1)|s)&127;}
+    if(tail_at>=0)for(size_t i=0;i<6&&size_t(tail_at)+i<total;++i)b[size_t(tail_at)+i]=0;
+    return b;
+}
+// Rate-1/2 K=7 encoder in the receiver's register convention, then puncturing.
+std::vector<uint8_t> bcc_encode(const std::vector<uint8_t>& in,const std::vector<int>& mask){
+    std::vector<uint8_t> out;unsigned s=0;size_t i=0;
+    for(auto b:in){const unsigned r=(s<<1)|b;
+        if(mask[i++%mask.size()])out.push_back(uint8_t(parity(r&0155)));
+        if(mask[i++%mask.size()])out.push_back(uint8_t(parity(r&0117)));
+        s=r&63;}
+    return out;
+}
+// Forward of deinterleave(): coded bit k goes to position j(k).
+std::vector<uint8_t> interleave_bits(const std::vector<uint8_t>& in,int bpsc,int columns){
+    const int count=int(in.size()),s=std::max(bpsc/2,1);std::vector<uint8_t> out(in.size());
+    for(int k=0;k<count;++k){int i=(count/columns)*(k%columns)+k/columns;int j=s*(i/s)+(i+count-(columns*i)/count)%s;out[size_t(j)]=in[size_t(k)];}
+    return out;
+}
+C map_point(const uint8_t* b,int bpsc);
 // Pilot of space-time stream `sts` on pilot j (subcarriers -21,-7,7,21) in
 // data symbol n, before polarity. 802.11n uses per-stream patterns for two
 // streams; 802.11ac at 20 MHz the single-stream pattern on every stream.
@@ -242,6 +269,12 @@ float ht_pilot(bool vht,int n_sts,int sts,int j,size_t n){
 }
 // Average energy of the integer-level constellation: BPSK 1, M-QAM 2(M-1)/3.
 float qam_scale(int bpsc){return bpsc==1?1.f:std::sqrt(2.f*float((1<<bpsc)-1)/3.f);}
+// One constellation point from bpsc bits (first half I, second half Q).
+C map_point(const uint8_t* b,int bpsc){
+    if(bpsc==1)return {b[0]?1.f:-1.f,0};
+    const int w=bpsc/2;unsigned i=0,q=0;for(int k=0;k<w;++k){i|=unsigned(b[k])<<k;q|=unsigned(b[w+k])<<k;}
+    const float sc=qam_scale(bpsc);return {axis(i,w)/sc,axis(q,w)/sc};
+}
 // Coded-bit order on the 52 data subcarriers: BCC interleaver (13 columns);
 // 802.11n LDPC in subcarrier order; 802.11ac LDPC tone mapper (distance 4):
 // constellation point k sits on data subcarrier 4 (k mod 13) + floor(k / 13).
@@ -334,8 +367,10 @@ void decode_ht_payload(const std::vector<C>& x,size_t sig,const HighThroughputSi
     float slope=0;
     std::vector<float> coded;coded.reserve(nsym*size_t(cbps));
     std::array<C,64> even{};
+    std::vector<std::array<C,64>> raws;
     for(size_t n=0;n<nsym;++n){
         auto y=fft(x,window(n),cfg);
+        if(stbc==1)raws.push_back(y);  // whole-frame RF features (non-STBC)
         // Common phase from the pilots; the slope (sampling-clock drift) is
         // tracked slowly because four pilots per symbol are too noisy for it.
         const float polarity=float(pilot_polarity(n+z));
@@ -411,6 +446,37 @@ void decode_ht_payload(const std::vector<C>& x,size_t sig,const HighThroughputSi
         std::string why=buf;
         if(ldpc_failed){std::snprintf(buf,sizeof buf,"; LDPC parity unmet in %d/%d codewords",ldpc_failed,ldpc->codewords);why+=buf;}
         result.status=s.summary+why+")";return;
+    }
+    // Whole-frame RF features when every bit is verified: each MPDU of an
+    // A-MPDU passed its FCS and (LDPC) every codeword met its parity.
+    if(stbc==1&&raws.size()==nsym&&!ldpc_failed&&(!vht&&!s.aggregation?true:int(result.mpdus.size())==result.ampdu_subframes)){
+        std::vector<uint8_t> bits;
+        if(ldpc)bits=ldpc_encode(encoder_input(data,decoded,size_t(ldpc->payload_bits),seed,-1),*ldpc);
+        else{const size_t nbits=nsym*size_t(dbps);
+             bits=bcc_encode(encoder_input(data,decoded,nbits,seed,vht?long(nbits)-6:long(decoded)-6),puncture_mask(m.num,m.den));}
+        std::vector<int> tones;for(int k=-28;k<=28;++k)tones.push_back(k);
+        std::vector<C> hh;for(int k:tones)hh.push_back(h[0][size_t((k+64)%64)]);
+        std::vector<std::vector<C>> ys(nsym),xs(nsym,std::vector<C>(tones.size()));std::vector<double> win(nsym);
+        bool complete=bits.size()>=nsym*size_t(cbps);
+        for(size_t n=0;n<nsym&&complete;++n){
+            const std::vector<uint8_t> chunk(bits.begin()+long(n*size_t(cbps)),bits.begin()+long((n+1)*size_t(cbps)));
+            const auto il=s.ldpc?chunk:interleave_bits(chunk,m.bpsc,13);
+            std::vector<C> pts(52);for(size_t k=0;k<52;++k)pts[k]=map_point(&il[k*size_t(m.bpsc)],m.bpsc);
+            size_t d=0;const float polarity=float(pilot_polarity(n+z));
+            for(size_t i=0;i<tones.size();++i){
+                const int k=tones[i];ys[n].push_back(raws[n][size_t((k+64)%64)]);
+                if(!k)continue;
+                int pj=-1;for(int j=0;j<4;++j)if(k==pilots[j])pj=j;
+                if(pj>=0){xs[n][i]=polarity*ht_pilot(vht,1,0,pj,n);continue;}
+                // 802.11ac LDPC tone mapper: point q sits on data tone 4 (q mod 13) + q / 13.
+                if(s.ldpc&&vht){size_t q=0;while(4*(q%13)+q/13!=d)++q;xs[n][i]=pts[q];}
+                else xs[n][i]=pts[d];
+                ++d;
+            }
+            win[n]=double(window(n));
+        }
+        // The HT/VHT-LTF centre anchors the phase line.
+        if(complete){auto f=ofdm_features(ys,xs,hh,tones,win,64,20e6,result.cfo_hz,double(ltf0)+32,1);if(!f.method.empty())result.rf=f;}
     }
     result.fcs_valid=true;result.mpdu=result.mpdus.front();result.rate_mbps=int(std::lround(result.data_rate_mbps));
     for(const auto& mpdu:result.mpdus){auto beacon=parse_beacon(mpdu.data(),mpdu.size());if(beacon&&beacon->fcs_valid){result.beacon=std::move(beacon);break;}}
@@ -658,7 +724,8 @@ OfdmDecodeResult decode_ofdm_burst(const C* input,size_t n,double rate,double ce
     size_t end=sig+80*symbols+64;result.samples_required=size_t(std::ceil(double(end)*rate/20e6));
     if(end>x.size()){result.status="Incomplete OFDM payload";return result;}
     std::vector<float> coded;coded.reserve(symbols*48*mode->bpsc);
-    for(size_t s=0;s<symbols;++s){auto soft=demap(equalize(fft(x,sig+80*(s+1),plan.cfg),h,s+1),h,mode->bpsc);coded.insert(coded.end(),soft.begin(),soft.end());}
+    std::vector<std::array<C,64>> raw(symbols);  // kept for the whole-frame RF features
+    for(size_t s=0;s<symbols;++s){raw[s]=fft(x,sig+80*(s+1),plan.cfg);auto soft=demap(equalize(raw[s],h,s+1),h,mode->bpsc);coded.insert(coded.end(),soft.begin(),soft.end());}
     // Puncturing patterns apply to serialized A/B encoder outputs.
     std::vector<int> mask={1,1};if(mode->dbps*2==48*mode->bpsc*3/2)mask={1,1,1,0,0,1};
     if(mode->mbps==48)mask={1,1,1,0};
@@ -676,6 +743,29 @@ OfdmDecodeResult decode_ofdm_burst(const C* input,size_t n,double rate,double ce
     result.fcs_valid=fcs32(result.mpdu.data(),last)==fcs;
     if(!result.fcs_valid){result.status=result.sig?result.sig->summary+"; legacy decode failed":"FCS failed (or unsupported PHY format)";return result;}
     result.mpdus.push_back(result.mpdu);
+    {   // Whole-frame RF features: re-encode the verified bits into each symbol's 48 data points and 4 pilots.
+        const auto in=encoder_input(data,meaningful,nbits,seed,long(meaningful));
+        const auto bits=bcc_encode(in,mask);
+        const int cbps=48*mode->bpsc;
+        std::vector<int> tones;for(int k=-26;k<=26;++k)tones.push_back(k);
+        std::vector<C> hh;for(int k:tones)hh.push_back(h[size_t((k+64)%64)]);
+        std::vector<std::vector<C>> ys(symbols),xs(symbols,std::vector<C>(tones.size()));std::vector<double> win(symbols);
+        constexpr int pilots[]={-21,-7,7,21};
+        for(size_t n=0;n<symbols&&bits.size()>=(n+1)*size_t(cbps);++n){
+            const auto il=interleave_bits(std::vector<uint8_t>(bits.begin()+long(n*size_t(cbps)),bits.begin()+long((n+1)*size_t(cbps))),mode->bpsc,16);
+            size_t d=0;
+            for(size_t i=0;i<tones.size();++i){
+                const int k=tones[i];ys[n].push_back(raw[n][size_t((k+64)%64)]);
+                if(!k)continue;
+                bool pilot=false;for(int j=0;j<4;++j)if(k==pilots[j]){xs[n][i]=float((j==3?-1:1)*pilot_polarity(n+1));pilot=true;}
+                if(!pilot){xs[n][i]=map_point(&il[d*size_t(mode->bpsc)],mode->bpsc);++d;}
+            }
+            win[n]=double(sig+80*(n+1));
+        }
+        // L-LTF centre (two averaged symbols) anchors the phase line.
+        auto f=ofdm_features(ys,xs,hh,tones,win,64,20e6,result.cfo_hz,double(sig)-80,2);
+        if(!f.method.empty())result.rf=f;
+    }
     auto beacon=parse_beacon(result.mpdu.data(),result.mpdu.size());if(beacon&&beacon->fcs_valid)result.beacon=std::move(beacon);
     result.status=result.beacon?"Decoded OFDM beacon/probe response":"FCS-valid non-beacon frame";
     return result;

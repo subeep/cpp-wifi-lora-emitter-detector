@@ -44,6 +44,9 @@ int main(int argc,char**argv) {
             std::string hex;for(auto b:r.mpdu){hex+="0123456789abcdef"[b>>4];hex+="0123456789abcdef"[b&15];}
             check(hex==j.at("expected_mpdu_hex")&&r.rate_mbps==j.at("expected_rate_mbps"),name+" exact MPDU and rate");
             check(r.beacon&&r.beacon->fcs_valid,name+" verified beacon parser");
+            // Whole-frame RF features on a real verified frame: close to the preamble estimate, tighter.
+            check(r.rf&&r.rf->method=="OFDM data-aided"&&std::abs(r.rf->cfo_hz-r.cfo_hz)<2000&&r.rf->cfo_sigma_hz<500&&r.rf->snr_db>5,
+                  name+" whole-frame RF features ("+(r.rf?std::to_string(r.rf->cfo_hz)+" Hz vs preamble "+std::to_string(r.cfo_hz):std::string("none"))+")");
             // The production scanner first classifies and checks occupied bandwidth.
             auto cls=wifi::classify_modulation(iq,rate,center,channel,channel<3e9);
             check(cls.mod==wifi::ModClass::OFDM && wifi::estimate_occupied_bandwidth_hz(iq.data(),n,rate)>=wifi::MIN_WIFI_BANDWIDTH_HZ,name+" scanner eligibility");

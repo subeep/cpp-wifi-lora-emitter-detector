@@ -81,7 +81,7 @@ add_executable(test_cyclo_waveforms ${CYCLO_ROOT}/tests/test_cyclo_waveforms.cpp
 target_link_libraries(test_cyclo_waveforms PRIVATE rfmon_cyclo_core)
 add_test(NAME cyclostationary_waveforms COMMAND test_cyclo_waveforms)
 add_executable(test_cyclo_protocol ${CYCLO_ROOT}/tests/test_cyclo_protocol.cpp
-  ${CYCLO_ROOT}/src/wifi_ofdm_rx.cpp ${CYCLO_ROOT}/src/wifi_ldpc.cpp ${CYCLO_ROOT}/src/wifi_phy.cpp ${CYCLO_ROOT}/src/wifi_frame.cpp)
+  ${CYCLO_ROOT}/src/wifi_ofdm_rx.cpp ${CYCLO_ROOT}/src/wifi_ldpc.cpp ${CYCLO_ROOT}/src/wifi_rf_features.cpp ${CYCLO_ROOT}/src/wifi_phy.cpp ${CYCLO_ROOT}/src/wifi_frame.cpp)
 target_include_directories(test_cyclo_protocol PRIVATE ${CYCLO_JSON_INCLUDE})
 target_link_libraries(test_cyclo_protocol PRIVATE rfmon_cyclo_core)
 add_test(NAME cyclostationary_protocol COMMAND test_cyclo_protocol ${CYCLO_ROOT}/tests/fixtures/wifi_ofdm)

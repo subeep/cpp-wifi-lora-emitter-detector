@@ -1,5 +1,6 @@
 #pragma once
 #include "wifi_frame.hpp"
+#include "wifi_rf_features.hpp"
 #include <complex>
 #include <string>
 #include <vector>
@@ -49,6 +50,9 @@ struct OfdmDecodeResult {
     std::vector<std::vector<uint8_t>> mpdus;
     int ampdu_subframes = 0;
     double data_rate_mbps = 0;
+    // Whole-frame RF features, fitted data-aided once the FCS passed
+    // (legacy OFDM and 802.11n/ac without STBC; not yet 802.11ax).
+    std::optional<FrameRfFeatures> rf;
 };
 OfdmDecodeResult decode_ofdm_burst(const std::complex<float>* x, size_t n,
     double sample_rate_hz, double capture_center_hz, double channel_center_hz);

@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <map>
+#include <set>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -248,6 +249,9 @@ public:
     // Only populated while BAND_SUB_GHZ is active - see run()'s LoRa
     // PHY listen sub-loop, which runs alongside the usual energy scan.
     std::vector<LoraPacketRow> lora_packets() const;
+    // LoRaWAN end devices named by CRC-valid frames this session (bounded,
+    // least recently seen dropped first). Not persisted.
+    std::vector<LoraDeviceRow> lora_devices() const;
     std::shared_ptr<const lora_security::Snapshot> lora_security_snapshot() const;
     bool set_lora_security_recording(const std::string& path); // before start only
 
@@ -433,6 +437,7 @@ private:
 
     mutable std::mutex lora_log_mutex_;
     std::vector<LoraPacketRow> lora_packet_log_;
+    std::map<std::string, LoraDeviceRow> lora_devices_;  // guarded by lora_log_mutex_; key kind + id
     size_t lora_channel_idx_ = 0;
     mutable std::mutex capture_mutex_;
     std::string capture_save_directory_;

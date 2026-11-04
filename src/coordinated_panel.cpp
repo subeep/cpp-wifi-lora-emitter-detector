@@ -367,17 +367,6 @@ std::string lower_text(std::string s) {
 }
 
 // Drag handle under a table: changes `height`.
-void height_handle(const char* id, float& height) {
-    ImGui::InvisibleButton(id, ImVec2(-1, 8));
-    const bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
-    if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-    if (ImGui::IsItemActive()) height = std::clamp(height + ImGui::GetIO().MouseDelta.y, 120.f, 4000.f);
-    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-    ImGui::GetWindowDrawList()->AddLine({a.x, (a.y + b.y) / 2}, {b.x, (a.y + b.y) / 2},
-                                        ImGui::GetColorU32(hot ? ImGuiCol_SeparatorActive : ImGuiCol_Separator), 2);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Drag to make the table taller or shorter");
-}
-
 void draw_entries(PanelState& state, const std::vector<Entry>& entries, double now) {
     std::map<std::string, size_t> per_source;
     for (const auto& e : entries) ++per_source[e.source];
@@ -438,7 +427,7 @@ void draw_entries(PanelState& state, const std::vector<Entry>& entries, double n
         ImGui::PopID();
     }
     ImGui::EndTable();
-    height_handle("##entries height", state.entries_height);
+    gui::height_handle("##entries height", state.entries_height);
     ImGui::TextDisabled("~ provisional relationship to another row   ! conflicting claims   Right-click a header to show or hide columns.");
 }
 
