@@ -364,6 +364,46 @@ std::vector<wifi_master::WifiMasterRow> Scanner::wifi_master_snapshot() const {
     return wifi_master_.snapshot();
 }
 
+std::map<std::string, uint64_t> Scanner::wifi_phy_format_counts() const {
+    std::lock_guard<std::mutex> lock(bss_mutex_);
+    return phy_format_counts_;
+}
+
+void Scanner::note_beacon(const wifi::BeaconInfo& b, double fallback_hz) {
+    double hz = fallback_hz;
+    if (b.channel >= 1 && b.channel <= 14) hz = b.channel == 14 ? 2484e6 : 2407e6 + 5e6 * b.channel;
+    else if (b.channel >= 32) hz = 5000e6 + 5e6 * b.channel;
+    std::lock_guard<std::mutex> lock(bss_mutex_);
+    auto& f = bss_index_[b.bssid];
+    if (!b.ssid.empty()) f.ssid = b.ssid;
+    f.channel_hz = hz;
+    if (b.bss_color >= 0 && !b.bss_color_disabled) f.bss_color = b.bss_color;
+}
+
+// Networks an 802.11ax (BSS colour) or 802.11ac uplink (partial AID) header
+// points to: beacons on a channel inside the PPDU's bandwidth around the
+// channel it was received on. Several BSSIDs can match (virtual BSSIDs of
+// one radio share both values); all are listed.
+std::string Scanner::network_hint(const wifi::HighThroughputSig& s, double channel_hz) const {
+    if (!s.crc_ok) return {};
+    const bool by_color = s.bss_color >= 0;
+    const bool by_aid = s.group_id == 0 && s.partial_aid > 0;
+    if (!by_color && !by_aid) return {};
+    const double reach = std::max(10e6, s.bandwidth_mhz * 1e6 / 2);
+    std::vector<std::string> names;
+    std::lock_guard<std::mutex> lock(bss_mutex_);
+    for (const auto& [bssid, f] : bss_index_) {
+        if (std::abs(f.channel_hz - channel_hz) > reach) continue;
+        if (by_color ? f.bss_color != s.bss_color : wifi::vht_partial_aid(bssid) != s.partial_aid) continue;
+        names.push_back((f.ssid.empty() ? std::string("hidden") : wifi::display_text(f.ssid)) + " (" + bssid + ")");
+    }
+    if (names.empty()) return {};
+    std::string out = std::string(by_color ? "BSS colour " + std::to_string(s.bss_color) : "partial AID " + std::to_string(s.partial_aid)) + " -> ";
+    for (size_t i = 0; i < names.size() && i < 3; ++i) out += (i ? ", " : "") + names[i];
+    if (names.size() > 3) out += " +" + std::to_string(names.size() - 3) + " more";
+    return out;
+}
+
 std::vector<WifiPacketRow> Scanner::wifi_packets() const {
     std::vector<WifiPacketRow> rows;
     {std::lock_guard<std::mutex> lock(wifi_log_mutex_);rows=wifi_packet_log_;}
@@ -837,6 +877,15 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                         fp_mac = packet_identity->bssid;
                         decoded_beacons[*fp_mac] = *packet_identity;
                         master_key = packet_identity->bssid;
+                        note_beacon(*packet_identity, real_channel_hz);
+                    }
+                    if (ofdm_decode.header_valid) {
+                        std::lock_guard<std::mutex> lock(bss_mutex_);
+                        ++phy_format_counts_[!ofdm_decode.sig ? std::string("802.11a/g legacy")
+                                             : ofdm_decode.sig->crc_ok ? ofdm_decode.sig->format
+                                                                      : ofdm_decode.sig->format + " (header CRC failed)"];
+                        if (ofdm_decode.sig && ofdm_decode.sig->crc_ok && ofdm_decode.fcs_valid)
+                            ++phy_format_counts_[ofdm_decode.sig->format + " (payload decoded)"];
                     }
                 }
 
@@ -892,6 +941,7 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                     const auto& dec = *dsss_decode;
                     if (dec.beacon) {
                         decoded_beacons[dec.beacon->bssid] = *dec.beacon;
+                        note_beacon(*dec.beacon, real_channel_hz);
                         // A decoded beacon's BSSID is a real,
                         // zero-ambiguity 48-bit MAC - use it as
                         // the master-list's primary key rather
@@ -966,6 +1016,10 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                 row.identity = std::move(packet_identity);
                 if (result.mod == wifi::ModClass::OFDM) {
                     row.decode_status = ofdm_decode.status;
+                    if (ofdm_decode.sig && ofdm_decode.sig->crc_ok) {
+                        row.phy_format = ofdm_decode.sig->format;
+                        row.network_hint = network_hint(*ofdm_decode.sig, real_channel_hz);
+                    }
                     row.ofdm_rate_mbps = ofdm_decode.rate_mbps;
                     row.psdu_length = ofdm_decode.psdu_length;
                     row.fcs_valid = ofdm_decode.fcs_valid;

@@ -778,6 +778,14 @@ int main() {
                     for(const auto& row:wifi_rows)if(band==BAND_WIFI_BOTH || (band==BAND_WIFI_2G4 && row.freq_mhz>=2400 && row.freq_mhz<2500)||
                         (band==BAND_WIFI_5G && row.freq_mhz>=5000 && row.freq_mhz<6000))viewed.push_back(row);
                     gui::note("Search retained rows only. Maximum 1,000 rows across the packet tail; not exhaustive RF coverage.");
+                    {
+                        // OFDM formats seen this session (all bands).
+                        std::string formats;
+                        for(const auto& [name,count]:scanner.wifi_phy_format_counts())formats+=(formats.empty()?"":" | ")+name+" "+std::to_string(count);
+                        if(!formats.empty())gui::note(("OFDM PPDUs this session: "+formats+". 802.11n/ac payloads are decoded at 20 MHz with one spatial stream, BCC or LDPC (STBC included), and "
+                            "802.11ax single-user payloads at 20 MHz with one stream (2x HE-LTF); other PPDUs: header (MCS, width, streams, "
+                            "BSS colour / partial AID) only.").c_str());
+                    }
                     draw_wifi_packet_table(viewed,std::max(180.f,ImGui::GetContentRegionAvail().y-110));ImGui::EndTabItem();
                 }
                 if(ImGui::BeginTabItem("Master list & enrolment")){

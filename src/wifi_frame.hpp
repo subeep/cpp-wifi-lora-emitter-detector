@@ -104,6 +104,8 @@ struct BeaconInfo {
     std::string ciphers;
     std::string pmf;
     std::string standards;     // explicitly advertised HT/VHT/HE/EHT capabilities
+    int bss_color = -1;        // HE Operation BSS Colour (0-63), -1 if not advertised
+    bool bss_color_disabled = false;
     bool wps_present = false;
     std::string wps_manufacturer;
     std::string wps_model_name;

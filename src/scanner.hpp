@@ -31,6 +31,7 @@
 #include "serial_lane.hpp"
 #include "wifi_master.hpp"
 #include "wifi_enrolment.hpp"
+#include "wifi_ofdm_rx.hpp"
 
 namespace rfmon {
 
@@ -134,6 +135,12 @@ struct WifiPacketRow {
     std::optional<double> fp_evm_pct;
     std::optional<double> fp_sync_corr;
     std::optional<std::string> fp_gate_reason;  // set only when attempted but gated out
+    // 802.11n/ac/ax header of an OFDM burst whose payload format is not
+    // decoded ("" for legacy / DSSS), and the networks it points to: by
+    // HE BSS colour or VHT partial AID matched against beacons decoded in
+    // this session on overlapping channels. A hint, not an identity.
+    std::string phy_format;
+    std::string network_hint;
 };
 
 class Scanner {
@@ -253,6 +260,10 @@ public:
     // Only populated while a Wi-Fi band is active - one row per
     // individually detected and classified burst.
     std::vector<WifiPacketRow> wifi_packets() const;
+    // OFDM PPDUs seen this session by format ("802.11a/g legacy", "802.11n HT",
+    // "802.11ac VHT", "802.11ax HE SU", ...); headers with a failed CRC are
+    // counted under "<format> (header CRC failed)".
+    std::map<std::string, uint64_t> wifi_phy_format_counts() const;
 
     // How many distinct transmitting sources were resolved on each
     // Wi-Fi channel, keyed by channel number (see
@@ -290,6 +301,13 @@ public:
     bool wifi_security_command(const std::string& action, const std::string& key = "");
 
 private:
+    // Beacons decoded this session, for attributing 802.11ac/ax headers.
+    struct BssFacts { std::string ssid; double channel_hz = 0; int bss_color = -1; };
+    mutable std::mutex bss_mutex_;
+    std::map<std::string, BssFacts> bss_index_;            // by BSSID
+    std::map<std::string, uint64_t> phy_format_counts_;
+    void note_beacon(const wifi::BeaconInfo& b, double fallback_hz);
+    std::string network_hint(const wifi::HighThroughputSig& s, double channel_hz) const;
     WifiIqObserver wifi_iq_observer_;
     WifiFrameObserver wifi_frame_observer_;
     friend struct ScannerTestAccess;  // radio-free tests (tests/test_scanner_wifi_lane.cpp)

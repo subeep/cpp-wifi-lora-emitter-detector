@@ -27,6 +27,19 @@ int main(int argc,char**argv) {
             auto r=wifi::decode_ofdm_burst(iq.data(),n,rate,center,channel);
             std::string name=entry.path().stem();bool expected=j.at("expected_fcs");
             check(r.fcs_valid==expected,name+": "+r.status);
+            if(j.contains("expected_format")){
+                // Live 802.11n/ac/ax header fixtures: CRC-valid header, payload not decoded.
+                const bool ok=r.sig&&r.sig->crc_ok&&r.sig->format==j.at("expected_format")&&r.sig->mcs==j.at("expected_mcs")&&
+                    r.sig->bandwidth_mhz==j.at("expected_bandwidth_mhz")&&r.sig->streams==j.at("expected_streams")&&
+                    r.sig->bss_color==j.at("expected_bss_color")&&r.sig->group_id==j.at("expected_group_id")&&
+                    r.sig->partial_aid==j.at("expected_partial_aid")&&r.sig->ht_length==j.at("expected_ht_length");
+                check(ok,name+" header fields: "+(r.sig?r.sig->summary:std::string("no header")));
+                check(!r.fcs_valid&&!r.beacon&&r.status.find("payload not decoded")!=std::string::npos,name+" payload not claimed");
+                auto damaged=iq;for(size_t i=0;i<damaged.size();++i)if(i%7==0)damaged[i]*=-1.f;
+                auto d=wifi::decode_ofdm_burst(damaged.data(),n,rate,center,channel);
+                check(!(d.sig&&d.sig->crc_ok&&d.sig->summary!=r.sig->summary),name+" corrupted IQ never yields a different CRC-valid header");
+                continue;
+            }
             if(!expected){check(!r.beacon,name+" rejected identity");continue;}
             std::string hex;for(auto b:r.mpdu){hex+="0123456789abcdef"[b>>4];hex+="0123456789abcdef"[b&15];}
             check(hex==j.at("expected_mpdu_hex")&&r.rate_mbps==j.at("expected_rate_mbps"),name+" exact MPDU and rate");
@@ -40,6 +53,22 @@ int main(int argc,char**argv) {
             }
             auto short_r=wifi::decode_ofdm_burst(iq.data(),std::min(n,size_t(rate*18e-6)),rate,center,channel);
             check(!short_r.fcs_valid&&!short_r.beacon,name+" truncated rejection");
+        }
+        // 802.11ac partial AID of a frame to an AP: BSSID bits 39..47.
+        check(wifi::vht_partial_aid("98:ba:5f:37:57:4b")==150&&wifi::vht_partial_aid("00:00:00:00:80:00")==1&&wifi::vht_partial_aid("00:00:00:00:00:80")==256&&
+              wifi::vht_partial_aid("00:00:00:00:00:01")==2&&wifi::vht_partial_aid("bad")==-1,"VHT partial AID from BSSID");
+        {
+            // Beacon with an HE Operation element (BSS colour 12) and a disabled-colour variant.
+            auto beacon=[](uint8_t color_info){
+                std::vector<uint8_t> m={0x80,0x00,0,0, 0xff,0xff,0xff,0xff,0xff,0xff, 2,0,0,0,0,1, 2,0,0,0,0,1, 0x10,0};
+                for(int i=0;i<8;++i)m.push_back(0);
+                m.insert(m.end(),{0x64,0x00,0x11,0x04, 0,4,'T','E','S','T', 255,7,36,0x00,0x00,0x00,color_info,0xfc,0xff});
+                const uint32_t f=wifi::fcs32(m.data(),m.size());for(int i=0;i<4;++i)m.push_back(uint8_t(f>>(8*i)));
+                return wifi::parse_beacon(m.data(),m.size());
+            };
+            auto on=beacon(0x0c),off=beacon(0x8c);
+            check(on&&on->fcs_valid&&on->bss_color==12&&!on->bss_color_disabled&&off&&off->bss_color==12&&off->bss_color_disabled,
+                  "HE Operation BSS colour parsed from beacon");
         }
         std::mt19937 rng(42);std::normal_distribution<float> noise(0,.1);std::vector<std::complex<float>> iq(20000);
         for(auto&v:iq)v={noise(rng),noise(rng)};

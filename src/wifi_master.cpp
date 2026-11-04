@@ -40,7 +40,8 @@ json beacon_json(const wifi::BeaconInfo& b) {
         {"channel_source", b.channel_source}, {"beacon_interval_tu", b.beacon_interval_tu},
         {"capability", b.capability}, {"fcs_valid", b.fcs_valid}, {"ies_complete", b.ies_complete},
         {"frame_source", b.frame_source}, {"security", b.security}, {"ciphers", b.ciphers},
-        {"pmf", b.pmf}, {"standards", b.standards}, {"wps_present", b.wps_present}};
+        {"pmf", b.pmf}, {"standards", b.standards}, {"wps_present", b.wps_present},
+        {"bss_color", b.bss_color}, {"bss_color_disabled", b.bss_color_disabled}};
     // SSID/WPS are arbitrary octets, not guaranteed UTF-8. Store exact bytes
     // alongside an escaped human-readable representation; JSON never loses bytes.
     auto text = [&](const char* key, const std::string& s) {
@@ -63,6 +64,7 @@ wifi::BeaconInfo read_beacon(const json& j) {
     b.frame_source = j.value("frame_source", ""); b.security = j.value("security", "");
     b.ciphers = j.value("ciphers", ""); b.pmf = j.value("pmf", "");
     b.standards = j.value("standards", ""); b.wps_present = j.value("wps_present", false);
+    b.bss_color = j.value("bss_color", -1); b.bss_color_disabled = j.value("bss_color_disabled", false);
     b.ssid = unhex(j.value("ssid_hex", ""));
     b.wps_manufacturer = unhex(j.value("wps_manufacturer_hex", ""));
     b.wps_model_name = unhex(j.value("wps_model_name_hex", ""));

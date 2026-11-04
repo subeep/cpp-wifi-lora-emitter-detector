@@ -481,17 +481,20 @@ add_executable(wifi_capture_cli tools/wifi_capture_cli.cpp src/sdr_capture.cpp s
 target_include_directories(wifi_capture_cli PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR} ${UHD_INCLUDE_DIRS})
 target_link_libraries(wifi_capture_cli PRIVATE Threads::Threads dl ${UHD_LIBRARIES})
 
-add_executable(wifi_ofdm_replay tools/wifi_ofdm_replay.cpp src/wifi_ofdm_rx.cpp src/wifi_phy.cpp src/wifi_frame.cpp src/wifi_iq_capture.cpp)
+add_executable(wifi_ofdm_replay tools/wifi_ofdm_replay.cpp src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp src/wifi_phy.cpp src/wifi_frame.cpp src/wifi_iq_capture.cpp)
 target_include_directories(wifi_ofdm_replay PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
 target_link_libraries(wifi_ofdm_replay PRIVATE PkgConfig::KISSFFT)
 
-target_sources(band_smoke_test PRIVATE src/wifi_ofdm_rx.cpp)
+target_sources(band_smoke_test PRIVATE src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp)
 
-add_executable(test_wifi_ofdm tests/test_wifi_ofdm.cpp src/wifi_ofdm_rx.cpp
+add_executable(test_wifi_ofdm tests/test_wifi_ofdm.cpp src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp
     src/wifi_phy.cpp src/wifi_frame.cpp src/wifi_master.cpp src/wifi_vendor.cpp)
 target_include_directories(test_wifi_ofdm PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
 target_compile_definitions(test_wifi_ofdm PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
 target_link_libraries(test_wifi_ofdm PRIVATE PkgConfig::KISSFFT Threads::Threads)
+add_executable(test_wifi_ht_payload tests/test_wifi_ht_payload.cpp src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp src/wifi_frame.cpp)
+target_include_directories(test_wifi_ht_payload PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_wifi_ht_payload PRIVATE PkgConfig::KISSFFT)
 
 # Shared production LoRa receiver: GUI, live scanner and offline replay.
 foreach(target band_smoke_test test_lora_observation lora_replay test_coordinated_schedule)
@@ -634,7 +637,7 @@ target_sources(test_wifi_dsss_rx PRIVATE src/security/wifi_mac_frame.cpp)
 # Offline security runner (package A step 4): replays monitor recordings or
 # receive-only IQ manifests through the same pipeline/state, no radio.
 set(WIFI_SECURITY_OFFLINE_SOURCES ${WIFI_SECURITY_MONITOR_SOURCES}
-  src/wifi_frame.cpp src/wifi_phy.cpp src/wifi_dsss_rx.cpp src/wifi_ofdm_rx.cpp)
+  src/wifi_frame.cpp src/wifi_phy.cpp src/wifi_dsss_rx.cpp src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp)
 add_executable(wifi_security_replay tools/wifi_security_replay.cpp src/wifi_iq_capture.cpp ${WIFI_SECURITY_OFFLINE_SOURCES})
 add_executable(test_wifi_security_events tests/test_wifi_security_events.cpp ${WIFI_SECURITY_OFFLINE_SOURCES})
 foreach(target wifi_security_replay test_wifi_security_events)
@@ -724,6 +727,14 @@ foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
   endif()
 endforeach()
 target_link_libraries(shortrange_live_check PRIVATE rfmon_shortrange)
+# Receive-only live check of 802.11n/ac/ax header reporting (not a ctest).
+add_executable(wifi_phy_formats_check tools/wifi_phy_formats_check.cpp ${LORA_SCANNER_TEST_SOURCES})
+foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
+  get_target_property(value test_scanner_wifi_lane ${property})
+  if(value)
+    set_target_properties(wifi_phy_formats_check PROPERTIES ${property} "${value}")
+  endif()
+endforeach()
 add_executable(test_scanner_coordinated tests/test_scanner_coordinated.cpp ${LORA_SCANNER_TEST_SOURCES})
 foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
   get_target_property(value test_scanner_wifi_lane ${property})
@@ -843,6 +854,7 @@ foreach(check dsp lora_phy lora_phy_std wifi_phy wifi_frame wifi_dsss_rx wifi_st
   add_test(NAME ${check} COMMAND test_${check})
 endforeach()
 add_test(NAME wifi_ofdm COMMAND test_wifi_ofdm ${CMAKE_SOURCE_DIR}/tests/fixtures/wifi_ofdm)
+add_test(NAME wifi_ht_payload COMMAND test_wifi_ht_payload)
 if(Python3_Interpreter_FOUND)
   add_test(NAME lora_payload_replay COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_SOURCE_DIR}/tools/validation/validate_lora_payloads.py

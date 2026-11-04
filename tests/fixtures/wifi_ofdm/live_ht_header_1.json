@@ -1,0 +1,17 @@
+{
+  "capture_center_hz": 2462000000.0,
+  "channel_hz": 2462000000.0,
+  "expected_bandwidth_mhz": 20,
+  "expected_bss_color": -1,
+  "expected_fcs": false,
+  "expected_format": "802.11n HT",
+  "expected_group_id": -1,
+  "expected_ht_length": 257,
+  "expected_mcs": 7,
+  "expected_partial_aid": -1,
+  "expected_streams": 1,
+  "iq_file": "live_ht_header_1.cf32",
+  "note": "Live X310 capture 2026-11-04, preamble + header only (no payload bytes). Header CRC validated.",
+  "sample_rate_hz": 20000000.0,
+  "samples": 780
+}
