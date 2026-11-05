@@ -29,6 +29,8 @@
 #include "config.hpp"
 #include "security/wifi_mac_frame.hpp"
 #include "wifi_burst_pipeline.hpp"
+#include "security/wifi_security_io.hpp"
+#include "security/wifi_security_rf_identity.hpp"
 
 using namespace rfmon;
 
@@ -37,7 +39,10 @@ namespace {
 struct Frame {
     int capture = 0;
     double t = 0, channel_hz = 0;
-    std::string ta, kind, method;
+    std::string ta, kind, method, bssid;
+    bool client_frame = false;  // data frame to the DS (station to AP)
+    bool control = false;
+    long batch = 0;  // the scanner capture the frame belongs to
     int symbols = 0;
     double cfo_preamble_ppm = NAN, cfo_ppm = 0, cfo_sigma_ppm = 0, cfo_early_ppm = NAN, settling_ppm = NAN, sfo_ppm = NAN, jitter = NAN, lo_leak = NAN, iq_image = NAN, snr = NAN, power = 0;
 };
@@ -99,9 +104,13 @@ void collect(const std::string& path, double centre, double channel, int index, 
             Frame r;
             r.capture = index;
             r.t = double(off + bursts[i].start) / 20e6;
+            r.batch = long(r.t);  // the scanner analyses 1 s captures
             r.channel_hz = channel;
             r.ta = wifi_security::format_mac(*f.transmitter);
             r.kind = kind_of(f);
+            if (f.bssid) r.bssid = wifi_security::format_mac(*f.bssid);
+            r.client_frame = f.fc.type == wifi_security::FrameType::Data && f.fc.to_ds && !f.fc.from_ds;
+            r.control = f.fc.type == wifi_security::FrameType::Control;
             r.method = rf->method;
             r.symbols = rf->symbols;
             r.cfo_preamble_ppm = preamble_hz / channel * 1e6;  // the older preamble-only estimate (OFDM)
@@ -134,6 +143,45 @@ std::optional<double> score(const Frame& f, const std::vector<const Frame*>& ref
     return std::abs(f.*field - centre) / spread;
 }
 
+// A security-monitor recording (NDJSON): frames that carry RF features.
+// Each channel of the file becomes its own "capture"; times are host times.
+void collect_recording(const std::string& path, int& index, std::vector<Frame>& out) {
+    std::ifstream in(path);
+    if (!in) { std::fprintf(stderr, "cannot open %s\n", path.c_str()); return; }
+    std::map<int, int> capture_of_channel;
+    double t0 = 0;
+    std::string line;
+    while (std::getline(in, line)) {
+        const auto j = nlohmann::json::parse(line, nullptr, false);
+        if (j.is_discarded() || j.value("kind", "") != "frame" || !j.contains("rf_cfo_early_ppm")) continue;
+        const auto e = wifi_security::frame_from_json(j);
+        if (!e.host_time_ns || !e.rf_cfo_early_ppm || !(e.channel_hz > 0)) continue;
+        const auto f = wifi_security::parse_mac_frame(e.mpdu.data(), e.mpdu.size());
+        if (!f.transmitter) continue;
+        if (!t0) t0 = double(*e.host_time_ns) * 1e-9;
+        auto [it, inserted] = capture_of_channel.try_emplace(e.channel, index);
+        if (inserted) ++index;
+        Frame r;
+        r.capture = it->second;
+        r.batch = long(e.capture_seq);
+        r.t = double(*e.host_time_ns) * 1e-9 - t0;
+        r.channel_hz = e.channel_hz;
+        r.ta = wifi_security::format_mac(*f.transmitter);
+        r.kind = kind_of(f);
+        if (f.bssid) r.bssid = wifi_security::format_mac(*f.bssid);
+        r.client_frame = f.fc.type == wifi_security::FrameType::Data && f.fc.to_ds && !f.fc.from_ds;
+        r.control = f.fc.type == wifi_security::FrameType::Control;
+        r.method = e.rf_method;
+        r.symbols = e.rf_symbols;
+        r.cfo_ppm = e.rf_cfo_ppm.value_or(NAN);
+        r.cfo_early_ppm = *e.rf_cfo_early_ppm;
+        r.sfo_ppm = e.rf_sfo_ppm.value_or(NAN);
+        r.snr = e.rf_snr_db.value_or(NAN);
+        r.power = e.power_db;
+        out.push_back(r);
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -145,7 +193,8 @@ int main(int argc, char** argv) {
         const std::string s = argv[a];
         if (s == "--window" && a + 1 < argc) { window = std::atof(argv[++a]); continue; }
         if (s == "--csv" && a + 1 < argc) { csv = argv[++a]; continue; }
-        if (a + 1 >= argc) { std::fprintf(stderr, "usage: %s [--window S] [--csv FILE] CAPTURE CENTRE_HZ [CHANNEL_HZ] ...\n", argv[0]); return 2; }
+        if (s.size() > 7 && s.compare(s.size() - 7, 7, ".ndjson") == 0) { collect_recording(s, index, frames); continue; }
+        if (a + 1 >= argc) { std::fprintf(stderr, "usage: %s [--window S] [--csv FILE] {CAPTURE CENTRE_HZ [CHANNEL_HZ] | RECORDING.ndjson} ...\n", argv[0]); return 2; }
         const double centre = std::atof(argv[++a]);
         double channel = centre;
         if (a + 1 < argc && std::atof(argv[a + 1]) > 1e9) channel = std::atof(argv[++a]);
@@ -257,5 +306,151 @@ int main(int argc, char** argv) {
                     det(.1), det(.01), det(.001));
     }
     std::printf("\nScores are |frame - reference median| / reference spread (robust). FA = false-alarm rate on genuine frames.\n");
+
+    // 4. The phase B rules (security/wifi_security_rf_identity.hpp) on the
+    // same frames, fed per transmitter in time order in 0.25 s batches.
+    std::printf("\n4. RF identity rules (default configuration; judged per 1 s capture, as the monitor does)\n");
+    using wifi_security::RfFinding;
+    using wifi_security::RfObservation;
+    auto observation = [](const Frame& f, const std::string& ta, bool disconnect, const std::string& bssid, bool client_frame) {
+        RfObservation o;
+        o.band = f.channel_hz < 3e9 ? "2.4 GHz" : "5 GHz";
+        o.channel = int(f.channel_hz / 1e6);
+        o.transmitter = ta;
+        o.bssid = bssid;
+        o.client_frame = client_frame;
+        o.disconnect = disconnect;
+        o.length_class = f.method.rfind("DSSS", 0) == 0 ? "dsss" : f.symbols < 20 ? "ofdm-short" : "ofdm-long";
+        o.cfo_ppm = f.cfo_early_ppm;
+        o.t_ns = int64_t(f.t * 1e9);
+        return o;
+    };
+    // The monitor adds a whole capture's frames, then judges: capture start
+    // times per (capture key), so injected frames join the capture they fall in.
+    std::map<int, std::vector<int64_t>> capture_starts;
+    {
+        std::map<std::pair<int, long>, int64_t> first;
+        for (const auto& f : frames) {
+            auto [it, inserted] = first.try_emplace({f.capture, f.batch}, int64_t(f.t * 1e9));
+            if (!inserted) it->second = std::min(it->second, int64_t(f.t * 1e9));
+        }
+        for (const auto& [k, t] : first) capture_starts[k.first].push_back(t);
+        for (auto& [k, v] : capture_starts) std::sort(v.begin(), v.end());
+    }
+    auto run = [&](std::vector<RfObservation> obs, const std::string& ta, int capture) {
+        std::sort(obs.begin(), obs.end(), [](const auto& a, const auto& b) { return a.t_ns < b.t_ns; });
+        const auto& starts = capture_starts[capture];
+        auto batch_of = [&](int64_t t) { return std::upper_bound(starts.begin(), starts.end(), t) - starts.begin(); };
+        wifi_security::RfIdentityTracker tracker;
+        std::vector<RfFinding> found;
+        auto batch = obs.empty() ? 0 : batch_of(obs.front().t_ns);
+        for (const auto& o : obs) {
+            if (batch_of(o.t_ns) != batch) { for (auto& f : tracker.evaluate()) if (f.transmitter == ta) found.push_back(f); batch = batch_of(o.t_ns); }
+            tracker.add(o);
+        }
+        for (auto& f : tracker.evaluate()) if (f.transmitter == ta) found.push_back(f);
+        return found;
+    };
+    auto has = [](const std::vector<RfFinding>& v, RfFinding::Kind k) { return std::any_of(v.begin(), v.end(), [&](const auto& f) { return f.kind == k; }); };
+    // Per victim role: 0 = access point (transmits as its own BSSID, never to
+    // the DS), 1 = client or unknown. Forged frames claim the victim's role:
+    // from its BSSID for an AP, to its AP for a client.
+    // The rules use management and data frames only (no control frames).
+    std::map<std::pair<int, std::string>, std::vector<const Frame*>> rule_by;
+    for (const auto& [key, v] : by)
+        for (const auto* f : v) if (!f->control) rule_by[key].push_back(f);
+    struct Tally {
+        size_t ids = 0, false_two = 0, genuine_disc = 0, genuine_disc_flagged = 0, forged = 0, forged_found = 0, clones = 0, clones_found = 0;
+        std::vector<double> missed_gap, found_gap, clone_missed_gap, clone_found_gap;
+        std::vector<std::string> false_two_list;
+    } tally[2];
+    for (const auto& [key, v] : rule_by) {
+        if (v.size() < 10) continue;
+        bool ap = false, client = false;
+        std::map<std::string, int> their_bssids;
+        for (const auto* f : v) {
+            ap |= f->bssid == key.second;
+            client |= f->client_frame;
+            if (!f->bssid.empty() && f->bssid != key.second) ++their_bssids[f->bssid];
+        }
+        Tally& T = tally[ap && !client ? 0 : 1];
+        const std::string claimed_bssid = ap && !client ? key.second
+            : their_bssids.empty() ? std::string("02:00:00:00:00:00")
+            : std::max_element(their_bssids.begin(), their_bssids.end(), [](const auto& a, const auto& b) { return a.second < b.second; })->first;
+        ++T.ids;
+        std::vector<RfObservation> genuine;
+        for (const auto* f : v)
+            genuine.push_back(observation(*f, key.second, f->kind == "deauthentication" || f->kind == "disassociation", f->bssid, f->client_frame));
+        // a) genuine traffic alone
+        if (has(run(genuine, key.second, key.first), RfFinding::Kind::TwoTransmitters)) { ++T.false_two; T.false_two_list.push_back(key.second); }
+        // b) the sender's own short frames relabelled as disconnects
+        {
+            auto obs = genuine;
+            int n = 0;
+            for (auto& o : obs)
+                if (!o.disconnect && n < 10 && (n % 2 == 0 || o.length_class == "ofdm-short")) { o.disconnect = true; o.bssid = claimed_bssid; o.client_frame = false; ++n; }
+            if (n >= 5) { ++T.genuine_disc; if (has(run(obs, key.second, key.first), RfFinding::Kind::ForgedDisconnect)) ++T.genuine_disc_flagged; }
+        }
+        // c) / d) another radio B heard in the same capture forges disconnects / clones the address
+        // Inject where the victim is busiest, so a reference exists (long recordings have gaps).
+        double t0 = v.front()->t;
+        {
+            size_t best = 0;
+            for (size_t i = 0, lo = 0, hi = 0; i < v.size(); ++i) {
+                while (v[lo]->t < v[i]->t - 10) ++lo;
+                while (hi < v.size() && v[hi]->t <= v[i]->t + 10) ++hi;
+                if (hi - lo > best) { best = hi - lo; t0 = v[i]->t; }
+            }
+        }
+        std::vector<double> mine;
+        for (const auto* f : v) mine.push_back(f->cfo_early_ppm);
+        const double a_cfo = median(mine);
+        int tried = 0;
+        for (const auto& [k2, v2] : rule_by) {
+            if (k2.first != key.first || k2.second == key.second || same_radio(k2.second, key.second) || v2.size() < 12 || tried >= 6) continue;
+            ++tried;
+            std::vector<double> theirs;
+            for (const auto* f : v2) theirs.push_back(f->cfo_early_ppm);
+            const double gap = std::abs(median(theirs) - a_cfo);
+            auto obs = genuine;
+            for (int i = 0; i < 10; ++i) {
+                Frame forged_frame = *v2[size_t(i) % v2.size()];
+                forged_frame.t = t0 + 0.05 * i;
+                obs.push_back(observation(forged_frame, key.second, true, claimed_bssid, false));
+            }
+            ++T.forged;
+            if (has(run(obs, key.second, key.first), RfFinding::Kind::ForgedDisconnect)) { ++T.forged_found; T.found_gap.push_back(gap); }
+            else T.missed_gap.push_back(gap);
+            auto clone = genuine;
+            for (int i = 0; i < 12; ++i) {
+                Frame c = *v2[size_t(i) % v2.size()];
+                c.t = t0 - 1.0 + 0.17 * i;
+                clone.push_back(observation(c, key.second, false, ap && !client ? key.second : std::string(), false));
+            }
+            ++T.clones;
+            if (has(run(clone, key.second, key.first), RfFinding::Kind::TwoTransmitters)) { ++T.clones_found; T.clone_found_gap.push_back(gap); }
+            else T.clone_missed_gap.push_back(gap);
+        }
+    }
+    auto share = [](size_t a, size_t b) { return b ? 100.0 * double(a) / double(b) : 0.0; };
+    auto above = [](const std::vector<double>& v, double x) { return size_t(std::count_if(v.begin(), v.end(), [&](double g) { return g >= x; })); };
+    for (int r = 0; r < 2; ++r) {
+        auto& T = tally[r];
+        std::printf("   %s: %zu identities with 10+ frames\n", r ? "Clients and unknown roles (two-transmitter rule not run)" : "Access points", T.ids);
+        std::printf("      genuine traffic flagged as two transmitters: %zu (%.1f%%)\n", T.false_two, share(T.false_two, T.ids));
+        for (const auto& t : T.false_two_list) std::printf("         %s\n", t.c_str());
+        std::printf("      sender's own frames as disconnects, flagged as forged: %zu of %zu (%.1f%%)\n", T.genuine_disc_flagged, T.genuine_disc, share(T.genuine_disc_flagged, T.genuine_disc));
+        std::printf("      forged disconnect bursts (another radio's frames) detected: %zu of %zu (%.1f%%)\n", T.forged_found, T.forged, share(T.forged_found, T.forged));
+        std::sort(T.missed_gap.begin(), T.missed_gap.end());
+        if (!T.missed_gap.empty())
+            std::printf("         missed bursts: CFO gap to the real sender p50 %.3f ppm, p90 %.3f ppm, max %.3f ppm\n", pct(T.missed_gap, .5), pct(T.missed_gap, .9), T.missed_gap.back());
+        if (!r) std::printf("      MAC-clone insertions (another radio's frames interleaved) detected: %zu of %zu (%.1f%%)\n", T.clones_found, T.clones, share(T.clones_found, T.clones));
+        for (double x : {0.5, 1.0, 2.5}) {
+            const size_t fd = above(T.found_gap, x), fm = above(T.missed_gap, x), cd = above(T.clone_found_gap, x), cm = above(T.clone_missed_gap, x);
+            std::printf("      radios at least %.1f ppm apart: forged disconnects %zu of %zu (%.1f%%)", x, fd, fd + fm, share(fd, fd + fm));
+            if (!r) std::printf(", clones %zu of %zu (%.1f%%)", cd, cd + cm, share(cd, cd + cm));
+            std::printf("\n");
+        }
+    }
     return 0;
 }

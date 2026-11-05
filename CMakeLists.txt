@@ -346,7 +346,7 @@ if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
   add_executable(test_wifi_gui src/gui/app_shell.cpp tests/test_wifi_gui.cpp src/wifi_gui.cpp src/wifi_frame.cpp src/security_gui.cpp
       src/security/wifi_mac_frame.cpp src/security/wifi_frame_event.cpp src/security/wifi_security_io.cpp
       src/security/wifi_security_state.cpp src/security/wifi_security_monitor.cpp
-      src/security/wifi_security_baseline.cpp src/security/wifi_security_incidents.cpp src/security/wifi_security_flood.cpp src/security/wifi_security_beacon_replay.cpp src/security/wifi_security_transactions.cpp
+      src/security/wifi_security_baseline.cpp src/security/wifi_security_incidents.cpp src/security/wifi_security_flood.cpp src/security/wifi_security_beacon_replay.cpp src/security/wifi_security_transactions.cpp src/security/wifi_security_rf_identity.cpp
       ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp
       ${IMGUI_DIR}/imgui_widgets.cpp ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
   target_include_directories(test_wifi_gui PRIVATE ${CMAKE_SOURCE_DIR}/src ${IMGUI_DIR} ${WIFI_EGL_INCLUDE_DIR}
@@ -631,7 +631,7 @@ set(WIFI_SECURITY_MONITOR_SOURCES
   src/security/wifi_security_state.cpp
   src/security/wifi_security_baseline.cpp
   src/security/wifi_security_incidents.cpp
-  src/security/wifi_security_flood.cpp src/security/wifi_security_beacon_replay.cpp src/security/wifi_security_transactions.cpp
+  src/security/wifi_security_flood.cpp src/security/wifi_security_beacon_replay.cpp src/security/wifi_security_transactions.cpp src/security/wifi_security_rf_identity.cpp
   src/security/wifi_security_monitor.cpp)
 foreach(target rf_monitor_gui band_smoke_test wifi_scan_smoke)
   target_sources(${target} PRIVATE ${WIFI_SECURITY_MONITOR_SOURCES})
@@ -829,8 +829,10 @@ endif()
 # Offline evaluation of whole-frame RF features for sender verification
 # (RF fingerprint plan, phase A). Receive-only; reads IQ captures.
 add_executable(wifi_rf_auth_eval tools/wifi_rf_auth_eval.cpp src/wifi_phy.cpp src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp
-  src/wifi_rf_features.cpp src/wifi_frame.cpp src/wifi_dsss_rx.cpp src/security/wifi_mac_frame.cpp)
-target_include_directories(wifi_rf_auth_eval PRIVATE ${CMAKE_SOURCE_DIR}/src)
+  src/wifi_rf_features.cpp src/wifi_frame.cpp src/wifi_dsss_rx.cpp src/security/wifi_mac_frame.cpp
+  src/security/wifi_security_rf_identity.cpp src/security/wifi_security_incidents.cpp src/security/wifi_frame_event.cpp
+  src/security/wifi_security_io.cpp)
+target_include_directories(wifi_rf_auth_eval PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
 target_link_libraries(wifi_rf_auth_eval PRIVATE PkgConfig::KISSFFT Threads::Threads)
 
 add_executable(test_wifi_rf_features tests/test_wifi_rf_features.cpp src/wifi_rf_features.cpp)
@@ -882,3 +884,14 @@ if(Python3_Interpreter_FOUND)
     --fixtures ${CMAKE_SOURCE_DIR}/tests/fixtures/lora_sx1262 --tool $<TARGET_FILE:lora_replay>)
 endif()
 set_tests_properties(wifi_enrolment PROPERTIES TIMEOUT 90)
+
+add_executable(test_wifi_rf_identity tests/test_wifi_rf_identity.cpp ${WIFI_SECURITY_OFFLINE_SOURCES})
+target_include_directories(test_wifi_rf_identity PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+target_link_libraries(test_wifi_rf_identity PRIVATE PkgConfig::KISSFFT Threads::Threads)
+add_test(NAME wifi_rf_identity COMMAND test_wifi_rf_identity)
+
+# 802.11a/g transmit-waveform generator for the RF identity CFO-match test.
+add_executable(wifi_tx_gen tools/wifi_tx_gen.cpp src/wifi_phy.cpp src/wifi_ofdm_rx.cpp src/wifi_ldpc.cpp
+  src/wifi_rf_features.cpp src/wifi_frame.cpp src/wifi_dsss_rx.cpp src/security/wifi_mac_frame.cpp)
+target_include_directories(wifi_tx_gen PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+target_link_libraries(wifi_tx_gen PRIVATE PkgConfig::KISSFFT Threads::Threads)

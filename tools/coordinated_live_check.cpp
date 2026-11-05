@@ -7,7 +7,11 @@
 // modified. Prints progress every 5 s and a JSON summary at the end.
 //
 //   coordinated_live_check [--seconds N] [--device x310|b210] [--ml] [--json PATH] [--mode BAND]
+//                          [--channel N] [--security-record PATH]
 // --mode runs a band mode instead (e.g. wifi_both) for an A/B comparison.
+// --channel N holds a Wi-Fi band mode on one channel. --security-record
+// writes the Wi-Fi security monitor's NDJSON (frames with RF features) to
+// PATH, outside the temporary root, for wifi_security_replay.
 // --retain N keeps the last N Wi-Fi/drone captures' IQ; with --ml and
 // --export-dir, the latest model result's capture is exported as evidence.
 #include <atomic>
@@ -56,6 +60,8 @@ int main(int argc, char** argv) {
     size_t retain = 0;                    // captures of IQ kept for evidence export
     std::string export_dir;               // with --ml: export the latest model result's evidence here
     SdrDeviceType device = SdrDeviceType::X310;
+    std::optional<int> channel;
+    std::string security_record;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--seconds" && i + 1 < argc) seconds = std::atof(argv[++i]);
@@ -64,8 +70,10 @@ int main(int argc, char** argv) {
         else if (a == "--mode" && i + 1 < argc) mode = argv[++i];
         else if (a == "--retain" && i + 1 < argc) retain = size_t(std::atoi(argv[++i]));
         else if (a == "--export-dir" && i + 1 < argc) export_dir = argv[++i];
+        else if (a == "--channel" && i + 1 < argc) channel = std::atoi(argv[++i]);
+        else if (a == "--security-record" && i + 1 < argc) security_record = std::filesystem::absolute(argv[++i]).string();
         else if (a == "--device" && i + 1 < argc) device = std::string(argv[++i]) == "b210" ? SdrDeviceType::B210 : SdrDeviceType::X310;
-        else { std::fprintf(stderr, "usage: %s [--seconds N] [--device x310|b210] [--ml] [--json PATH] [--mode BAND] [--retain N] [--export-dir PATH]\n", argv[0]); return 2; }
+        else { std::fprintf(stderr, "usage: %s [--seconds N] [--device x310|b210] [--ml] [--json PATH] [--mode BAND] [--channel N] [--security-record PATH] [--retain N] [--export-dir PATH]\n", argv[0]); return 2; }
     }
     char tmp[] = "/tmp/rfmon-coordinated-live-XXXXXX";
     if (!mkdtemp(tmp)) return 1;
@@ -118,6 +126,9 @@ int main(int argc, char** argv) {
             model.start(o);
         }
         scanner.set_active_band(mode);
+        if (channel) scanner.set_wifi_fixed_channel(channel);
+        if (!security_record.empty() && !scanner.set_wifi_security_recording(security_record, uint64_t(4) << 30))
+            std::fprintf(stderr, "security recording could not start: %s\n", security_record.c_str());
         const auto t0 = std::chrono::steady_clock::now();
         scanner.start();
         std::vector<double> cycle_times;
@@ -232,6 +243,18 @@ int main(int argc, char** argv) {
             out["fcs_valid_frames_by_band"] = fcs_by_band;
         }
         out["wifi_security_captures"] = security->captures_ingested;
+        out["rf_identity"] = {{"frames", security->rf_identity_frames}, {"judged", security->rf_identity_judged},
+                              {"unverifiable", security->rf_identity_unverifiable}, {"inconsistent", security->rf_identity_inconsistent},
+                              {"excluded_frames", security->rf_identity_excluded}, {"tracked", security->rf_identity_tracked},
+                              {"accepted_frames", security->frames_accepted}};
+        {
+            nlohmann::json incidents = nlohmann::json::array();
+            for (const auto& i : security->incidents)
+                incidents.push_back({{"rule", i.rule}, {"band", i.band}, {"channel", i.channel}, {"source", i.claimed_source},
+                                     {"target", i.target}, {"observations", i.observations}, {"measures", i.measures},
+                                     {"confidence", int(i.confidence)}, {"open", i.open}});
+            out["wifi_security_incidents"] = incidents;
+        }
         out["wifi_packet_rows"] = wifi_rows.size();
         out["lora_capture_records"] = lora->captures;
         size_t lora_decoded = 0;

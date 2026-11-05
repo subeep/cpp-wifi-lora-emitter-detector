@@ -36,6 +36,7 @@
 #include "security/wifi_security_flood.hpp"
 #include "security/wifi_security_beacon_replay.hpp"
 #include "security/wifi_security_transactions.hpp"
+#include "security/wifi_security_rf_identity.hpp"
 
 namespace rfmon::wifi_security {
 
@@ -43,6 +44,7 @@ struct StateLimits {
     FloodConfig flood;
     BeaconReplayConfig beacon_replay;
     TransactionConfig transactions;
+    RfIdentityConfig rf_identity;
     BaselineLimits baseline;
     IncidentLimits incidents;
     size_t published_incidents = 200;  // newest incidents mirrored into the snapshot
@@ -92,6 +94,12 @@ struct SecuritySnapshot {
     bool beacon_replay_enabled = true;
     uint64_t beacon_replay_evaluated = 0, beacon_replay_excluded = 0, beacon_replay_forgotten = 0;
     std::string beacon_replay_config;
+    bool rf_identity_enabled = true;
+    uint64_t rf_identity_frames = 0;          // verified frames with whole-frame RF features
+    uint64_t rf_identity_judged = 0, rf_identity_unverifiable = 0, rf_identity_inconsistent = 0;  // disconnect frames
+    uint64_t rf_identity_excluded = 0;        // frames in degraded captures, never judged
+    size_t rf_identity_tracked = 0;           // transmitter identities currently tracked
+    std::string rf_identity_config;
     bool flood_enabled = true;
     uint64_t flood_evaluations = 0, flood_excluded_captures = 0;
     std::string flood_config;
@@ -161,6 +169,7 @@ private:
     ManagementFloodRule flood_;
     BeaconReplayRule beacon_replay_;
     TransactionReplayRule transactions_;
+    RfIdentityRule rf_identity_;
     struct SessionClock { bool end_known = false; int64_t end_ns = 0; };
     std::map<std::pair<std::string, uint64_t>, SessionClock> sessions_;  // (run, radio session)
     // Dedupe: capture -> sample/PHY keys seen, evicted oldest-capture-first.

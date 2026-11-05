@@ -831,6 +831,7 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                 if (bi >= WIFI_MAX_BURSTS_PER_CAPTURE) {
                     ++rec.bursts_beyond_identity_limit;
                     const std::vector<uint8_t>* mpdu = nullptr;
+                    const wifi::FrameRfFeatures* rf = nullptr;  // whole-frame RF features
                     std::string phy;
                     int rate_mbps = 0;
                     bool short_dsss = false;
@@ -839,6 +840,7 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                         if (work.ofdm->fcs_valid) {
                             ++rec.ofdm_fcs_valid;
                             mpdu = &work.ofdm->mpdu; phy = "OFDM"; rate_mbps = work.ofdm->rate_mbps;
+                            if (work.ofdm->rf) rf = &*work.ofdm->rf;
                         }
                     } else if (work.dsss.policy.decode) {
                         ++rec.dsss_decode_attempts;
@@ -846,6 +848,7 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                         if (work.dsss.result->fcs_valid) {
                             ++rec.dsss_fcs_valid;
                             mpdu = &work.dsss.result->mpdu; phy = "DSSS"; rate_mbps = 1;
+                            if (work.dsss.result->rf) rf = &*work.dsss.result->rf;
                             short_dsss = work.dsss.policy.security_only;
                         }
                     } else {
@@ -854,6 +857,7 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                     if (mpdu) {
                         auto ev = wifi_security::make_frame_event(rec, b.start, b.length, phy, rate_mbps,
                                                                   short_dsss, *mpdu, true);
+                        if (rf) wifi_security::attach_rf_features(ev, *rf);
                         ev.power_db = power_db;
                         ev.bandwidth_hz = bw_hz;
                         ev.duration_us = duration_s * 1e6;
@@ -1001,6 +1005,8 @@ void Scanner::process_step_captures(const ScanStep& step, const std::string& ban
                         auto ev = wifi_security::make_frame_event(
                             rec, b.start, b.length, d ? "DSSS" : "OFDM", d ? 1 : ofdm_decode.rate_mbps,
                             d && dsss_policy.security_only, d ? d->mpdu : ofdm_decode.mpdu, true);
+                        if (d ? d->rf.has_value() : ofdm_decode.rf.has_value())
+                            wifi_security::attach_rf_features(ev, d ? *d->rf : *ofdm_decode.rf);
                         ev.power_db = power_db;
                         ev.bandwidth_hz = bw_hz;
                         ev.duration_us = duration_s * 1e6;
