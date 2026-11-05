@@ -211,6 +211,7 @@ std::vector<LoraPacketRow> analyze_lora_packets(const std::vector<std::complex<f
             if (auto candidate=inspect_lorawan(p.payload)) {
                 row.lorawan_candidate=candidate->type;
                 row.lorawan_detail=candidate->detail;
+                if(!candidate->device_id.empty()){row.lorawan_device_kind=candidate->device_kind;row.lorawan_device_id=candidate->device_id;row.lorawan_uplink=candidate->uplink;}
                 if (!p.crc_on) *row.lorawan_detail += " Physical payload CRC absent; bytes also unverified.";
             }
         }

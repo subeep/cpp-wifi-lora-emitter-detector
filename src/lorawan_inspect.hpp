@@ -8,7 +8,13 @@ namespace rfmon {
 // Structural inspection only. No key, MIC authentication, session association,
 // counter reconstruction or MAC-command/decryption engine exists here.
 // Layout reference: LoRa Alliance TS001-1.0.4 sections 4 and 6.
-struct LoRaWanCandidate { std::string type, detail; };
+struct LoRaWanCandidate {
+    std::string type, detail;
+    // The end device the frame names: DevEUI for a join request, DevAddr for
+    // a data frame (empty for a join accept). Structural, MIC not verified.
+    std::string device_kind, device_id;
+    bool uplink = false;
+};
 inline std::optional<LoRaWanCandidate> inspect_lorawan(const std::vector<uint8_t>& b) {
     if (b.empty() || b.size()>255 || (b[0]&0x1f)!=0) return std::nullopt;
     const int type=b[0]>>5;
@@ -23,7 +29,7 @@ inline std::optional<LoRaWanCandidate> inspect_lorawan(const std::vector<uint8_t
     LoRaWanCandidate r;
     if(type==0) {
         if(b.size()!=23)return std::nullopt;
-        r.type="Join request candidate";
+        r.type="Join request candidate";r.device_kind="DevEUI";r.device_id=hex(9,17,true);r.uplink=true;
         r.detail="JoinEUI/AppEUI="+hex(1,9,true)+" DevEUI="+hex(9,17,true)+
             " DevNonce="+std::to_string(unsigned(b[17])+(unsigned(b[18])<<8))+" MIC="+hex(19,23);
     } else if(type==1) {
@@ -36,6 +42,7 @@ inline std::optional<LoRaWanCandidate> inspect_lorawan(const std::vector<uint8_t
         const size_t options=b[5]&15, body_end=b.size()-4, header_end=8+options;
         if(header_end>body_end || (!uplink&&(b[5]&0x40)))return std::nullopt;
         r.type=std::string(type>=4?"Confirmed ":"Unconfirmed ")+(uplink?"uplink candidate":"downlink candidate");
+        r.device_kind="DevAddr";r.device_id=hex(1,5,true);r.uplink=uplink;
         r.detail="DevAddr="+hex(1,5,true)+" FCnt16="+std::to_string(unsigned(b[6])+(unsigned(b[7])<<8))+
             " (lower 16 bits only) FCtrl="+hex(5,6)+" ADR="+std::to_string((b[5]>>7)&1)+
             " ACK="+std::to_string((b[5]>>5)&1)+" FOpts="+hex(8,header_end);

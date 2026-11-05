@@ -69,6 +69,15 @@ void note(const char* text,bool warning) {
     ImGui::PushStyleColor(ImGuiCol_Text,warning?ImVec4(.98f,.73f,.38f,1):ImVec4(.67f,.76f,.84f,1));
     ImGui::TextWrapped("%s",text);ImGui::PopStyleColor();
 }
+void height_handle(const char* id,float& height) {
+    ImGui::InvisibleButton(id,ImVec2(-1,8));
+    const bool hot=ImGui::IsItemHovered()||ImGui::IsItemActive();
+    if(hot)ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+    if(ImGui::IsItemActive())height=std::clamp(height+ImGui::GetIO().MouseDelta.y,120.f,4000.f);
+    const ImVec2 a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();const float y=(a.y+b.y)/2;
+    ImGui::GetWindowDrawList()->AddLine({a.x,y},{b.x,y},ImGui::GetColorU32(hot?ImGuiCol_SeparatorActive:ImGuiCol_Separator),2);
+    if(ImGui::IsItemHovered())ImGui::SetTooltip("Drag to make the table taller or shorter");
+}
 void draw_workspace(State& s,const Context& c,bool drones,const std::function<void(Page)>& body) {
     const float scale=s.scale;
     ImGui::SetNextWindowPos({0,0});ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
@@ -123,7 +132,7 @@ void draw_capabilities(bool drones,bool cyclo) {
         {"Acquisition","One selected radio/band at a time. B210 profile up to 56 MSps; X310 software profile up to 20 MSps. Requested rates are not actual hardware readbacks."},
         {"Wi-Fi channels","2.4 GHz: 1-13. 5 GHz: 36/40/44/48/149/153/157/161/165. No DFS/6 GHz scan plan. Sweep gaps remain."},
         {"Bluetooth & Zigbee","Receive-only, off until started. BLE LE 1M advertising on 37/38/39 and 802.15.4 O-QPSK channels 11-26, CRC-checked, from existing 2.4 GHz captures (BLE 37 / Zigbee 11 only in Coordinated mode). 2,048 BLE / 256 802.15.4 addresses, 200 recent packets each; rotating BLE private addresses merged into probable devices by a provisional heuristic (layout, carrier offset, power, timing); a capture arriving while decoding is dropped and counted. No Classic Bluetooth, BLE connections, LE 2M / Coded, or decryption."},
-        {"Wi-Fi PHY","1 Mbps DSSS / Barker-11 and legacy 20 MHz OFDM at 6/9/12/18/24/36/48/54 Mbps. No HT/VHT/HE/EHT payload decoding. Encrypted payload remains opaque."},
+        {"Wi-Fi PHY","1 Mbps DSSS / Barker-11 and legacy 20 MHz OFDM at 6/9/12/18/24/36/48/54 Mbps. 802.11n/ac payloads at 20 MHz, one spatial stream, BCC or LDPC (MCS 0-7 / 0-8, plus 802.11ac MCS 9 with LDPC as devices send it; short GI, STBC), and 802.11ax HE SU payloads at 20 MHz, one stream, BCC or LDPC up to 1024-QAM (2x HE-LTF; no DCM, STBC or midambles), with A-MPDU de-aggregation and per-MPDU FCS. Other 802.11n/ac/ax PPDUs: header only (HT-SIG, VHT-SIG-A, HE-SIG-A from the 20 MHz slice, CRC-checked): format, MCS, width, streams, coding, BSS colour, partial AID; packets are matched to networks by BSS colour / partial AID as a hint. No 40 MHz+, multi-stream, HE MU/TB or EHT payloads. Encrypted payload remains opaque."},
         {"Wi-Fi retention","1,000 packet rows; 400 normal / 4,000 extended security burst budget per capture. BSSID is a claimed network/interface; RF clusters are heuristic."},
         {"LoRa","SF7-12 explicit-header payloads; SF5/6 detection only. BW125/250/500, CR4/5-4/8. 200 hypothesis rows; no unique-aircraft/device claim."},
         {"LoRa capture / replay","Default 500 kS/s packet listener, 1-30 seconds (default 6), bounded to 32 million samples. Lock skips wideband energy scan. LoRaWAN structure only: no MIC, decryption or replay verification."},
@@ -139,7 +148,7 @@ void draw_capabilities(bool drones,bool cyclo) {
 }
 
 namespace rfmon::gui {
-void draw_overview(State& ui,const Context& context,const Overview& data,bool drones,const std::function<void()>& draw_map) {
+void draw_overview(State& ui,const Context& context,const Overview& data,bool drones,const std::function<void()>& draw_map,const std::function<void()>& draw_devices) {
     const int columns=ImGui::GetContentRegionAvail().x>850*ui.scale?4:2;
     if(ImGui::BeginTable("Overview summaries",columns,ImGuiTableFlags_SizingStretchSame)) {
         auto card=[&](const char* name,const std::string& value,const char* detail,Page page){
@@ -155,6 +164,7 @@ void draw_overview(State& ui,const Context& context,const Overview& data,bool dr
     }
     if(!context.connected)note("No active receiver observations. Open Monitoring setup and explicitly connect.");
     if(data.queue_loss)note("Coverage degraded by security queue loss; zero incidents is not an all-clear verdict.",true);
+    ImGui::SeparatorText("Devices with confirmed identifiers (Wi-Fi, Bluetooth, Zigbee, LoRaWAN)");draw_devices();
     ImGui::SeparatorText("Current acquisition frequency map");draw_map();
     if(section("Receiver and processing details")) {
         ImGui::Text("Processing lane: %s | Wait: %.3f s | High-water jobs: %zu",data.lane_enabled?"enabled":"disabled",data.lane_wait,data.lane_peak);

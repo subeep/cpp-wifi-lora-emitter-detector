@@ -135,6 +135,8 @@ void replay_iq(const std::filesystem::path& manifest, uint64_t seq, SecurityStat
         }
         if (!mpdu) continue;
         FrameEvent e = make_frame_event(rec, b.start, b.length, phy, rate_mbps, sec_only, *mpdu, true);
+        const auto& rf = phy == "OFDM" ? w.ofdm->rf : w.dsss.result->rf;
+        if (rf) attach_rf_features(e, *rf);
         e.power_db = cls.power_db;
         e.bandwidth_hz = cls.bandwidth_hz;
         e.duration_us = cls.duration_s * 1e6;

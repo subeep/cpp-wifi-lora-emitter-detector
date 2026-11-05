@@ -50,14 +50,20 @@ inline BurstClassification classify_burst(const std::vector<std::complex<float>>
 }
 
 // Energy segmentation can trim the preamble, so OFDM decodes with 4 us of
-// context either side. OFDM does not use the DSSS duration gate.
+// context either side. OFDM does not use the DSSS duration gate. It can also
+// end a burst early (a weak or fading PPDU); the decoded header states the
+// PPDU length, so a short window is decoded again over that length when the
+// capture holds it.
 inline OfdmDecodeResult decode_ofdm_with_context(const std::complex<float>* capture, size_t capture_n,
                                                  const BurstWindow& b, double sample_rate_hz,
                                                  double capture_center_hz, double channel_hz) {
     const size_t pad = size_t(sample_rate_hz * 4e-6);
     const size_t start = b.start > pad ? b.start - pad : 0;
     const size_t end = std::min(capture_n, b.start + b.length + pad);
-    return decode_ofdm_burst(capture + start, end - start, sample_rate_hz, capture_center_hz, channel_hz);
+    auto r = decode_ofdm_burst(capture + start, end - start, sample_rate_hz, capture_center_hz, channel_hz);
+    if (!r.fcs_valid && r.header_valid && r.samples_required > end - start && start + r.samples_required + pad <= capture_n)
+        r = decode_ofdm_burst(capture + start, r.samples_required + pad, sample_rate_hz, capture_center_hz, channel_hz);
+    return r;
 }
 
 struct DsssBurstDecode {

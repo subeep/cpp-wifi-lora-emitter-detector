@@ -1,12 +1,14 @@
 // Exercises production navigation with real mouse/keyboard events, disconnected.
 #include "gui/app_shell.hpp"
 #include "ml_panel.hpp"
+#include "device_inventory_panel.hpp"
 #include "imgui_internal.h"
 #include "backends/imgui_impl_opengl3.h"
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GL/gl.h>
 #include <chrono>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -32,6 +34,24 @@ int main(int argc,char** argv) {
         stft->pixels[f*625+t]=(std::abs(f-(90+t/5))<3|| (t>450&&t<500&&f>30&&f<210))?235:20;
     stft_result.stft=stft;stft_result.center=2440e6;stft_result.capture=42;stft_result.current=true;
     stft_result.completed=std::chrono::steady_clock::now();
+    // Synthetic device rows (no receiver): one or two per technology.
+    std::vector<rfmon::devices::Device> devices;
+    rfmon::devices::PanelState devices_panel;
+    const int64_t now=1793800000;
+    {
+        using rfmon::devices::Technology;
+        auto add=[&](Technology t,const char* id,const char* kind,const char* name,const char* role,const char* vendor,const char* ch,uint64_t n,int64_t age){
+            rfmon::devices::Device d;d.technology=t;d.identifier=id;d.key=std::string(rfmon::devices::technology_name(t))+" "+id;d.identifier_kind=kind;
+            d.name=name;d.role=role;d.vendor=vendor;d.channel=ch;d.observations=n;d.observations_unit="frames";d.first_seen=now-age-600;d.last_seen=now-age;
+            d.details.push_back({"Note","SYNTHETIC fixture row"});devices.push_back(d);};
+        add(Technology::Wifi24,"02:00:00:00:00:01","MAC (global)","SYNTHETIC-AP","AP / network interface","Example Vendor","ch 6",420,3);
+        add(Technology::Wifi24,"02:00:00:00:00:02","MAC (locally administered / randomised)","","Station transmitter (observed)","","ch 6",37,40);
+        add(Technology::Wifi5,"02:00:00:00:00:03","MAC (global)","SYNTHETIC-5G","AP / network interface","Example Vendor","ch 36",900,1);
+        add(Technology::Bluetooth,"C0:FF:EE:00:00:01","random static","SYNTHETIC-TAG","Advertiser","","BLE 37, 38, 39",1200,0);
+        add(Technology::Zigbee,"PAN 0x1A62 / 0x0000","PAN + short address","","Coordinator","","ch 15",55,90);
+        add(Technology::Lora,"26011BDA","DevAddr","","End device (uplink seen)","","865.063 MHz SF7",9,4000);
+        devices_panel.selected=devices[0].key;
+    }
     auto frame=[&](bool log=false){
         ImGui_ImplOpenGL3_NewFrame();ImGui::NewFrame();if(log)ImGui::LogToBuffer(0);
         draw_workspace(state,ctx,true,[&](Page page){
@@ -46,7 +66,8 @@ int main(int argc,char** argv) {
                 if(stft_mode)rfmon::ml::draw_stft_preview(stft_result);
                 else rfmon::ml::draw_panel(inference,false,"wifi_2g4");
             }
-            if(page==Page::Overview){Overview data;data.captures=12;data.groups=4;draw_overview(state,ctx,data,true,[]{note("Synthetic fixture: frequency map unavailable; no RF samples acquired.");});}
+            if(page==Page::Overview){Overview data;data.captures=12;data.groups=4;draw_overview(state,ctx,data,true,[]{note("Synthetic fixture: frequency map unavailable; no RF samples acquired.");},
+                [&]{rfmon::devices::draw_panel(devices_panel,devices,now);});}
         });
         if(log){text=ImGui::GetCurrentContext()->LogBuffer.c_str();ImGui::LogFinish();}
         ImGui::Render();require(ImGui::GetCurrentContext()->ErrorCountCurrentFrame==0,"ImGui state error");require(ImGui::GetDrawData()->TotalVtxCount>0,"Empty draw data");
@@ -78,6 +99,11 @@ int main(int argc,char** argv) {
     ctx.stalled=true;ctx.overflow=true;ctx.error="Synthetic recording failure";frame(true);
     require(text.find("RX stalled")!=std::string::npos&&text.find("Synthetic recording failure")!=std::string::npos,"Material warnings hidden");
     require(commands==1&&ctx.band=="Wi-Fi 2.4 GHz","Passive rendering changed acquisition");
+    state.page=Page::Overview;frame();frame(true);
+    require(text.find("SYNTHETIC-AP")!=std::string::npos&&text.find("26011BDA")!=std::string::npos&&text.find("6 of 6 identifiers shown")!=std::string::npos,"Combined device list missing");
+    std::snprintf(devices_panel.search,sizeof devices_panel.search,"%s","zigbee");frame();frame(true);
+    require(text.find("1 of 6 identifiers shown")!=std::string::npos,"Device search did not filter");
+    devices_panel.search[0]=0;
     for(float scale:{1.f,1.25f,1.5f,2.f}) {
         state.scale=scale;apply_theme(scale,true);io.DisplaySize={1280,800};frame();frame();
         state.legacy=true;frame();state.legacy=false;

@@ -1,0 +1,17 @@
+{
+  "capture_center_hz": 5180000000.0,
+  "channel_hz": 5180000000.0,
+  "expected_bandwidth_mhz": 80,
+  "expected_bss_color": -1,
+  "expected_fcs": false,
+  "expected_format": "802.11ac VHT",
+  "expected_group_id": 63,
+  "expected_ht_length": -1,
+  "expected_mcs": 9,
+  "expected_partial_aid": 0,
+  "expected_streams": 2,
+  "iq_file": "live_vht_header_2.cf32",
+  "note": "Live X310 capture 2026-11-04, preamble + header only (no payload bytes). Header CRC validated.",
+  "sample_rate_hz": 20000000.0,
+  "samples": 780
+}

@@ -166,6 +166,10 @@ void WifiSecurityMonitor::publish() {
     s->beacon_replay_evaluated = cur.beacon_replay_evaluated;
     s->beacon_replay_excluded = cur.beacon_replay_excluded;
     s->beacon_replay_forgotten = cur.beacon_replay_forgotten;
+    s->rf_identity_enabled = cur.rf_identity_enabled; s->rf_identity_config = cur.rf_identity_config;
+    s->rf_identity_frames = cur.rf_identity_frames; s->rf_identity_judged = cur.rf_identity_judged;
+    s->rf_identity_unverifiable = cur.rf_identity_unverifiable; s->rf_identity_inconsistent = cur.rf_identity_inconsistent;
+    s->rf_identity_excluded = cur.rf_identity_excluded; s->rf_identity_tracked = cur.rf_identity_tracked;
     s->flood_enabled = cur.flood_enabled; s->flood_config = cur.flood_config;
     s->flood_evaluations = cur.flood_evaluations; s->flood_excluded_captures = cur.flood_excluded_captures;
     s->captures_ingested = cur.captures_ingested; s->captures_duplicate = cur.captures_duplicate;

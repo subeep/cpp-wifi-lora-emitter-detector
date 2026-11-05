@@ -34,6 +34,7 @@
 #include "wifi_gui.hpp"
 #include "security_gui.hpp"
 #include "shortrange/panel.hpp"
+#include "device_inventory_panel.hpp"
 #ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
 #include "cyclostationary/panel.hpp"
 #endif
@@ -367,7 +368,10 @@ int main() {
 #else
     shortrange::Monitor shortrange_monitor;
 #endif
+    // On by default: decodes the 2.4 GHz captures the Wi-Fi scan already makes.
+    shortrange_monitor.enable(true);
     shortrange::PanelState shortrange_panel;
+    devices::PanelState devices_panel;
     shortrange_panel.export_dir = std::string(PROJECT_ROOT_DIR) + "/data/shortrange";
 #ifdef RFMON_ENABLE_DJI_DRONEID
     drone::Addon drones; // Outlives scanner and its processing lane.
@@ -465,6 +469,7 @@ int main() {
         static std::vector<wifi_master::WifiMasterRow> wifi_identities;
         static std::vector<LoraPacketRow> lora_rows;
         static std::vector<lora_master::LoraMasterRow> lora_identities;
+        static std::vector<devices::Device> inventory;
         if(last_snapshot < 0 || ImGui::GetTime()-last_snapshot >= .2) {
             for(const auto& band : {BAND_SUB_GHZ,BAND_WIFI_2G4,BAND_WIFI_5G}) {
                 rf_rows[band]=scanner.snapshot(band);source_counts[band]=scanner.wifi_source_counts(band);
@@ -475,6 +480,16 @@ int main() {
                 if(r.key_is_mac && (incident.claimed_source==r.device_key || incident.claimed_bssid==r.device_key || incident.target==r.device_key))
                     r.related_incidents.push_back("#"+std::to_string(incident.id)+" "+incident.rule+(incident.open?" (open)":" (closed)"));
             lora_rows=scanner.lora_packets();lora_identities=scanner.lora_master_snapshot();
+            {   // Combined device list: one builder per source.
+                const auto short_range=shortrange_monitor.snapshot();
+                const auto now_steady=std::chrono::steady_clock::now();
+                const int64_t now_unix=int64_t(std::time(nullptr));
+                inventory=devices::from_wifi(wifi_identities);
+                auto add=[&](std::vector<devices::Device> part){inventory.insert(inventory.end(),part.begin(),part.end());};
+                add(devices::from_bluetooth(short_range,now_steady,now_unix));
+                add(devices::from_zigbee(short_range,now_steady,now_unix));
+                add(devices::from_lora(scanner.lora_devices()));
+            }
             last_snapshot=ImGui::GetTime();
         }
         const auto security=scanner.wifi_security_snapshot();
@@ -778,6 +793,14 @@ int main() {
                     for(const auto& row:wifi_rows)if(band==BAND_WIFI_BOTH || (band==BAND_WIFI_2G4 && row.freq_mhz>=2400 && row.freq_mhz<2500)||
                         (band==BAND_WIFI_5G && row.freq_mhz>=5000 && row.freq_mhz<6000))viewed.push_back(row);
                     gui::note("Search retained rows only. Maximum 1,000 rows across the packet tail; not exhaustive RF coverage.");
+                    {
+                        // OFDM formats seen this session (all bands).
+                        std::string formats;
+                        for(const auto& [name,count]:scanner.wifi_phy_format_counts())formats+=(formats.empty()?"":" | ")+name+" "+std::to_string(count);
+                        if(!formats.empty())gui::note(("OFDM PPDUs this session: "+formats+". 802.11n/ac payloads are decoded at 20 MHz with one spatial stream, BCC or LDPC (STBC included), and "
+                            "802.11ax single-user payloads at 20 MHz with one stream (2x HE-LTF); other PPDUs: header (MCS, width, streams, "
+                            "BSS colour / partial AID) only.").c_str());
+                    }
                     draw_wifi_packet_table(viewed,std::max(180.f,ImGui::GetContentRegionAvail().y-110));ImGui::EndTabItem();
                 }
                 if(ImGui::BeginTabItem("Master list & enrolment")){
@@ -874,7 +897,7 @@ int main() {
             gui::draw_overview(ui,context,data,drones_available,[&]{
                 if(active_band==BAND_SUB_GHZ && scanner.lora_lock_freq())gui::note("Frequency lock active: wideband map is retained; wideband scan is skipped.",true);
                 for(const auto& b:overview_bands)for(const auto& range:track_ranges_for_band(b))draw_frequency_track(range,rf_rows[b]);
-            });
+            },[&]{devices::draw_panel(devices_panel,inventory,int64_t(std::time(nullptr)));});
         };
         gui::draw_workspace(ui,context,drones_available,[&](gui::Page page){
             if(ui.setup_open || page==gui::Page::Settings || ui.legacy)draw_setup();

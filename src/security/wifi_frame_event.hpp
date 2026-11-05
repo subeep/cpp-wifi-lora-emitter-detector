@@ -24,6 +24,7 @@
 //    the radio reported the resume time the anchor moves there; otherwise
 //    every later sample in that capture has NO device time.
 #pragma once
+#include "wifi_rf_features.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -138,6 +139,12 @@ struct FrameEvent {
     std::optional<double> fp_cfo_ppm, fp_irr_db, fp_iq_eps, fp_iq_phi_deg, fp_dc_dbc, fp_snr_db, fp_evm_pct,
         fp_sync_corr;
     std::optional<std::string> fp_gate_reason;  // fingerprint attempted but gated out
+    // Whole-frame RF features of the verified frame (wifi_rf_features.hpp),
+    // in ppm of channel_hz. The early CFO covers the same stretch of every
+    // OFDM frame (training field + first 16 symbols); DSSS: the whole frame.
+    std::optional<double> rf_cfo_ppm, rf_cfo_early_ppm, rf_sfo_ppm, rf_snr_db;
+    int rf_symbols = 0;
+    std::string rf_method;  // "OFDM data-aided" / "DSSS data-aided"; empty: none
 };
 
 // Identity of one ingestion. Two events with the same key are the same burst
@@ -157,6 +164,8 @@ bool sample_after_overflow(const CaptureRecord& c, size_t sample);
 FrameEvent make_frame_event(const CaptureRecord& capture, size_t sample_start, size_t sample_length,
                             const std::string& phy, int rate_mbps, bool security_decode_only,
                             const std::vector<uint8_t>& mpdu, bool fcs_valid);
+// Copies a verified frame's whole-frame RF features onto the event (ppm of e.channel_hz).
+void attach_rf_features(FrameEvent& e, const wifi::FrameRfFeatures& f);
 
 // Unique-enough run identifier: hex of host time and a random value.
 std::string new_run_id();

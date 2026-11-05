@@ -260,6 +260,20 @@ DsssDecodeResult decode_dsss_burst(const std::complex<float>* x, size_t n,
         result.fcs_valid = fcs32(mpdu.data(), body) == want;
     }
 
+    if (result.fcs_valid) {
+        // Known polarity of every symbol from SYNC to the last PSDU bit:
+        // raw_bits[b] is the transition from symbol b to symbol b + 1.
+        const size_t first = sync_start_bit, last = body_start + psdu_bits;
+        if (last < syms.size() && last <= raw_bits.size()) {
+            std::vector<std::complex<double>> span(syms.begin() + long(first), syms.begin() + long(last) + 1);
+            std::vector<int8_t> polarity(span.size(), 1);
+            for (size_t k = 1; k < polarity.size(); ++k)
+                polarity[k] = int8_t(polarity[k - 1] * (raw_bits[first + k - 1] ? -1 : 1));
+            auto f = dsss_features(span, polarity, kChipRateHz / 11.0);
+            if (!f.method.empty()) result.rf = f;
+        }
+    }
+
     // parse_beacon() verifies the FCS itself and rejects anything that
     // is not a beacon or probe response.
     auto info = parse_beacon(mpdu.data(), mpdu.size());

@@ -19,6 +19,8 @@ struct LoraPacketRow {
     Crc crc = Crc::NotChecked;
     std::string payload_hex;
     std::optional<std::string> lorawan_candidate, lorawan_detail;
+    std::optional<std::string> lorawan_device_kind, lorawan_device_id;  // DevEUI / DevAddr the frame names
+    bool lorawan_uplink = false;
     double freq_mhz = 0;
     int sf = 0;
     double bandwidth_khz = 0;  // which of LORA_LISTEN_BW_LIST_HZ this was found at -
@@ -68,6 +70,18 @@ struct LoraPacketRow {
     // LORA_EVM_CEILING_PCT/LORA_SYNC_CORR_FLOOR gate uses them for.
     std::optional<double> fp_evm_pct;
     std::optional<double> fp_sync_corr;
+};
+
+// One LoRaWAN end device named by frames whose LoRa CRC was valid (DevAddr
+// of a data frame, DevEUI of a join request). Structural: the MIC is not
+// verified, so this is an address the air carried, not an authenticated one.
+struct LoraDeviceRow {
+    std::string kind, id;  // "DevAddr" / "DevEUI"; hex, most significant byte first
+    uint64_t frames = 0, uplinks = 0, downlinks = 0;  // one per reception
+    int64_t first_seen_ts = 0, last_seen_ts = 0;      // Unix seconds
+    double last_freq_hz = 0, last_bw_hz = 0;
+    int last_sf = 0;
+    std::string last_type;
 };
 
 struct LoraReceptionGroup {

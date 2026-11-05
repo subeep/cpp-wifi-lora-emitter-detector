@@ -317,6 +317,12 @@ std::optional<BeaconInfo> parse_beacon(const uint8_t* mpdu, size_t len) {
         } else if (tag == 45 || tag == 191) {
             if (tag_len == (tag == 45 ? 26 : 12)) add_label(info.standards, tag == 45 ? "HT (802.11n)" : "VHT (802.11ac)");
             else info.ies_complete = false;
+        } else if (tag == 255 && tag_len >= 5 && mpdu[payload] == 36) {
+            // HE Operation: parameters (3 octets), then BSS Colour Information
+            // (B0-B5 colour, B7 disabled). The colour is what 802.11ax PPDUs
+            // carry in HE-SIG-A, so it ties those PPDUs back to this BSS.
+            info.bss_color = mpdu[payload + 4] & 0x3F;
+            info.bss_color_disabled = (mpdu[payload + 4] & 0x80) != 0;
         } else if (tag == 255 && tag_len > 0 && mpdu[payload] == 35) {
             // HE MAC(6), PHY(11), and minimum MCS/NSS(4), plus extension ID.
             if (tag_len >= 22) add_label(info.standards, "HE (802.11ax)");

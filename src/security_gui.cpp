@@ -597,7 +597,7 @@ void draw_wifi_security_panel(const SecuritySnapshot& s, const QueueStats& q, co
     if(!s.storage_error.empty())ImGui::TextWrapped("Recording failed: %s",s.storage_error.c_str());
     if(!s.persist_error.empty())ImGui::TextWrapped("Persistence warning: %s",s.persist_error.c_str());
     if(ImGui::CollapsingHeader("Rule coverage and processing diagnostics")) {
-    ImGui::TextDisabled("Passive flood, beacon replay and connection/handshake anomalies. Sender and impact unverified.");
+    ImGui::TextDisabled("Passive flood, beacon replay, connection/handshake and RF identity anomalies. Impact unverified.");
     ImGui::Text("Flood rule: %s | evaluated windows %llu | excluded captures %llu", s.flood_enabled ? "enabled (baseline required)" : "disabled", (unsigned long long)s.flood_evaluations,(unsigned long long)s.flood_excluded_captures);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Provisional configuration: %s",s.flood_config.c_str());
     ImGui::Text("Beacon replay: %s | evaluated %llu | excluded captures %llu | history evictions %llu",
@@ -605,6 +605,12 @@ void draw_wifi_security_panel(const SecuritySnapshot& s, const QueueStats& q, co
         (unsigned long long)s.beacon_replay_evaluated, (unsigned long long)s.beacon_replay_excluded,
         (unsigned long long)s.beacon_replay_forgotten);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Provisional configuration: %s", s.beacon_replay_config.c_str());
+    ImGui::Text("RF identity: %s | frames %llu | disconnects judged %llu (inconsistent %llu, unverifiable %llu) | excluded %llu | senders %zu",
+        s.rf_identity_enabled ? "enabled (carrier offset)" : "disabled",
+        (unsigned long long)s.rf_identity_frames, (unsigned long long)s.rf_identity_judged,
+        (unsigned long long)s.rf_identity_inconsistent, (unsigned long long)s.rf_identity_unverifiable,
+        (unsigned long long)s.rf_identity_excluded, s.rf_identity_tracked);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Each frame's carrier offset against the claimed sender's own frames from the last seconds. A match means this sender or a client that pre-corrects to it.\nConfiguration: %s", s.rf_identity_config.c_str());
     if (s.transactions.is_object()) {
         ImGui::Text("Connection/EAPOL anomalies: %s | evaluated %llu | excluded captures %llu",
             s.transactions.value("enabled", false) ? "experimental" : "disabled",

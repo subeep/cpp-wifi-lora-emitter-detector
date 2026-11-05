@@ -82,7 +82,7 @@ void draw_wifi_packet_table(const std::vector<WifiPacketRow>& packets, float hei
     std::vector<size_t> visible;
     for(size_t i=displayed.size();i-- >0;) {
         const auto& p=displayed[i];
-        const std::string searchable=p.time+" "+p.modulation+" "+p.frame_type+" "+p.master_key+" "+p.decode_status+" "+
+        const std::string searchable=p.time+" "+p.modulation+" "+p.frame_type+" "+p.master_key+" "+p.decode_status+" "+p.network_hint+" "+
             (p.identity?p.identity->ssid+" "+p.identity->security:std::string())+" "+std::to_string(p.channel);
         if(view.filter.PassFilter(searchable.c_str()) && (!view.valid_only||p.fcs_valid))visible.push_back(i);
     }
@@ -102,7 +102,12 @@ void draw_wifi_packet_table(const std::vector<WifiPacketRow>& packets, float hei
         ImGui::TableNextColumn();
         ImGui::TextUnformatted(p.master_key.empty() ? "--" : p.master_key.c_str());
         ImGui::TableNextColumn();
-        ImGui::TextUnformatted(p.identity ? (p.identity->ssid.empty() ? "Hidden / absent" : wifi::display_text(p.identity->ssid).c_str()) : "Not decoded");
+        if (p.identity) ImGui::TextUnformatted(p.identity->ssid.empty() ? "Hidden / absent" : wifi::display_text(p.identity->ssid).c_str());
+        else if (!p.network_hint.empty()) {
+            // From the 802.11ax BSS colour / 802.11ac partial AID: a hint, not a decoded identity.
+            ImGui::TextColored(dim, "~ %s", p.network_hint.c_str());
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Network suggested by the %s header, matched to beacons decoded this session. Not a decoded identity.", p.phy_format.c_str());
+        } else ImGui::TextUnformatted("Not decoded");
         ImGui::TableNextColumn();
         if (p.identity && p.identity->channel) ImGui::Text("%d", p.identity->channel);
         else ImGui::TextDisabled("--");
@@ -168,6 +173,8 @@ void draw_wifi_packet_table(const std::vector<WifiPacketRow>& packets, float hei
         ImGui::SeparatorText("Selected packet snapshot");
         ImGui::TextWrapped("%s | Channel %d | %.9g MHz | %s | FCS: %s",p.time.c_str(),p.channel,p.freq_mhz,p.modulation.c_str(),p.fcs_valid?"passed":"not passed / unavailable");
         ImGui::TextWrapped("Decode: %s | Frame: %s | Identity key: %s",p.decode_status.c_str(),p.frame_type.c_str(),p.master_key.c_str());
+        if(!p.phy_format.empty())ImGui::TextWrapped("Header format: %s | Network hint: %s",p.phy_format.c_str(),
+            p.network_hint.empty()?"no matching beacon decoded this session":p.network_hint.c_str());
         if(p.fp_gate_reason)ImGui::TextWrapped("Fingerprint rejected: %s",p.fp_gate_reason->c_str());
         if(ImGui::Button("Close packet details"))view.selected.reset();
         // Do not access p after resetting its owning optional.

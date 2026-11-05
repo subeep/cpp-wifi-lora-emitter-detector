@@ -98,4 +98,16 @@ std::string new_run_id() {
     return buf;
 }
 
+void attach_rf_features(FrameEvent& e, const wifi::FrameRfFeatures& f) {
+    if (f.method.empty() || !(e.channel_hz > 0)) return;
+    const double ppm = 1e6 / e.channel_hz;
+    e.rf_method = f.method;
+    e.rf_symbols = f.symbols;
+    e.rf_cfo_ppm = f.cfo_hz * ppm;
+    // DSSS has no separate early estimate: its whole-frame CFO is the comparable value.
+    e.rf_cfo_early_ppm = std::isfinite(f.cfo_early_hz) ? f.cfo_early_hz * ppm : f.cfo_hz * ppm;
+    if (std::isfinite(f.sfo_ppm)) e.rf_sfo_ppm = f.sfo_ppm;
+    if (std::isfinite(f.snr_db)) e.rf_snr_db = f.snr_db;
+}
+
 }  // namespace rfmon::wifi_security

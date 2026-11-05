@@ -298,6 +298,9 @@ int main() {
         check(r.fcs_valid && r.psdu_complete && r.rate_supported, "deauth_fcs_valid", r.status);
         check(r.mpdu == mpdu, "deauth_mpdu_bytes_exact", std::to_string(r.mpdu.size()) + " octets");
         check(r.mpdu_len == r.mpdu.size(), "deauth_mpdu_len_consistent", std::to_string(r.mpdu_len));
+        // Whole-frame RF features: the 10 kHz offset, from SYNC to the last PSDU bit.
+        check(r.rf && r.rf->method == "DSSS data-aided" && std::abs(r.rf->cfo_hz - 10e3) < 20 && r.rf->symbols > 400,
+              "deauth_whole_frame_cfo", r.rf ? std::to_string(r.rf->cfo_hz) + " Hz over " + std::to_string(r.rf->symbols) + " symbols" : "none");
         check(!r.beacon, "deauth_not_a_beacon", r.beacon ? "beacon fabricated" : "no beacon");
         check(r.status == "FCS-valid non-beacon frame", "deauth_status", r.status);
         auto f = rfmon::wifi_security::parse_mac_frame(r.mpdu.data(), r.mpdu.size());

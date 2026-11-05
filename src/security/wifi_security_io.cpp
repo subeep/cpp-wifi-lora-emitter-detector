@@ -96,6 +96,11 @@ json to_json(const FrameEvent& e) {
     put(o, "fp_iq_phi_deg", e.fp_iq_phi_deg); put(o, "fp_dc_dbc", e.fp_dc_dbc); put(o, "fp_snr_db", e.fp_snr_db);
     put(o, "fp_evm_pct", e.fp_evm_pct); put(o, "fp_sync_corr", e.fp_sync_corr);
     put(o, "fp_gate_reason", e.fp_gate_reason);
+    if (!e.rf_method.empty()) {
+        o["rf_method"] = e.rf_method; o["rf_symbols"] = e.rf_symbols;
+        put(o, "rf_cfo_ppm", e.rf_cfo_ppm); put(o, "rf_cfo_early_ppm", e.rf_cfo_early_ppm);
+        put(o, "rf_sfo_ppm", e.rf_sfo_ppm); put(o, "rf_snr_db", e.rf_snr_db);
+    }
     return o;
 }
 
@@ -161,6 +166,9 @@ FrameEvent frame_from_json(const json& j) {
     get(j, "fp_iq_phi_deg", e.fp_iq_phi_deg); get(j, "fp_dc_dbc", e.fp_dc_dbc); get(j, "fp_snr_db", e.fp_snr_db);
     get(j, "fp_evm_pct", e.fp_evm_pct); get(j, "fp_sync_corr", e.fp_sync_corr);
     get(j, "fp_gate_reason", e.fp_gate_reason);
+    get(j, "rf_method", e.rf_method); get(j, "rf_symbols", e.rf_symbols);
+    get(j, "rf_cfo_ppm", e.rf_cfo_ppm); get(j, "rf_cfo_early_ppm", e.rf_cfo_early_ppm);
+    get(j, "rf_sfo_ppm", e.rf_sfo_ppm); get(j, "rf_snr_db", e.rf_snr_db);
     return e;
 }
 
