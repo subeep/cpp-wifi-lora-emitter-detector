@@ -147,7 +147,7 @@ void State::ingest(const Batch& b) {
     auto it=last_seq_.find(c.run_id);
     if(it!=last_seq_.end()&&c.capture_seq<=it->second) {
         if(c.capture_seq==it->second)++snapshot_.duplicates;
-        else {++snapshot_.out_of_order;snapshot_.health="Out-of-order capture excluded";session_ends_.clear();}
+        else {++snapshot_.out_of_order;snapshot_.health="Out-of-order capture excluded";session_ends_.clear();session_starts_.clear();}
         return;
     }
     if(it==last_seq_.end()&&last_seq_.size()>=32)last_seq_.erase(last_seq_.begin());
@@ -159,15 +159,26 @@ void State::ingest(const Batch& b) {
     if(c.timing&&c.timing->device_time_valid) {
         if(!session_ends_.count(session)&&session_ends_.size()>=32)session_ends_.erase(session_ends_.begin());
         auto it=session_ends_.find(session);
-        if(it!=session_ends_.end()) {
+        // Channels derived from one wideband capture share its start time:
+        // a sibling, not a regression, and no unsampled time between them.
+        const auto start=session_starts_.find(session);
+        const bool sibling=start!=session_starts_.end()&&start->second.ns==c.timing->device_time_ns&&
+            std::find(start->second.centers.begin(),start->second.centers.end(),c.center_hz)==start->second.centers.end()&&
+            start->second.centers.size()<64;
+        if(it!=session_ends_.end()&&!sibling) {
             if(!it->second)++snapshot_.unknown_gaps;
             else if(c.timing->device_time_ns<*it->second){ordered=false;++snapshot_.time_regressions;}
             else snapshot_.dead_s+=double((long double)c.timing->device_time_ns-*it->second)/1e9;
         }
         const long double end=(long double)c.timing->device_time_ns+double(c.received)/c.rate_hz*1e9L;
-        if(c.overflow||c.timing->timed_out||c.timing->exception||end>INT64_MAX||end<INT64_MIN)session_ends_[session]=std::nullopt;
-        else session_ends_[session]=int64_t(end);
-    } else session_ends_.erase(session);
+        if(sibling&&it!=session_ends_.end()&&!it->second){}  // a sibling cannot repair its capture's gap
+        else if(c.overflow||c.timing->timed_out||c.timing->exception||end>INT64_MAX||end<INT64_MIN)session_ends_[session]=std::nullopt;
+        else if(!sibling||it==session_ends_.end()||(long double)*it->second<end)session_ends_[session]=int64_t(end);
+        if(!session_starts_.count(session)&&session_starts_.size()>=32)session_starts_.erase(session_starts_.begin());
+        auto& st=session_starts_[session];
+        if(st.ns!=c.timing->device_time_ns||!sibling)st={c.timing->device_time_ns,{}};
+        st.centers.push_back(c.center_hz);
+    } else {session_ends_.erase(session);session_starts_.erase(session);}
     const bool usable=c.usable()&&ordered;
     if(usable)snapshot_.usable_s+=double(c.analysed)/c.rate_hz;else ++snapshot_.excluded;
     const auto profile=json{{"center_hz",c.center_hz},{"rate_hz",c.rate_hz},{"gain_db",c.gain_db?json(*c.gain_db):json(nullptr)},
@@ -188,8 +199,8 @@ void State::ingest(const Batch& b) {
         snapshot_.recent.push_back(e);if(snapshot_.recent.size()>256)snapshot_.recent.pop_front();
     }
 }
-void State::note_loss(uint64_t count){session_ends_.clear();++snapshot_.unknown_gaps;snapshot_.input_loss+=count;snapshot_.health="Capture queue loss; observation gap";}
-void State::note_rejected(){session_ends_.clear();++snapshot_.unknown_gaps;++snapshot_.rejected_inputs;snapshot_.health="Rejected input; observation gap";}
+void State::note_loss(uint64_t count){session_ends_.clear();session_starts_.clear();++snapshot_.unknown_gaps;snapshot_.input_loss+=count;snapshot_.health="Capture queue loss; observation gap";}
+void State::note_rejected(){session_ends_.clear();session_starts_.clear();++snapshot_.unknown_gaps;++snapshot_.rejected_inputs;snapshot_.health="Rejected input; observation gap";}
 json snapshot_json(const Snapshot& s) {
     json recent=json::array();for(const auto& e:s.recent)recent.push_back({{"run_id",e.run_id},{"capture_seq",e.capture_seq},{"radio_session",e.radio_session},{"sample_start",e.sample_start},{"sf",e.sf},
         {"bandwidth_hz",e.bandwidth_hz},{"crc",lora_crc_label(e.crc)},{"payload",e.payload},

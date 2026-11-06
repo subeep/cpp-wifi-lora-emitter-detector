@@ -203,6 +203,60 @@ int main() {
         }
     }
 
+    // 7. record_reading returns the matched/new id; enrolment labels persist
+    // across reload; invalid policies and unknown ids are rejected.
+    {
+        std::string dir = fresh_dir("enrolment");
+        int a = 0, b = 0;
+        {
+            LoraMasterList list(dir);
+            a = list.record_reading(866.9e6, 7, 125e3, make_fp(-34.0, -40.0, 0.02, 2.0), 1000);
+            const int again = list.record_reading(866.9e6, 7, 125e3, make_fp(-34.5, -40.5, 0.02, 2.1), 1100);
+            b = list.record_reading(865.0625e6, 9, 125e3, make_fp(-20.0, -60.0, 0.10, 12.0), 1200);
+            check(a == 1 && again == a && b == 2, "record_reading_returns_id",
+                  std::to_string(a) + "/" + std::to_string(again) + "/" + std::to_string(b));
+            check(list.set_enrolment(a, "approved", "Heltec bench", "SX1262 board", 2000), "set_enrolment_ok", "");
+            check(!list.set_enrolment(a, "trusted", "", "", 2000), "set_enrolment_rejects_bad_policy", "");
+            check(!list.set_enrolment(99, "approved", "", "", 2000), "set_enrolment_rejects_unknown_id", "");
+            check(list.set_enrolment(b, "disallowed", "", "", 2001), "set_enrolment_disallowed", "");
+        }
+        LoraMasterList reloaded(dir);
+        auto e = reloaded.enrolment(a);
+        check(e && e->policy == "approved" && e->alias == "Heltec bench" && e->note == "SX1262 board",
+              "enrolment_survives_reload", e ? e->policy + "/" + e->alias : "missing");
+        auto rows = reloaded.snapshot();
+        bool row_label = false;
+        for (const auto& r : rows) row_label = row_label || (r.device_id == b && r.enrolment.policy == "disallowed");
+        check(row_label, "snapshot_carries_enrolment", "");
+        check(reloaded.storage_error().empty(), "no_storage_error", reloaded.storage_error());
+    }
+
+    // 8. Merge moves readings (time ordered), removes the source file and
+    // device, keeps the label, and survives reload.
+    {
+        std::string dir = fresh_dir("merge");
+        int a = 0, b = 0;
+        {
+            LoraMasterList list(dir);
+            a = list.record_reading(866.9e6, 7, 125e3, make_fp(-34.0, -40.0, 0.02, 2.0), 1000);
+            b = list.record_reading(866.9e6, 7, 125e3, make_fp(-20.0, -60.0, 0.10, 12.0), 900);
+            list.record_reading(866.9e6, 8, 125e3, make_fp(-20.0, -60.0, 0.10, 12.0), 3000);
+            list.set_enrolment(b, "unreviewed", "Split half", "", 3100);
+            check(!list.merge(a, a, 3200) && !list.merge(a, 77, 3200), "merge_rejects_self_and_unknown", "");
+            check(list.merge(a, b, 3200), "merge_ok", "");
+            auto h = list.history(a);
+            check(h.size() == 3 && h.front().ts == 900 && h.back().ts == 3000, "merge_history_time_ordered",
+                  std::to_string(h.size()) + " readings");
+            check(list.history(b).empty() && list.snapshot().size() == 1, "merge_removes_source", "");
+            check(!std::filesystem::exists(dir + "/" + std::to_string(b) + ".ndjson"), "merge_deletes_source_file", "");
+        }
+        LoraMasterList reloaded(dir);
+        auto rows = reloaded.snapshot();
+        check(rows.size() == 1 && rows[0].reading_count == 3 && rows[0].first_seen_ts == 900 &&
+                  rows[0].last_sf == 8 && rows[0].enrolment.alias == "Split half",
+              "merge_survives_reload", rows.empty() ? "no rows" : std::to_string(rows[0].reading_count));
+    }
+
     if (failures > 0) {
         std::printf("\n%d check(s) FAILED.\n", failures);
         return 1;

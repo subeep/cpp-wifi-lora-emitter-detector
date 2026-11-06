@@ -224,104 +224,6 @@ void draw_device_table(const std::vector<DeviceRow>& devices, float height,
     ImGui::EndTable();
 }
 
-// Permanent, cross-run LoRa identity list (see lora_master.hpp) -
-// deliberately a separate table from draw_device_table() above: that
-// one is a generic multi-band energy-detection view (including
-// narrowband/"Unknown" segments with no fingerprint at all), while
-// this one only ever shows devices with real accepted fingerprint
-// history, kept forever across restarts rather than for one session.
-void draw_lora_master_table(const std::vector<lora_master::LoraMasterRow>& rows, float height) {
-    if (rows.empty()) {
-        ImGui::TextDisabled("No master LoRa emitters recorded yet.");
-        return;
-    }
-
-    static std::optional<lora_master::LoraMasterRow> selected;
-    ImGui::TextDisabled("Heuristic RF clusters. Select an ID for full latest-reading detail; header menu shows all columns.");
-    static ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Resizable |
-                                   ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_ScrollY |
-                                   ImGuiTableFlags_ScrollX;
-    ImVec2 outer_size(0.0f, selected?std::min(height,250.f):height);
-    if (!ImGui::BeginTable("lora_master", 11, flags, outer_size)) return;
-
-    ImGui::TableSetupScrollFreeze(0, 1);
-    ImGui::TableSetupColumn("Device ID", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-    ImGui::TableSetupColumn("First seen", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 190.0f);
-    ImGui::TableSetupColumn("Last seen", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-    ImGui::TableSetupColumn("Readings", ImGuiTableColumnFlags_WidthFixed, 90.0f);
-    ImGui::TableSetupColumn("Freq (MHz)", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-    ImGui::TableSetupColumn("SF", ImGuiTableColumnFlags_WidthFixed, 40.0f);
-    ImGui::TableSetupColumn("BW (kHz)", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-    ImGui::TableSetupColumn("IRR (dB)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0f);
-    ImGui::TableSetupColumn("IQ eps", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0f);
-    ImGui::TableSetupColumn("IQ phi (deg)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 100.0f);
-    ImGui::TableSetupColumn("DC (dBc)", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_DefaultHide, 80.0f);
-    ImGui::TableHeadersRow();
-
-    // Already sorted by last_seen_ts (most recent first) by
-    // LoraMasterList::snapshot() itself - not re-sortable by column
-    // here, unlike draw_device_table(), since "last seen" ordering is
-    // the whole point of this particular table.
-    std::time_t now = std::time(nullptr);
-    for (const auto& row : rows) {
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        if(ImGui::Selectable(row.device_id_str.c_str(),selected && selected->device_id==row.device_id))selected=row;
-
-        ImGui::TableNextColumn();
-        {
-            std::time_t fs = std::time_t(row.first_seen_ts);
-            std::tm tm_buf{};
-            localtime_r(&fs, &tm_buf);
-            char buf[32];
-            std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm_buf);
-            double age_days = double(now - row.first_seen_ts) / 86400.0;
-            ImGui::Text("%s (%.1fd ago)", buf, age_days);
-        }
-
-        ImGui::TableNextColumn();
-        {
-            double ago_s = double(now - row.last_seen_ts);
-            if (ago_s < 120.0) ImGui::Text("%.0fs ago", ago_s);
-            else if (ago_s < 7200.0) ImGui::Text("%.1fm ago", ago_s / 60.0);
-            else if (ago_s < 172800.0) ImGui::Text("%.1fh ago", ago_s / 3600.0);
-            else ImGui::Text("%.1fd ago", ago_s / 86400.0);
-        }
-
-        ImGui::TableNextColumn();
-        ImGui::Text("%d / %d", row.reading_count, lora_master::MAX_READINGS_PER_DEVICE);
-        ImGui::TableNextColumn();
-        ImGui::Text("%.4f", row.last_freq_hz / 1e6);
-        ImGui::TableNextColumn();
-        ImGui::Text("%d", row.last_sf);
-        ImGui::TableNextColumn();
-        ImGui::Text("%.1f", row.last_bw_hz / 1e3);
-        ImGui::TableNextColumn();
-        ImGui::Text("%.2f", row.latest.irr_db);
-        ImGui::TableNextColumn();
-        ImGui::Text("%.4f", row.latest.iq_eps);
-        ImGui::TableNextColumn();
-        ImGui::Text("%.2f", row.latest.iq_phi_deg);
-        ImGui::TableNextColumn();
-        ImGui::Text("%.2f", row.latest.dc_dbc);
-    }
-    ImGui::EndTable();
-    if(selected) {
-        const auto& row=*selected;const auto& f=row.latest;
-        ImGui::SeparatorText("Selected LoRa cluster snapshot");
-        ImGui::TextWrapped("%s | First/last Unix seconds: %lld / %lld | Retained readings: %d",row.device_id_str.c_str(),(long long)row.first_seen_ts,(long long)row.last_seen_ts,row.reading_count);
-        ImGui::TextWrapped("Provisional cluster; matching is based on IRR/DC/IQ imbalance, not physical-device authentication.");
-        if(ImGui::Button("Close cluster details"))selected.reset();
-        else if(ImGui::CollapsingHeader("Complete latest reading",ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::Text("Reading Unix seconds: %lld | Frequency %.17g Hz | SF %d | BW %.17g Hz",(long long)f.ts,f.freq_hz,f.sf,f.bw_hz);
-            ImGui::Text("CFO %.17g ppm | IRR %.17g dB | IQ epsilon %.17g | IQ phase %.17g deg",f.cfo_ppm,f.irr_db,f.iq_eps,f.iq_phi_deg);
-            ImGui::Text("DC %.17g dBc | DC angle %.17g deg | SNR %.17g dB",f.dc_dbc,f.dc_ang_deg,f.snr_db);
-            ImGui::Text("EVM %.17g percent | Sync correlation %.17g",f.evm_pct,f.sync_corr);
-        }
-    }
-
-}
-
 }  // namespace
 
 int main() {
@@ -469,6 +371,8 @@ int main() {
         static std::vector<wifi_master::WifiMasterRow> wifi_identities;
         static std::vector<LoraPacketRow> lora_rows;
         static std::vector<lora_master::LoraMasterRow> lora_identities;
+        static std::vector<LoraDeviceRow> lora_devices;
+        static lora_rules::Snapshot lora_incidents;
         static std::vector<devices::Device> inventory;
         if(last_snapshot < 0 || ImGui::GetTime()-last_snapshot >= .2) {
             for(const auto& band : {BAND_SUB_GHZ,BAND_WIFI_2G4,BAND_WIFI_5G}) {
@@ -480,6 +384,7 @@ int main() {
                 if(r.key_is_mac && (incident.claimed_source==r.device_key || incident.claimed_bssid==r.device_key || incident.target==r.device_key))
                     r.related_incidents.push_back("#"+std::to_string(incident.id)+" "+incident.rule+(incident.open?" (open)":" (closed)"));
             lora_rows=scanner.lora_packets();lora_identities=scanner.lora_master_snapshot();
+            lora_devices=scanner.lora_devices();lora_incidents=scanner.lora_incidents();
             {   // Combined device list: one builder per source.
                 const auto short_range=shortrange_monitor.snapshot();
                 const auto now_steady=std::chrono::steady_clock::now();
@@ -488,7 +393,7 @@ int main() {
                 auto add=[&](std::vector<devices::Device> part){inventory.insert(inventory.end(),part.begin(),part.end());};
                 add(devices::from_bluetooth(short_range,now_steady,now_unix));
                 add(devices::from_zigbee(short_range,now_steady,now_unix));
-                add(devices::from_lora(scanner.lora_devices()));
+                add(devices::from_lora(lora_devices));
             }
             last_snapshot=ImGui::GetTime();
         }
@@ -650,11 +555,9 @@ int main() {
         }
 
         // --- LoRa frequency lock (only meaningful in Sub-GHz mode) ---
-        // The 4 LORA_LISTEN_CHANNELS_HZ channels are cycled one per
-        // cycle by default, so a real device on some other frequency
-        // (see newrocktest/TARANGMINI_LORA_FINDINGS.md) is only listened
-        // to ~1 cycle in 4. Locking pins every cycle to one exact
-        // frequency instead, for watching one known device continuously.
+        // Overrides the LoRa tab's channel plan (Receiver view): every
+        // cycle listens on one exact frequency, for watching one known
+        // device continuously (see newrocktest/TARANGMINI_LORA_FINDINGS.md).
         static bool lora_lock_enabled = false;
         static float lora_lock_mhz = 866.9f;
         if (active_band == BAND_SUB_GHZ) {
@@ -672,7 +575,7 @@ int main() {
             }
             if (lora_lock_enabled) {
                 ImGui::SameLine();
-                ImGui::TextDisabled("(listening only here instead of cycling all 4 channels)");
+                ImGui::TextDisabled("(listening only here instead of the LoRa channel plan)");
             }
 
             static float lora_capture_seconds = float(LORA_LISTEN_DURATION_S);
@@ -735,6 +638,14 @@ int main() {
                 if(locked && std::isfinite(*locked) && (*locked<863e6 || *locked>868e6)) {
                     const double mhz=*locked/1e6;
                     draw_frequency_track({"Additional view around locked receive frequency",mhz-.5,mhz+.5},rf_rows[band]);
+                }
+                // The LoRa wideband capture's own usable span, when it reaches beyond 863-868 MHz.
+                if(!locked&&scanner.lora_wideband_listen()) for(const auto& c:scanner.lora_listen_plan()) if(c.wideband) {
+                    const double h=lora_plan::usable_half_span(c.rate_hz),lo=(c.center_hz-h)/1e6,hi=(c.center_hz+h)/1e6;
+                    if(lo<863.0||hi>868.0){
+                        char label[96];std::snprintf(label,sizeof label,"LoRa wideband capture: %.2f-%.2f MHz",lo,hi);
+                        draw_frequency_track({label,lo,hi},rf_rows[band]);
+                    }
                 }
             }
             gui::note("Orange: LoRa-like | Named green row: decoded Wi-Fi AP | Narrowband: unverified BLE/Zigbee hint | Grey: unknown");
@@ -818,20 +729,47 @@ int main() {
             }ImGui::PopID();
         };
         auto draw_lora = [&] {
+            // State warnings stay visible; standing caveats live in one collapsible block.
             if(active_band==BAND_COORDINATED)gui::note("Coordinated mode: LoRa is decoded from each sub-GHz visit on derived channels; packets longer than a visit (slow SF11-12) can be cut.",true);
             else if(active_band!=BAND_SUB_GHZ){gui::note("Viewing retained LoRa data; receiver is monitoring another band.",true);
                 if(ImGui::Button("Monitor LoRa band"))monitor_band(BAND_SUB_GHZ);}
             if(scanner.lora_laboratory_mode())gui::note("Nonstandard laboratory mode is active.",true);
-            gui::note("LoRaWAN is structural parsing only. Attack rules, MIC verification and authenticated identity are unavailable.");
+            size_t open_incidents=0;for(const auto& i:lora_incidents.incidents)open_incidents+=i.open;
+            if(open_incidents)gui::note(("LoRa security: "+std::to_string(open_incidents)+" open incident(s) - see the Security tab.").c_str(),true);
+            draw_lora_interpretation_limits();
+            LoraTabActions actions;
+            actions.set_channels=[&](std::vector<double> c){scanner.set_lora_channels(std::move(c));};
+            actions.set_wideband=[&](bool on){scanner.set_lora_wideband_listen(on);};
+            actions.set_wideband_rate=[&](std::optional<double> r){scanner.set_lora_wideband_rate(r);};
+            actions.set_enrolment=[&](int id,const std::string& p,const std::string& a,const std::string& n){return scanner.set_lora_enrolment(id,p,a,n);};
+            actions.merge=[&](int into,int from){const bool ok=scanner.merge_lora_emitters(into,from);if(ok)lora_identities=scanner.lora_master_snapshot();return ok;};
+            actions.history=[&](int id){return scanner.lora_emitter_history(id);};
+            actions.acknowledge=[&](uint64_t id){const bool ok=scanner.acknowledge_lora_incident(id);lora_incidents=scanner.lora_incidents();return ok;};
+            actions.clear_closed=[&]{scanner.clear_closed_lora_incidents();lora_incidents=scanner.lora_incidents();};
             if(ImGui::BeginTabBar("LoRa views")) {
-                if(ImGui::BeginTabItem("RF observations")){draw_rf(BAND_SUB_GHZ);ImGui::EndTabItem();}
-                if(ImGui::BeginTabItem("PHY packets")){
-                    gui::note("SF/BW/polarity hypothesis rows; not unique packets. Recorded interoperability evidence covers tested setups only.");
+                if(ImGui::BeginTabItem("Packets")){
                     draw_lora_packet_table(lora_rows,std::max(180.f,ImGui::GetContentRegionAvail().y-150));ImGui::EndTabItem();}
-                if(ImGui::BeginTabItem("Master emitters")){
-                    gui::note("Heuristic RF clusters matched on IRR/DC/IQ imbalance, not CFO. History retains about 1,000 readings, with compaction slack to 1,100.");
-                    draw_lora_master_table(lora_identities,std::max(180.f,ImGui::GetContentRegionAvail().y-40));ImGui::EndTabItem();}
-                if(ImGui::BeginTabItem("Capture evidence")){draw_lora_security_panel(*scanner.lora_security_snapshot());ImGui::EndTabItem();}
+                if(ImGui::BeginTabItem("LoRaWAN devices")){
+                    draw_lora_device_table(lora_devices,lora_incidents,lora_identities,std::max(180.f,ImGui::GetContentRegionAvail().y-40));ImGui::EndTabItem();}
+                if(ImGui::BeginTabItem("RF emitters")){
+                    draw_lora_master_table(lora_identities,lora_devices,actions,std::max(180.f,ImGui::GetContentRegionAvail().y-40),
+                                           scanner.lora_master_storage_error());ImGui::EndTabItem();}
+                const std::string security_tab=open_incidents?"Security ("+std::to_string(open_incidents)+")###lora_security":"Security###lora_security";
+                if(ImGui::BeginTabItem(security_tab.c_str())){
+                    draw_lora_incidents(lora_incidents,actions,std::max(160.f,ImGui::GetContentRegionAvail().y*0.45f));
+                    draw_lora_security_panel(*scanner.lora_security_snapshot());ImGui::EndTabItem();}
+                if(ImGui::BeginTabItem("Receiver")){
+                    LoraReceiverView view;
+                    view.channels=scanner.lora_channels();view.wideband=scanner.lora_wideband_listen();
+                    view.wideband_rate_hz=scanner.lora_wideband_rate();view.replaces_energy_scan=scanner.lora_capture_replaces_energy_scan();
+                    view.locked_hz=scanner.lora_lock_freq();view.capture_seconds=scanner.lora_capture_seconds();
+                    view.plan=scanner.lora_listen_plan();view.stats=scanner.lora_listen_stats();view.now_steady_s=Scanner::now_steady_s();
+                    std::vector<lora_plan::Observation> energy;
+                    for(const auto& r:rf_rows[BAND_SUB_GHZ])
+                        energy.push_back({r.freq_mhz*1e6,r.bandwidth_khz*1e3,r.power_db,r.hit_count,r.protocol_guess.rfind("LoRa",0)==0});
+                    view.suggestions=lora_plan::suggest(energy,view.channels);
+                    draw_lora_receiver_panel(view,actions);ImGui::EndTabItem();}
+                if(ImGui::BeginTabItem("RF observations")){draw_rf(BAND_SUB_GHZ);ImGui::EndTabItem();}
                 if(ImGui::BeginTabItem("Coverage & limits")){gui::draw_capabilities(drones_available,cyclo_available);ImGui::EndTabItem();}
                 ImGui::EndTabBar();
             }

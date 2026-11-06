@@ -8,6 +8,8 @@
 #include <fstream>
 #include <limits>
 
+#include <nlohmann/json.hpp>
+
 namespace rfmon::lora_master {
 
 namespace {
@@ -71,7 +73,121 @@ double median_of(std::vector<double> v) {
 
 }  // namespace
 
-LoraMasterList::LoraMasterList(std::string dir) : dir_(std::move(dir)) { load_all_devices(); }
+LoraMasterList::LoraMasterList(std::string dir) : dir_(std::move(dir)) {
+    load_all_devices();
+    load_enrolment();
+}
+
+// enrolment.json: {"version":1,"devices":{"<id>":{"policy":..,"alias":..,"note":..,"updated_ts":..}}}
+// Labels for ids with no device file are dropped on load.
+void LoraMasterList::load_enrolment() {
+    std::ifstream in(dir_ + "/enrolment.json");
+    if (!in.is_open()) return;
+    try {
+        nlohmann::json j;
+        in >> j;
+        for (const auto& [key, v] : j.at("devices").items()) {
+            const int id = std::stoi(key);
+            for (auto& dev : devices_) {
+                if (dev.id != id) continue;
+                Enrolment e;
+                e.policy = v.value("policy", std::string("unreviewed"));
+                if (!valid_policy(e.policy)) e.policy = "unreviewed";
+                e.alias = v.value("alias", std::string());
+                e.note = v.value("note", std::string());
+                e.updated_ts = v.value("updated_ts", int64_t(0));
+                dev.enrolment = e;
+            }
+        }
+    } catch (const std::exception& e) {
+        storage_error_ = std::string("LoRa enrolment file unreadable (labels not loaded): ") + e.what();
+    }
+}
+
+bool LoraMasterList::save_enrolment() {
+    nlohmann::json devices = nlohmann::json::object();
+    for (const auto& dev : devices_) {
+        const auto& e = dev.enrolment;
+        if (e.policy == "unreviewed" && e.alias.empty() && e.note.empty()) continue;
+        devices[std::to_string(dev.id)] = {{"policy", e.policy}, {"alias", e.alias}, {"note", e.note}, {"updated_ts", e.updated_ts}};
+    }
+    const std::string path = dir_ + "/enrolment.json", tmp = path + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::trunc);
+        if (!out.is_open()) { storage_error_ = "Cannot write " + tmp; return false; }
+        out << nlohmann::json{{"version", 1}, {"devices", devices}}.dump(1) << "\n";
+        if (!out) { storage_error_ = "Write failed: " + tmp; return false; }
+    }
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) { storage_error_ = "Cannot replace " + path; return false; }
+    storage_error_.clear();
+    return true;
+}
+
+std::vector<LoraMasterReading> LoraMasterList::history(int device_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& dev : devices_)
+        if (dev.id == device_id) return {dev.readings.begin(), dev.readings.end()};
+    return {};
+}
+
+std::optional<Enrolment> LoraMasterList::enrolment(int device_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& dev : devices_)
+        if (dev.id == device_id) return dev.enrolment;
+    return std::nullopt;
+}
+
+bool LoraMasterList::set_enrolment(int device_id, const std::string& policy, const std::string& alias,
+                                   const std::string& note, int64_t now_ts) {
+    if (!valid_policy(policy) || alias.size() > 64 || note.size() > 512) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& dev : devices_) {
+        if (dev.id != device_id) continue;
+        const Enrolment old = dev.enrolment;
+        dev.enrolment = {policy, alias, note, now_ts};
+        if (save_enrolment()) return true;
+        dev.enrolment = old;
+        return false;
+    }
+    return false;
+}
+
+bool LoraMasterList::merge(int into, int from, int64_t now_ts) {
+    if (into == from) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto a = std::find_if(devices_.begin(), devices_.end(), [&](const Device& d) { return d.id == into; });
+    auto b = std::find_if(devices_.begin(), devices_.end(), [&](const Device& d) { return d.id == from; });
+    if (a == devices_.end() || b == devices_.end()) return false;
+    std::vector<LoraMasterReading> all(a->readings.begin(), a->readings.end());
+    all.insert(all.end(), b->readings.begin(), b->readings.end());
+    std::stable_sort(all.begin(), all.end(), [](const auto& x, const auto& y) { return x.ts < y.ts; });
+    if (all.size() > size_t(MAX_READINGS_PER_DEVICE)) all.erase(all.begin(), all.end() - MAX_READINGS_PER_DEVICE);
+    a->readings.assign(all.begin(), all.end());
+    a->first_seen_ts = std::min(a->first_seen_ts, b->first_seen_ts);
+    if (b->last_seen_ts > a->last_seen_ts) {
+        a->last_seen_ts = b->last_seen_ts;
+        a->last_freq_hz = b->last_freq_hz;
+        a->last_sf = b->last_sf;
+        a->last_bw_hz = b->last_bw_hz;
+    }
+    if (a->enrolment.alias.empty()) a->enrolment.alias = b->enrolment.alias;
+    if (a->enrolment.note.empty()) a->enrolment.note = b->enrolment.note;
+    if (a->enrolment.policy == "unreviewed") a->enrolment.policy = b->enrolment.policy;
+    std::string merged_note = "Merged LORA-" + std::to_string(from) + ".";
+    if (a->enrolment.note.size() + merged_note.size() + 1 <= 512)
+        a->enrolment.note += (a->enrolment.note.empty() ? "" : " ") + merged_note;
+    a->enrolment.updated_ts = now_ts;
+    compact_device_file(*a);
+    std::remove(device_path(from).c_str());
+    devices_.erase(b);
+    save_enrolment();
+    return true;
+}
+
+std::string LoraMasterList::storage_error() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return storage_error_;
+}
 
 std::string LoraMasterList::device_path(int id) const {
     return dir_ + "/" + std::to_string(id) + ".ndjson";
@@ -193,8 +309,8 @@ void LoraMasterList::compact_device_file(const Device& dev) const {
     std::rename(tmp_path.c_str(), device_path(dev.id).c_str());
 }
 
-void LoraMasterList::record_reading(double freq_hz, int sf, double bw_hz,
-                                     const fingerprint::LoraFingerprint& fp, int64_t ts) {
+int LoraMasterList::record_reading(double freq_hz, int sf, double bw_hz,
+                                    const fingerprint::LoraFingerprint& fp, int64_t ts) {
     LoraMasterReading r;
     r.ts = ts;
     r.freq_hz = freq_hz;
@@ -226,8 +342,9 @@ void LoraMasterList::record_reading(double freq_hz, int sf, double bw_hz,
             if (out.is_open()) out << format_meta_line(dev.id, dev.first_seen_ts);
         }
         append_reading_to_disk(dev.id, r);
+        const int id = dev.id;
         devices_.push_back(std::move(dev));
-        return;
+        return id;
     }
 
     Device& dev = devices_[size_t(idx)];
@@ -241,6 +358,7 @@ void LoraMasterList::record_reading(double freq_hz, int sf, double bw_hz,
         while (dev.readings.size() > size_t(MAX_READINGS_PER_DEVICE)) dev.readings.pop_front();
         compact_device_file(dev);
     }
+    return dev.id;
 }
 
 std::vector<LoraMasterRow> LoraMasterList::snapshot() const {
@@ -260,6 +378,7 @@ std::vector<LoraMasterRow> LoraMasterList::snapshot() const {
         row.last_bw_hz = dev.last_bw_hz;
         row.reading_count = int(dev.readings.size());
         if (!dev.readings.empty()) row.latest = dev.readings.back();
+        row.enrolment = dev.enrolment;
         rows.push_back(std::move(row));
     }
     std::sort(rows.begin(), rows.end(),

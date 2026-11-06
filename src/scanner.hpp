@@ -29,6 +29,8 @@
 #endif
 #include "security/wifi_security_monitor.hpp"
 #include "security/lora_security.hpp"
+#include "security/lora_rules.hpp"
+#include "lora_channel_plan.hpp"
 #include "serial_lane.hpp"
 #include "wifi_master.hpp"
 #include "wifi_enrolment.hpp"
@@ -218,6 +220,40 @@ public:
     void set_lora_capture_seconds(double seconds);
     double lora_capture_seconds() const;
 
+    // LoRa listen channel plan (default LORA_LISTEN_CHANNELS_HZ). With
+    // wideband listening on, channels that fit in one capture are received
+    // together and derived per channel (lora_channel_plan.hpp); off, one
+    // channel per cycle as before. A frequency lock overrides both.
+    // Coordinated mode keeps its own derived channels.
+    void set_lora_channels(std::vector<double> channels_hz);
+    std::vector<double> lora_channels() const;
+    void set_lora_wideband_listen(bool on);
+    bool lora_wideband_listen() const;
+    // Wideband capture width: nullopt = narrowest rate that fits the plan;
+    // default 20 MHz. A capture that also covers 863-868 MHz replaces the
+    // separate sub-GHz energy scan.
+    void set_lora_wideband_rate(std::optional<double> rate_hz);
+    std::optional<double> lora_wideband_rate() const;
+    // Whether the current plan's single capture stands in for the energy scan.
+    bool lora_capture_replaces_energy_scan() const;
+    // The capture rotation the next cycles will use with current settings.
+    std::vector<lora_plan::Capture> lora_listen_plan() const;
+    using LoraListenStats = lora_plan::ListenStats;
+    LoraListenStats lora_listen_stats() const;
+
+    // Keyless LoRaWAN rules (security/lora_rules.hpp), fed by CRC-valid
+    // frames from every LoRa decode path.
+    lora_rules::Snapshot lora_incidents() const;
+    bool acknowledge_lora_incident(uint64_t id);
+    void clear_closed_lora_incidents();
+
+    // Operator review of persistent LoRa clusters (lora_master.hpp).
+    bool set_lora_enrolment(int device_id, const std::string& policy, const std::string& alias,
+                            const std::string& note);
+    bool merge_lora_emitters(int into, int from);
+    std::vector<lora_master::LoraMasterReading> lora_emitter_history(int device_id) const;
+    std::string lora_master_storage_error() const { return lora_master_.storage_error(); }
+
     std::vector<DeviceRow> snapshot(const std::string& band) const;
     ScannerStatus status() const;
 
@@ -323,9 +359,26 @@ private:
     // emitters table populated while locked to one frequency.
     void run_lora_listen_step(double freq_hz, const DeviceProfile& profile, double threshold_db,
                                std::vector<Detection>& detections);
-    // LoRa decode of one capture (provenance carries rate/centre/timing).
+    // One capture covering several planned channels, each derived at the
+    // 500 kHz decode rate and decoded like a single-channel listen.
+    void run_lora_wideband_step(const lora_plan::Capture& plan, const DeviceProfile& profile,
+                                double threshold_db, std::vector<Detection>& detections);
+    void append_lora_energy_segments(const std::vector<std::complex<float>>& iq, double rate_hz,
+                                     double center_hz, double threshold_db, std::vector<Detection>& detections);
+    void note_lora_listen(const lora_plan::Capture& plan, double capture_s, double decode_s);
+    double lora_wideband_max_rate(const DeviceProfile& profile) const;
+    lora_plan::PlanOptions lora_plan_options(const DeviceProfile& profile) const;
+    // LoRa decode of one capture (provenance carries rate/centre/timing):
+    // analyze_lora_iq() (pure, parallel per bandwidth) then
+    // commit_lora_analysis() (stateful, scan thread).
     void decode_lora_iq(const std::vector<std::complex<float>>& iq, const LoraCapture& provenance,
                         double threshold_db, std::vector<Detection>& detections, bool energy_segments);
+    struct LoraAnalysis;
+    static LoraAnalysis analyze_lora_iq(const std::vector<std::complex<float>>& iq, double rate_hz, double freq_hz,
+                                        bool laboratory_mode);
+    void commit_lora_analysis(const std::vector<std::complex<float>>& iq, const LoraCapture& provenance,
+                              const LoraAnalysis& analysis, double threshold_db, std::vector<Detection>& detections,
+                              bool energy_segments);
     DeviceRegistry& registry_for(const std::string& band);
     // A Wi-Fi step handed from acquisition to the processing lane, or (with
     // cycle_end set) the end-of-cycle status marker for a Wi-Fi cycle.
@@ -416,6 +469,9 @@ private:
     std::optional<int> wifi_fixed_channel_;
     bool lora_laboratory_mode_ = false;
     double lora_capture_seconds_ = LORA_LISTEN_DURATION_S;
+    std::vector<double> lora_channels_ = LORA_LISTEN_CHANNELS_HZ;
+    bool lora_wideband_listen_ = true;
+    std::optional<double> lora_wideband_rate_hz_ = 20e6;
     SdrDeviceType device_type_ = SdrDeviceType::B210;
     std::optional<double> wifi_sample_rate_hz_;
 
@@ -438,6 +494,8 @@ private:
     mutable std::mutex lora_log_mutex_;
     std::vector<LoraPacketRow> lora_packet_log_;
     std::map<std::string, LoraDeviceRow> lora_devices_;  // guarded by lora_log_mutex_; key kind + id
+    lora_rules::Engine lora_rules_;                      // guarded by lora_log_mutex_
+    LoraListenStats lora_listen_stats_;                  // guarded by lora_log_mutex_
     size_t lora_channel_idx_ = 0;
     mutable std::mutex capture_mutex_;
     std::string capture_save_directory_;

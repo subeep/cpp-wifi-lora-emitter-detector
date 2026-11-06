@@ -549,7 +549,14 @@ void sample_rate_checks(const fs::path& base) {
         const double wanted = c.request.value_or(20e6);
         check(requests.size() == 13 && std::all_of(requests.begin(), requests.begin() + std::min(size_t(8), requests.size()),
               [&](double rate) { return rate == wanted; }), "configured_rate_reaches_both_wifi_bands", c.name);
-        check(requests.size() == 13 && requests[8] == 5e6 && requests[11] == 5e6 && requests[12] == 500e3,
+        // Sub-GHz requests are independent of the Wi-Fi rate: the LoRa listen
+        // uses the channel plan's rate (20 MHz by default). When that capture
+        // also covers the energy-scan range it replaces the 5 Msps scan.
+        const double lora_rate = scanner.lora_listen_plan().front().rate_hz;
+        const bool replaced = scanner.lora_capture_replaces_energy_scan();
+        check(requests.size() == 13 &&
+                  (replaced ? std::all_of(requests.begin() + 8, requests.end(), [&](double r) { return r == lora_rate; })
+                            : requests[8] == 5e6 && requests[11] == 5e6 && requests[12] == lora_rate),
               "wifi_rate_preserves_lora_scan_and_listen", c.name);
         const auto status = scanner.status();
         check(status.wifi_requested_rate_hz == wanted && (c.fail ? !status.wifi_actual_rate_hz :

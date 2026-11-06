@@ -76,6 +76,17 @@ int main(){char tmp[]="/tmp/rfmon-lora-security-XXXXXX";if(!mkdtemp(tmp))return 
         clocks.ingest(make_batch(base,100000,{r}));
         check(clocks.snapshot().coverage.size()==2,"Exposure denominators remain separate by receiver profile");
     }
+    {
+        // Wideband listening: channels derived from one capture share its start.
+        State wide;auto base=capture();base.timing->device_time_ns=9000000000;
+        for(uint64_t n=1;n<=4;++n){base.capture_seq=n;base.requested_center_hz=865e6+double(n)*400e3;wide.ingest(make_batch(base,100000,{r}));}
+        check(wide.snapshot().time_regressions==0&&wide.snapshot().excluded==0&&wide.snapshot().dead_s==0,
+            "Sibling channels of one wideband capture are not clock regressions");
+        base.capture_seq=5;wide.ingest(make_batch(base,100000,{r}));
+        check(wide.snapshot().time_regressions==1&&wide.snapshot().excluded==1,"A repeated channel at the same start is still a regression");
+        base.capture_seq=6;base.timing->device_time_ns+=1000000000;wide.ingest(make_batch(base,100000,{r}));
+        check(wide.snapshot().excluded==1&&wide.snapshot().dead_s>0,"The next wideband capture counts its unsampled gap once");
+    }
     // Real previously recorded SX1262 IQ, not an internal waveform generator.
     for(const auto& entry:std::filesystem::directory_iterator(std::string(PROJECT_ROOT_DIR)+"/tests/fixtures/lora_sx1262"))if(entry.is_directory()) {
         auto hw=load_lora_capture(entry.path().string());hw.run_id="hardware-fixture:"+entry.path().filename().string();hw.capture_seq=1;

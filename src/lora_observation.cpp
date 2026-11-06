@@ -94,6 +94,22 @@ void annotate_lora_receptions(std::vector<LoraPacketRow>& rows,double rate,const
         for(size_t i:g.hypotheses){rows[i].reception_id=id;rows[i].reception_hypotheses=g.hypotheses.size();}
     }
 }
+void trim_lora_packet_log(std::vector<LoraPacketRow>& log, size_t decoded_max, size_t other_max) {
+    size_t decoded = 0, other = 0;
+    for (const auto& r : log) (r.crc == LoraPacketRow::Crc::Valid ? decoded : other) += 1;
+    if (decoded <= decoded_max && other <= other_max) return;
+    size_t drop_decoded = decoded > decoded_max ? decoded - decoded_max : 0;
+    size_t drop_other = other > other_max ? other - other_max : 0;
+    std::vector<LoraPacketRow> kept;
+    kept.reserve(log.size() - drop_decoded - drop_other);
+    for (auto& r : log) {  // oldest first
+        size_t& drop = r.crc == LoraPacketRow::Crc::Valid ? drop_decoded : drop_other;
+        if (drop) { --drop; continue; }
+        kept.push_back(std::move(r));
+    }
+    log.swap(kept);
+}
+
 const char* lora_crc_label(LoraPacketRow::Crc crc) {
     switch (crc) {
         case LoraPacketRow::Crc::Valid: return "Valid";
