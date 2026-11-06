@@ -66,6 +66,10 @@ private:
     Snapshot snapshot_;
     std::map<std::string,uint64_t> last_seq_; // bounded run contexts
     std::map<std::pair<std::string,uint64_t>,std::optional<int64_t>> session_ends_;
+    // Last capture start per session and the channel centres already seen at
+    // it: channels derived from one wideband capture share its start.
+    struct CaptureStart {int64_t ns=0;std::vector<double> centers;};
+    std::map<std::pair<std::string,uint64_t>,CaptureStart> session_starts_;
 };
 // Atomic whole-capture queue: cannot deliver frames without their denominator.
 // The disk budget covers two generations, each at most half the configured total.

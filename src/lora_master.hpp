@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -75,6 +76,17 @@ struct LoraMasterReading {
     double sync_corr = 0.0;
 };
 
+// Operator review of one cluster, persisted in <dir>/enrolment.json. Policy
+// mirrors Wi-Fi enrolment: "unreviewed", "approved" or "disallowed". It is a
+// label on a heuristic RF cluster; it changes no matching decision.
+struct Enrolment {
+    std::string policy = "unreviewed", alias, note;
+    int64_t updated_ts = 0;
+};
+inline bool valid_policy(const std::string& p) {
+    return p == "unreviewed" || p == "approved" || p == "disallowed";
+}
+
 // One GUI row's worth of summary for one persisted device - the full
 // reading history stays on disk/in memory rather than being copied out
 // wholesale on every snapshot() call.
@@ -88,6 +100,7 @@ struct LoraMasterRow {
     double last_bw_hz = 0.0;
     int reading_count = 0;
     LoraMasterReading latest;  // most recent reading's own parameters, for the quick-glance columns
+    Enrolment enrolment;
 };
 
 class LoraMasterList {
@@ -108,11 +121,29 @@ public:
     // file, pruning/compacting if it just crossed
     // COMPACT_TRIGGER_READINGS. `ts` is the absolute Unix epoch second
     // this reading was taken.
-    void record_reading(double freq_hz, int sf, double bw_hz,
-                         const fingerprint::LoraFingerprint& fp, int64_t ts);
+    // Returns the matched or newly created device id.
+    int record_reading(double freq_hz, int sf, double bw_hz,
+                       const fingerprint::LoraFingerprint& fp, int64_t ts);
 
     // Sorted by last_seen_ts, most recently seen first.
     std::vector<LoraMasterRow> snapshot() const;
+
+    // Every retained reading of one device, oldest first (empty if unknown).
+    std::vector<LoraMasterReading> history(int device_id) const;
+    std::optional<Enrolment> enrolment(int device_id) const;
+
+    // Sets a device's review label; false for an unknown id or policy, or
+    // over-long text. Persisted atomically before returning true.
+    bool set_enrolment(int device_id, const std::string& policy, const std::string& alias,
+                       const std::string& note, int64_t now_ts);
+
+    // Operator decision that two clusters are one emitter: `from`'s readings
+    // join `into` (time ordered, capped as usual), `from`'s file is removed
+    // and its label is kept only where `into` has none. False if either id
+    // is unknown or they are equal.
+    bool merge(int into, int from, int64_t now_ts);
+
+    std::string storage_error() const;
 
 private:
     struct Device {
@@ -123,6 +154,7 @@ private:
         int last_sf = 0;
         double last_bw_hz = 0.0;
         std::deque<LoraMasterReading> readings;  // newest at the back
+        Enrolment enrolment;
     };
 
     // Index into devices_ whose recent-reading median falls within
@@ -139,11 +171,14 @@ private:
     // a half-written file in the real path; worst case, the pending
     // trim just didn't happen yet.
     void compact_device_file(const Device& dev) const;
+    void load_enrolment();
+    bool save_enrolment();  // caller holds mutex_
 
     std::string dir_;
     mutable std::mutex mutex_;
     std::vector<Device> devices_;
     int next_id_ = 1;
+    std::string storage_error_;
 };
 
 }  // namespace rfmon::lora_master

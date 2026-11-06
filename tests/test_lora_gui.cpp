@@ -1,6 +1,7 @@
 // Renders real LoRa widgets offscreen, without a Scanner or radio.
 #include "lora_gui.hpp"
 #include "lora_capture.hpp"
+#include "config.hpp"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "backends/imgui_impl_opengl3.h"
@@ -51,6 +52,33 @@ int main(int argc, char** argv) {
     wan.drift_hz_per_symbol=.25;wan.capture_offset_s=.125;wan.fec_disagreements=0;
     rows.push_back(wan);
     std::set<std::string> expected_groups;for(const auto& row:rows)if(!row.reception_id.empty())expected_groups.insert(row.reception_id);
+    // New LoRa tab views: devices, emitters (review/merge/history), incidents, receiver.
+    std::vector<LoraDeviceRow> devices(1);
+    devices[0].kind="DevAddr";devices[0].id="26011234";devices[0].frames=5;devices[0].uplinks=5;
+    devices[0].first_seen_ts=1700000000;devices[0].last_seen_ts=1700000300;devices[0].last_freq_hz=865.0625e6;
+    devices[0].last_bw_hz=125e3;devices[0].last_sf=7;devices[0].last_type="Unconfirmed uplink candidate";
+    devices[0].last_fcnt16=42;devices[0].rf_clusters={1,2};
+    std::vector<lora_master::LoraMasterRow> emitters(2);
+    for(int i=0;i<2;++i){emitters[i].device_id=i+1;emitters[i].device_id_str=i?"LORA-0002":"LORA-0001";
+        emitters[i].first_seen_ts=1700000000;emitters[i].last_seen_ts=1700000300;emitters[i].reading_count=3;
+        emitters[i].last_freq_hz=865.0625e6;emitters[i].last_sf=7;emitters[i].last_bw_hz=125e3;}
+    emitters[0].enrolment.alias="Bench";emitters[0].enrolment.policy="approved";emitters[1].enrolment.policy="disallowed";
+    lora_rules::Engine engine;
+    engine.note_disallowed_emitter(2,"",1700000300,865.0625e6);
+    const auto incidents=engine.snapshot();
+    int saved=0,merged=0;
+    LoraTabActions actions;
+    actions.set_enrolment=[&](int,const std::string&,const std::string&,const std::string&){++saved;return true;};
+    actions.merge=[&](int,int){++merged;return true;};
+    actions.history=[](int){std::vector<lora_master::LoraMasterReading> h(5);for(size_t i=0;i<h.size();++i){h[i].ts=1700000000+int64_t(i);h[i].irr_db=-30-double(i);}return h;};
+    actions.acknowledge=[](uint64_t){return true;};actions.clear_closed=[]{};
+    std::vector<double> channels=LORA_LISTEN_CHANNELS_HZ;
+    actions.set_channels=[&](std::vector<double> c){channels=lora_plan::normalise(c);};
+    actions.set_wideband=[](bool){};
+    LoraReceiverView receiver;receiver.channels=channels;receiver.capture_seconds=6;
+    receiver.plan=lora_plan::plan(channels,500e3,5e6,true);receiver.stats.captures=2;receiver.stats.last_wideband=true;
+    receiver.stats.last_channels=4;receiver.stats.channel_listened_s[channels[0]]=12;receiver.now_steady_s=20;
+    receiver.suggestions={{869.525e6,125e3,-50,4}};
     for (int frame=0;frame<3;++frame) {
         if (argc>3 && frame>0) {
             for(auto* window : ImGui::GetCurrentContext()->Windows)
@@ -70,6 +98,12 @@ int main(int argc, char** argv) {
         const std::string displayed=ImGui::GetCurrentContext()->LogBuffer.c_str();ImGui::LogFinish();
         if(displayed.find("Retained reception groups: "+std::to_string(expected_groups.size()))==std::string::npos)return 1;
         ImGui::SetNextItemOpen(true,ImGuiCond_Always); draw_lora_replay_panel();
+        draw_lora_interpretation_limits();
+        draw_lora_device_table(devices,incidents,emitters,120);
+        draw_lora_master_table(emitters,devices,actions,120);
+        if(ImGui::GetCurrentContext()->LogEnabled)ImGui::LogFinish();
+        draw_lora_incidents(incidents,actions,120);
+        draw_lora_receiver_panel(receiver,actions);
         ImGui::End(); ImGui::Render();
         if (ImGui::GetDrawData()->TotalVtxCount<=0 || ImGui::GetCurrentContext()->ErrorCountCurrentFrame) return 1;
         glViewport(0,0,1800,650); glClear(GL_COLOR_BUFFER_BIT);
@@ -85,5 +119,5 @@ int main(int argc, char** argv) {
     ImGui_ImplOpenGL3_Shutdown(); ImGui::DestroyContext();
     eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);
     eglDestroyContext(display,context); eglDestroySurface(display,surface); eglTerminate(display);
-    std::cout << "PASS: LoRa security coverage panel, integrity table and replay controls rendered offscreen\n";
+    std::cout << "PASS: LoRa security coverage panel, integrity table, replay, devices, emitters, incidents and receiver views rendered offscreen\n";
 }

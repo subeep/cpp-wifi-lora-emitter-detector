@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <string>
 #include <optional>
 #include <vector>
@@ -61,6 +62,9 @@ struct LoraPacketRow {
     std::optional<double> fp_dc_ang_deg;
     std::optional<double> fp_snr_db;
     std::optional<std::string> fp_gate_reason;  // set only when gated out
+    // Persistent master cluster (lora_master) whose accepted fingerprint was
+    // taken from this same burst. Heuristic RF match, not authentication.
+    std::optional<int> rf_cluster_id;
 
     // Fit-quality covariates - shown regardless of gate outcome, once
     // actually computed (unset only if gating happened before the fit
@@ -82,6 +86,8 @@ struct LoraDeviceRow {
     double last_freq_hz = 0, last_bw_hz = 0;
     int last_sf = 0;
     std::string last_type;
+    std::optional<uint16_t> last_fcnt16;  // data frames only, lower 16 bits
+    std::vector<int> rf_clusters;         // master clusters heard naming this address (bounded)
 };
 
 struct LoraReceptionGroup {
@@ -101,6 +107,10 @@ void annotate_lora_receptions(std::vector<LoraPacketRow>& rows, double sample_ra
                               const std::string& capture_scope);
 
 const char* lora_crc_label(LoraPacketRow::Crc crc);
+// Bounded GUI log retention. CRC-valid rows and other rows (failed, partial,
+// detection-only) have separate budgets, so a burst of undecodable
+// hypotheses can never push a decoded packet out. Time order is kept.
+void trim_lora_packet_log(std::vector<LoraPacketRow>& log, size_t decoded_max, size_t other_max);
 void set_lora_integrity(LoraPacketRow& row, bool complete, bool crc_on, bool crc_valid);
 // Production defaults to the receive-only explicit PHY. Legacy codecs are
 // available only through the explicit laboratory flag; never an auto fallback.

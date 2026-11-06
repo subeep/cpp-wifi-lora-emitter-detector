@@ -14,6 +14,11 @@ struct LoRaWanCandidate {
     // a data frame (empty for a join accept). Structural, MIC not verified.
     std::string device_kind, device_id;
     bool uplink = false;
+    // Structured copies of fields already named in `detail`, for rules that
+    // compare frames. MType is the 3-bit MHDR type; -1 when not parsed.
+    int mtype = -1;
+    std::optional<uint16_t> fcnt16, dev_nonce;
+    std::string join_eui;
 };
 inline std::optional<LoRaWanCandidate> inspect_lorawan(const std::vector<uint8_t>& b) {
     if (b.empty() || b.size()>255 || (b[0]&0x1f)!=0) return std::nullopt;
@@ -27,9 +32,11 @@ inline std::optional<LoRaWanCandidate> inspect_lorawan(const std::vector<uint8_t
         return out;
     };
     LoRaWanCandidate r;
+    r.mtype=type;
     if(type==0) {
         if(b.size()!=23)return std::nullopt;
         r.type="Join request candidate";r.device_kind="DevEUI";r.device_id=hex(9,17,true);r.uplink=true;
+        r.join_eui=hex(1,9,true);r.dev_nonce=uint16_t(unsigned(b[17])+(unsigned(b[18])<<8));
         r.detail="JoinEUI/AppEUI="+hex(1,9,true)+" DevEUI="+hex(9,17,true)+
             " DevNonce="+std::to_string(unsigned(b[17])+(unsigned(b[18])<<8))+" MIC="+hex(19,23);
     } else if(type==1) {
@@ -43,6 +50,7 @@ inline std::optional<LoRaWanCandidate> inspect_lorawan(const std::vector<uint8_t
         if(header_end>body_end || (!uplink&&(b[5]&0x40)))return std::nullopt;
         r.type=std::string(type>=4?"Confirmed ":"Unconfirmed ")+(uplink?"uplink candidate":"downlink candidate");
         r.device_kind="DevAddr";r.device_id=hex(1,5,true);r.uplink=uplink;
+        r.fcnt16=uint16_t(unsigned(b[6])+(unsigned(b[7])<<8));
         r.detail="DevAddr="+hex(1,5,true)+" FCnt16="+std::to_string(unsigned(b[6])+(unsigned(b[7])<<8))+
             " (lower 16 bits only) FCtrl="+hex(5,6)+" ADR="+std::to_string((b[5]>>7)&1)+
             " ACK="+std::to_string((b[5]>>5)&1)+" FOpts="+hex(8,header_end);

@@ -1,0 +1,996 @@
+{
+  "purpose": "Candidate research inputs, not verified Lightbridge telemetry packets",
+  "metadata_source": "/home/sudeep/Pictures/modelv1/reports/inspection/file_stats.csv",
+  "recordings": [
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/INS_FY/INS_0110_00.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960004088,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/INS_FY/INS_0110_01.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960036840,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/INS_FY/INS_0110_02.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/INS_FY/INS_0110_03.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/INS_FY/INS_0110_04.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960036840,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/INS_HO/INS_0101_00.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/INS_HO/INS_0101_01.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960003912,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/INS_HO/INS_0101_02.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960036800,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/INS_HO/INS_0101_03.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960036840,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/INS_HO/INS_0101_04.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/INS_ON/INS_0100_00.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/INS_ON/INS_0100_01.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960004072,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/INS_ON/INS_0100_02.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960036776,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/INS_ON/INS_0100_03.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960036840,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/INS_ON/INS_0100_04.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/PHA_HO/PHA_0101_00.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/PHA_HO/PHA_0101_01.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/PHA_HO/PHA_0101_02.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/PHA_HO/PHA_0101_03.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/PHA_HO/PHA_0101_04.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/PHA_ON/PHA_0100_00.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/PHA_ON/PHA_0100_01.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/PHA_ON/PHA_0100_02.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/PHA_ON/PHA_0100_03.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BLUE/PHA_ON/PHA_0100_04.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "bluetooth",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/INS_FY/INS_1110_00.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 873922520,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/INS_FY/INS_1110_01.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/INS_FY/INS_1110_02.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960036856,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/INS_FY/INS_1110_03.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/INS_FY/INS_1110_04.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960004072,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/INS_HO/INS_1101_00.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960036816,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/INS_HO/INS_1101_01.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960036840,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/INS_HO/INS_1101_02.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960004080,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/INS_HO/INS_1101_03.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960004088,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/INS_HO/INS_1101_04.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960036824,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/INS_ON/INS_1100_00.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960036856,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/INS_ON/INS_1100_01.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960004088,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/INS_ON/INS_1100_02.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/INS_ON/INS_1100_03.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960036752,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/INS_ON/INS_1100_04.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/PHA_FY/PHA_1110_00.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "flying",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/PHA_FY/PHA_1110_01.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "flying",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/PHA_FY/PHA_1110_02.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "flying",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/PHA_FY/PHA_1110_03.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "flying",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/PHA_FY/PHA_1110_04.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "flying",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/PHA_HO/PHA_1101_00.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/PHA_HO/PHA_1101_01.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/PHA_HO/PHA_1101_02.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/PHA_HO/PHA_1101_03.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/PHA_HO/PHA_1101_04.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/PHA_ON/PHA_1100_00.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/PHA_ON/PHA_1100_01.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/PHA_ON/PHA_1100_02.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/PHA_ON/PHA_1100_03.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/BOTH/PHA_ON/PHA_1100_04.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "bluetooth_wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/INS_FY/INS_0010_00.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 842727408,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/INS_FY/INS_0010_01.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960036840,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/INS_FY/INS_0010_02.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/INS_FY/INS_0010_03.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960004088,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/INS_FY/INS_0010_04.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960004088,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/INS_HO/INS_0001_00.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/INS_HO/INS_0001_01.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/INS_HO/INS_0001_02.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960036824,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/INS_HO/INS_0001_03.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/INS_HO/INS_0001_04.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960036088,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/INS_ON/INS_0000_00.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960036856,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/INS_ON/INS_0000_01.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960003776,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/INS_ON/INS_0000_02.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/INS_ON/INS_0000_03.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960004056,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/INS_ON/INS_0000_04.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960036840,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/PHA_HO/PHA_0001_00.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/PHA_HO/PHA_0001_01.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/PHA_HO/PHA_0001_02.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/PHA_HO/PHA_0001_03.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/PHA_HO/PHA_0001_04.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/PHA_ON/PHA_0000_00.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/PHA_ON/PHA_0000_01.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/PHA_ON/PHA_0000_02.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/PHA_ON/PHA_0000_03.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/CLEAN/PHA_ON/PHA_0000_04.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "clean",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/INS_FY/INS_1010_00.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960004072,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/INS_FY/INS_1010_01.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960004088,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/INS_FY/INS_1010_02.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/INS_FY/INS_1010_03.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960036832,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/INS_FY/INS_1010_04.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "flying",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960004088,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/INS_HO/INS_1001_00.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/INS_HO/INS_1001_01.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960004072,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/INS_HO/INS_1001_02.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960036840,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/INS_HO/INS_1001_03.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960004088,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/INS_HO/INS_1001_04.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "hovering",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/INS_ON/INS_1000_00.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/INS_ON/INS_1000_01.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960036816,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/INS_ON/INS_1000_02.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960036848,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/INS_ON/INS_1000_03.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960004080,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/INS_ON/INS_1000_04.dat",
+      "dataset_label": "dji_inspire_2",
+      "mode": "switched_on",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960004056,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/PHA_FY/PHA_1010_00.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "flying",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/PHA_FY/PHA_1010_01.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "flying",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/PHA_FY/PHA_1010_02.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "flying",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/PHA_FY/PHA_1010_03.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "flying",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/PHA_FY/PHA_1010_04.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "flying",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/PHA_HO/PHA_1001_00.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/PHA_HO/PHA_1001_01.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/PHA_HO/PHA_1001_02.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/PHA_HO/PHA_1001_03.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/PHA_HO/PHA_1001_04.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "hovering",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/PHA_ON/PHA_1000_00.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/PHA_ON/PHA_1000_01.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/PHA_ON/PHA_1000_02.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/PHA_ON/PHA_1000_03.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    },
+    {
+      "path": "/home/sudeep/Pictures/DroneDetect_V2/WIFI/PHA_ON/PHA_1000_04.dat",
+      "dataset_label": "dji_phantom_4",
+      "mode": "switched_on",
+      "interference": "wifi",
+      "exists": true,
+      "bytes": 960000000,
+      "telemetry_ground_truth_verified": false
+    }
+  ]
+}
