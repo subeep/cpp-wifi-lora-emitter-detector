@@ -14,6 +14,7 @@ from tools.drone_ml.live_audit import AuditRecorder
 from tools.drone_ml.presence_dataset import CONFIG, template, readiness, prepare
 from tools.drone_ml.presence_train import train, fit_threshold, normalization
 from tools.drone_ml.predict import InferenceEngine
+from tools.drone_ml.presence_predict import PresenceEngine
 
 
 def fixture(root):
@@ -78,6 +79,25 @@ class PresenceTrainingTests(unittest.TestCase):
             checkpoint=torch.load(root/'model'/'model.pt',weights_only=True)
             self.assertEqual(checkpoint['classes'],['background','drone'])
             self.assertTrue(all(torch.isfinite(t).all() for t in checkpoint['state_dict'].values()))
+            engine = PresenceEngine(root/'model'/'model.pt')
+            rng = np.random.default_rng(731)
+            iq = (rng.normal(size=160000) + 1j*rng.normal(size=160000)).astype(np.complex64)
+            result = engine.assess_iq(iq, 20000000, 160000)
+            self.assertEqual(result['identity_route'], 'forward')
+            self.assertEqual(result['source_interval_samples'], [160000, 320000])
+            self.assertTrue(0 <= result['activity_score'] <= 1)
+            self.assertIsNone(result['drone_present'])
+            self.assertIsNone(result['accepted_class'])
+            self.assertFalse(result['background_rejection_enabled'])
+            self.assertAlmostEqual(result['activity_score'], engine.predict_iq(iq, 20000000)['activity_score'])
+            for invalid in (np.zeros(160000, dtype=np.complex64), np.full(160000, np.nan, dtype=np.complex64)):
+                deferred = engine.assess_iq(invalid, 20000000)
+                self.assertEqual(deferred['identity_route'], 'defer')
+                self.assertNotIn('activity_score', deferred)
+            checkpoint['normalization']['scale'] = 0
+            torch.save(checkpoint, root/'invalid.pt')
+            with self.assertRaisesRegex(ValueError, 'normalization'):
+                PresenceEngine(root/'invalid.pt')
             with self.assertRaisesRegex(ValueError,'unsupported checkpoint'):InferenceEngine(root/'model'/'model.pt')
             # Altered tensor blocks a new experiment before output is created.
             tensor=root/'prepared'/corpus['records'][0]['tensor']

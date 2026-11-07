@@ -125,6 +125,25 @@ LoraFingerprint extract_lora_fingerprint_at(const std::vector<std::complex<float
                                              double bandwidth_hz, double center_hz, long fit_start,
                                              int fit_symbols, long noise_start, int cfo_bins);
 
+// The same fit on the channel IQ before decimation (`sample_rate_hz` a
+// multiple of the bandwidth, e.g. 500 kHz for BW125) against an analytic
+// continuous-phase up-chirp whose symbol boundary sits at fractional raw
+// sample `t0`, starting from CFO `cfo_hz`; noise from
+// [noise_start, noise_start + 2^sf * oversampling). At one sample per chip
+// the chirp's wrap point falls between samples by an unknown fraction of a
+// chip and the decimator's band edge is not modelled; both leak into the
+// conj(s) term as an SF-dependent pseudo IQ imbalance (live Heltec: IRR
+// -34.7/-43.6/-51.7 dB at SF7/9/11). Oversampled with fractional timing the
+// reference matches the received waveform itself. The measured conj(s) and
+// constant terms then scale as 1/2^sf (a once-per-symbol boundary transient,
+// not hardware IQ imbalance or LO leakage, which sit below the floor), so
+// irr_db, dc_dbc, iq_eps and iq_phi_deg are reported per symbol boundary,
+// normalised to the SF7 symbol length (see the .cpp).
+LoraFingerprint extract_lora_fingerprint_oversampled(const std::vector<std::complex<float>>& raw,
+                                                     double sample_rate_hz, int sf, double bandwidth_hz,
+                                                     double center_hz, double t0, int symbols, long noise_start,
+                                                     double cfo_hz);
+
 // Appends one NDJSON record for this fingerprint attempt to `path`
 // (created if missing, opened in append mode and closed on every call -
 // slightly more I/O overhead than holding an open handle, but the

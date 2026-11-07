@@ -79,16 +79,24 @@ public:
     Peak peak(long pos,bool down=false,bool fine=true) {
         if(pos<0 || size_t(pos)+n_>iq_.size())return {};
         const int factor=fine?8:1, count=n_*factor;
+        // Runs once per window for every SF, bandwidth and polarity, so it
+        // avoids std::abs/std::hypot (overflow-safe and several times slower):
+        // magnitudes as sqrt of the squared norm, the peak found on the
+        // squared norm and rooted once. Same results up to float rounding.
         double sum=0;
         for(int j=0;j<n_;++j) {
             auto v=iq_[pos+j]*(down?up_[j]:std::conj(up_[j]));
-            in_[j]={v.real(),v.imag()};sum+=std::abs(v);
+            in_[j]={v.real(),v.imag()};
+            sum+=std::sqrt(double(v.real())*v.real()+double(v.imag())*v.imag());
         }
-        std::fill(in_.begin()+n_,in_.begin()+count,kiss_fft_cpx{0,0});
+        if(count>n_)std::fill(in_.begin()+n_,in_.begin()+count,kiss_fft_cpx{0,0});
         kiss_fft(fine?fine_.get():coarse_.get(),in_.data(),out_.data());
         double best=0;int bin=0;
-        for(int j=0;j<count;++j) {double mag=std::hypot(out_[j].r,out_[j].i);if(mag>best){best=mag;bin=j;}}
-        return {signed_bin(double(bin)/factor,n_),best/(sum+1e-12)};
+        for(int j=0;j<count;++j) {
+            const double m=double(out_[j].r)*out_[j].r+double(out_[j].i)*out_[j].i;
+            if(m>best){best=m;bin=j;}
+        }
+        return {signed_bin(double(bin)/factor,n_),std::sqrt(best)/(sum+1e-12)};
     }
 };
 }

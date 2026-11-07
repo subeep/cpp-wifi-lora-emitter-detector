@@ -21,6 +21,7 @@
 #include "lora_capture.hpp"
 #include "lorawan_inspect.hpp"
 #include "spectrum.hpp"
+#include <kissfft/kiss_fft.h>
 #include "security/wifi_mac_frame.hpp"
 #include "wifi_burst_pipeline.hpp"
 #include "wifi_dsss_rx.hpp"
@@ -140,15 +141,21 @@ std::optional<fingerprint::LoraFingerprint> fingerprint_decoded_row(
     for (long i = 0; i < n; ++i) up[size_t(i)] = std::polar(1.0, M_PI * (double(i) * double(i) / double(n) - double(i)));
     auto downchirp_residual = [&](const std::vector<std::complex<float>>& iq, long sfd, double cfo_bins) {
         // Peak of the two dechirped SFD symbols over -2..+2 bins (1/16 bin).
+        std::vector<std::complex<double>> dechirped(static_cast<size_t>(2 * n));
+        for (long i = 0; i < 2 * n; ++i)
+            dechirped[size_t(i)] = std::complex<double>(iq[size_t(sfd + i)]) * up[size_t(i % n)];
         double best_bin = 2.5, best_mag = -1;
         for (int k = -32; k <= 32; ++k) {
             const double bin = double(k) / 16.0;
             double mag = 0;
+            // Phase recurrence instead of a sin/cos per sample.
+            const std::complex<double> step = std::polar(1.0, -2 * M_PI * (cfo_bins + bin) / double(n));
             for (long sym = 0; sym < 2; ++sym) {
-                std::complex<double> sum = 0;
-                for (long i = 0; i < n; ++i)
-                    sum += std::complex<double>(iq[size_t(sfd + sym * n + i)]) * up[size_t(i)] *
-                           std::polar(1.0, -2 * M_PI * (cfo_bins + bin) * double(i) / double(n));
+                std::complex<double> sum = 0, rot = 1.0;
+                for (long i = 0; i < n; ++i) {
+                    sum += dechirped[size_t(sym * n + i)] * rot;
+                    rot *= step;
+                }
                 mag += std::abs(sum);
             }
             if (mag > best_mag) { best_mag = mag; best_bin = bin; }
@@ -158,6 +165,7 @@ std::optional<fingerprint::LoraFingerprint> fingerprint_decoded_row(
     const long margin = 16, lo = std::max(0L, noise - margin), hi = aligned + 3 * n + margin;
     std::optional<fingerprint::LoraFingerprint> best;
     double best_score = 0;
+    long best_phase = 0, best_o = 0;
     for (long phase = 0; phase < f; ++phase) {
         const long r0 = lo * f + phase, r1 = hi * f + phase;
         if (r1 > long(raw.size())) break;
@@ -180,11 +188,88 @@ std::optional<fingerprint::LoraFingerprint> fingerprint_decoded_row(
                 if (!best || score < best_score) {
                     best = fp;
                     best_score = score;
+                    best_phase = phase;
+                    best_o = o;
                 }
             }
         }
     }
+    if (!best || best->gated_out) return best;
+    // Refine on the channel IQ itself (before decimation): the chip-rate fit
+    // above fixed the sub-chip phase and the sample/CFO pairing; a quarter-
+    // raw-sample search around that start finds where the preamble symbol
+    // boundary really falls, then the oversampled fit runs there
+    // (fingerprint::extract_lora_fingerprint_oversampled).
+    const double fs = bw_hz * double(f);
+    const double cfo_hz = best->cfo_ppm * center_hz / 1e6;
+    const double center_raw = double((fit + best_o) * f + best_phase) + 0.5 * double(f - 1);
+    const long sps = n * f;
+    auto alignment = [&](double t0) {
+        // Non-coherent across symbols, so a small CFO residual does not matter.
+        const long i0 = long(std::ceil(t0));
+        if (i0 < 0 || size_t(i0 + long(symbols) * sps) > raw.size()) return -1.0;
+        double total = 0;
+        for (int m = 0; m < symbols; ++m) {
+            std::complex<double> sum = 0;
+            for (long k = 0; k < sps; ++k) {
+                const long i = i0 + long(m) * sps + k;
+                double u = std::fmod((double(i) - t0) / double(f), double(n));
+                if (u < 0) u += double(n);
+                const double ph = M_PI * (u * u / double(n) - u) + 2 * M_PI * cfo_hz * double(i - i0) / fs;
+                sum += std::complex<double>(raw[size_t(i)]) * std::polar(1.0, -ph);
+            }
+            total += std::abs(sum);
+        }
+        return total;
+    };
+    double best_t0 = center_raw, best_align = -1;
+    const double span = 0.5 * double(f), step = f > 1 ? 0.25 : 0.125;
+    for (double t0 = center_raw - span; t0 <= center_raw + span + 1e-9; t0 += step) {
+        const double a = alignment(t0);
+        if (a > best_align) { best_align = a; best_t0 = t0; }
+    }
+    auto refined = fingerprint::extract_lora_fingerprint_oversampled(raw, fs, sf, bw_hz, center_hz, best_t0, symbols,
+                                                                     noise * f, cfo_hz);
+    if (!refined.gated_out) return refined;
     return best;
+}
+// Max-hold spectrum of a LoRa wideband capture from every `stride`-th
+// non-overlapping Hann frame (spectrogram_max_db() uses every frame). One
+// 8192-point frame at 20 Msps is 0.41 ms; with stride 4 a frame starts every
+// 1.6 ms, so every LoRa packet (>= ~25 ms) is covered by dozens of frames at
+// a quarter of the FFT work. Bursts shorter than ~2 ms may be missed in one
+// capture (they recur across cycles). Same bins and scaling as
+// spectrogram_max_db().
+Spectrum lora_spectrum_max_db(const std::vector<std::complex<float>>& iq, double sample_rate_hz, int nperseg,
+                              int stride) {
+    const int n = std::min<int>(nperseg, int(iq.size()));
+    if (n < 8 || stride <= 1) return spectrogram_max_db(iq, sample_rate_hz, nperseg);
+    const size_t segments = iq.size() / size_t(n);
+    std::vector<float> window(static_cast<size_t>(n));
+    for (int k = 0; k < n; ++k) window[size_t(k)] = float(0.5 - 0.5 * std::cos(2 * M_PI * k / n));
+    std::vector<double> max_power(static_cast<size_t>(n), 0.0);
+    kiss_fft_cfg cfg = kiss_fft_alloc(n, 0, nullptr, nullptr);
+    std::vector<kiss_fft_cpx> in(static_cast<size_t>(n)), out(static_cast<size_t>(n));
+    for (size_t seg = 0; seg < segments; seg += size_t(stride)) {
+        const std::complex<float>* base = iq.data() + seg * size_t(n);
+        for (int k = 0; k < n; ++k) in[size_t(k)] = {base[k].real() * window[size_t(k)], base[k].imag() * window[size_t(k)]};
+        kiss_fft(cfg, in.data(), out.data());
+        for (int k = 0; k < n; ++k) {
+            const double m = double(out[size_t(k)].r) * out[size_t(k)].r + double(out[size_t(k)].i) * out[size_t(k)].i;
+            if (m > max_power[size_t(k)]) max_power[size_t(k)] = m;
+        }
+    }
+    kiss_fft_free(cfg);
+    Spectrum result;
+    result.freqs_offset_hz.resize(static_cast<size_t>(n));
+    result.psd_db.resize(static_cast<size_t>(n));
+    const double bin_hz = sample_rate_hz / n;
+    for (int j = 0; j < n; ++j) {
+        const int orig = (j + n / 2) % n;
+        result.psd_db[size_t(j)] = 10.0 * std::log10(max_power[size_t(orig)] + 1e-15);
+        result.freqs_offset_hz[size_t(j)] = (j - n / 2) * bin_hz;
+    }
+    return result;
 }
 }  // namespace
 
@@ -720,21 +805,52 @@ bool Scanner::connect_sdr(const DeviceProfile& profile, std::optional<double> ga
 // SF/BW results are hypotheses, not deduplicated transmitter identities.
 void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
                                     double threshold_db, std::vector<Detection>& detections) {
-    const double host_start = std::chrono::duration<double>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    const auto capture_gain = gain();
-    const double capture_seconds = std::min(lora_capture_seconds(), 32000000.0 / profile.lora_listen_capture_rate_hz);
-    auto received = sdr_->capture_detailed(freq_hz, profile.lora_listen_capture_rate_hz, capture_seconds);
-    const double steady_captured = now_steady_s();
+    lora_plan::Capture one;
+    one.center_hz = freq_hz;
+    one.channels_hz = {freq_hz};
+    auto captured = capture_lora(one, profile);
+    process_lora(captured, profile, threshold_db, detections);
+}
+
+Scanner::LoraCaptured Scanner::capture_lora(const lora_plan::Capture& plan, const DeviceProfile& profile) {
+    LoraCaptured c;
+    c.plan = plan;
+    c.host_start = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+    c.gain = gain();
+    if (plan.wideband) {
+        c.capture_seconds = std::min(lora_capture_seconds(), LORA_WIDEBAND_MAX_SAMPLES / plan.rate_hz);
+        c.received = sdr_->capture_detailed(plan.center_hz, plan.rate_hz, c.capture_seconds);
+    } else {
+        c.capture_seconds = std::min(lora_capture_seconds(), 32000000.0 / profile.lora_listen_capture_rate_hz);
+        c.received = sdr_->capture_detailed(plan.center_hz, profile.lora_listen_capture_rate_hz, c.capture_seconds);
+    }
+    c.steady_captured = now_steady_s();
+    c.radio_session = radio_session_;  // a reconnect before processing starts a new session
+    note_capture_health(!c.received.samples.empty());
+    {
+        std::lock_guard<std::mutex> lock(status_mutex_);
+        status_.last_overflow = c.received.overflow;
+    }
+    return c;
+}
+
+void Scanner::process_lora(LoraCaptured& c, const DeviceProfile& profile, double threshold_db,
+                           std::vector<Detection>& detections) {
+    if (c.plan.wideband) { process_lora_wideband(c, profile, threshold_db, detections); return; }
+    const double freq_hz = c.plan.center_hz;
+    const double host_start = c.host_start;
+    const auto capture_gain = c.gain;
+    const double capture_seconds = c.capture_seconds;
+    const double steady_captured = c.steady_captured;
+    auto& received = c.received;
     auto& iq_raw=received.samples;const double actual_rate=received.sample_rate_hz;const bool overflow=received.overflow;
     LoraCapture provenance;
     provenance.sample_rate_hz=actual_rate;provenance.requested_sample_rate_hz=profile.lora_listen_capture_rate_hz;
     provenance.requested_center_hz=freq_hz;provenance.requested_duration_s=capture_seconds;
     provenance.host_start_unix_s=host_start;provenance.requested_gain_db=capture_gain;
     provenance.device_args=profile.device_args;provenance.antenna=profile.antenna;provenance.overflow=overflow;
-    provenance.run_id=security_run_id_;provenance.radio_session=radio_session_;
+    provenance.run_id=security_run_id_;provenance.radio_session=c.radio_session;
     provenance.capture_seq=++lora_security_capture_seq_;provenance.timing=received.timing;
-    note_capture_health(!iq_raw.empty());
     std::string save_directory;
     {
         std::lock_guard<std::mutex> lock(capture_mutex_);
@@ -752,10 +868,6 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
         capture_message_ = std::move(message);
         capture_pending_ = false;
     }
-    {
-        std::lock_guard<std::mutex> lock(status_mutex_);
-        status_.last_overflow = overflow;
-    }
     decode_lora_iq(iq_raw, provenance, threshold_db, detections, /*energy_segments=*/true);
     lora_plan::Capture listened;
     listened.center_hz = freq_hz;
@@ -772,17 +884,18 @@ void Scanner::run_lora_listen_step(double freq_hz, const DeviceProfile& profile,
 // energy map (Active emitters, channel suggestions) is computed alongside.
 void Scanner::run_lora_wideband_step(const lora_plan::Capture& plan, const DeviceProfile& profile,
                                      double threshold_db, std::vector<Detection>& detections) {
-    const double host_start = std::chrono::duration<double>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    const auto capture_gain = gain();
-    const double capture_seconds = std::min(lora_capture_seconds(), LORA_WIDEBAND_MAX_SAMPLES / plan.rate_hz);
-    auto received = sdr_->capture_detailed(plan.center_hz, plan.rate_hz, capture_seconds);
-    const double steady_captured = now_steady_s();
-    note_capture_health(!received.samples.empty());
-    {
-        std::lock_guard<std::mutex> lock(status_mutex_);
-        status_.last_overflow = received.overflow;
-    }
+    auto captured = capture_lora(plan, profile);
+    process_lora(captured, profile, threshold_db, detections);
+}
+
+void Scanner::process_lora_wideband(LoraCaptured& c, const DeviceProfile& profile, double threshold_db,
+                                    std::vector<Detection>& detections) {
+    const lora_plan::Capture& plan = c.plan;
+    const double host_start = c.host_start;
+    const auto capture_gain = c.gain;
+    const double capture_seconds = c.capture_seconds;
+    const double steady_captured = c.steady_captured;
+    auto& received = c.received;
     const auto& wide = received.samples;
     const double actual_rate = received.sample_rate_hz;
     const double lora_rate = profile.lora_listen_capture_rate_hz;
@@ -792,11 +905,17 @@ void Scanner::run_lora_wideband_step(const lora_plan::Capture& plan, const Devic
     const size_t decim = derivable ? size_t(std::llround(ratio)) : 1;
 
     // Energy map on its own thread, at the sub-GHz scan's bin width.
+    auto clock = [] { return std::chrono::steady_clock::now(); };
+    auto secs = [](auto a, auto b) { return std::chrono::duration<double>(b - a).count(); };
+    const auto t_start = clock();
     std::vector<Detection> energy;
+    double energy_s = 0;
     std::future<void> energy_done;
     if (derivable)
         energy_done = std::async(std::launch::async, [&] {
+            const auto t0 = std::chrono::steady_clock::now();
             append_lora_energy_segments(wide, actual_rate, plan.center_hz, threshold_db, energy);
+            energy_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         });
 
     std::vector<size_t> inside;
@@ -812,6 +931,14 @@ void Scanner::run_lora_wideband_step(const lora_plan::Capture& plan, const Devic
         auto extracted = lora_channelizer::extract(wide, actual_rate, offsets, lora_rate);
         for (size_t k = 0; k < inside.size(); ++k) channel_iq[inside[k]] = std::move(extracted[k]);
     }
+    const double channelize_s = secs(t_start, clock());
+    // The wide capture is no longer needed once the channels and the energy
+    // map are out: free it before decoding, so the capture/decode overlap
+    // (run()) holds two wide buffers only briefly.
+    if (energy_done.valid()) energy_done.get();
+    const size_t wide_samples = wide.size();
+    std::vector<std::complex<float>>().swap(received.samples);
+    const auto t_analyze = clock();
     // Pure analysis of up to 8 channels at once (each also splits by bandwidth).
     const bool laboratory = lora_laboratory_mode();
     std::vector<LoraAnalysis> analyses(plan.channels_hz.size());
@@ -826,6 +953,7 @@ void Scanner::run_lora_wideband_step(const lora_plan::Capture& plan, const Devic
         for (size_t i = first; i < last; ++i) analyses[i] = work[i - first].get();
     }
 
+    const auto t_commit = clock();
     // Mirror images of strong packets about the tuned centre (receiver IQ
     // imbalance) are tagged before any row is committed.
     {
@@ -854,7 +982,7 @@ void Scanner::run_lora_wideband_step(const lora_plan::Capture& plan, const Devic
         provenance.antenna = profile.antenna;
         provenance.overflow = received.overflow;
         provenance.run_id = security_run_id_;
-        provenance.radio_session = radio_session_;
+        provenance.radio_session = c.radio_session;
         provenance.capture_seq = ++lora_security_capture_seq_;
         if (!iq.empty()) {
             provenance.requested_duration_s = double(iq.size()) / lora_rate;
@@ -881,7 +1009,7 @@ void Scanner::run_lora_wideband_step(const lora_plan::Capture& plan, const Devic
         }
         commit_lora_analysis(iq, provenance, analyses[i], threshold_db, detections, /*energy_segments=*/false);
     }
-    if (energy_done.valid()) energy_done.get();
+    const auto t_done = clock();
     detections.insert(detections.end(), energy.begin(), energy.end());
     if (!save_directory.empty()) {
         std::string message = saved ? "Saved " + std::to_string(saved) + " derived channel capture(s), first: " + first_saved
@@ -892,7 +1020,14 @@ void Scanner::run_lora_wideband_step(const lora_plan::Capture& plan, const Devic
         capture_message_ = std::move(message);
         capture_pending_ = false;
     }
-    note_lora_listen(plan, wide.empty() ? 0.0 : double(wide.size()) / actual_rate, now_steady_s() - steady_captured);
+    note_lora_listen(plan, wide_samples == 0 ? 0.0 : double(wide_samples) / actual_rate, now_steady_s() - steady_captured);
+    {
+        std::lock_guard<std::mutex> lock(lora_log_mutex_);
+        lora_listen_stats_.last_channelize_s = channelize_s;
+        lora_listen_stats_.last_energy_s = energy_s;
+        lora_listen_stats_.last_analyze_s = secs(t_analyze, t_commit);
+        lora_listen_stats_.last_commit_s = secs(t_commit, t_done);
+    }
 }
 
 // Energy segments for the Active emitters table from a LoRa listen capture.
@@ -905,7 +1040,10 @@ void Scanner::append_lora_energy_segments(const std::vector<std::complex<float>>
     // 5 Msps); narrower ones keep the default. Reads the IQ in place (no copy).
     const int nperseg = int(std::clamp(std::round(SPECTRUM_DEFAULT_NPERSEG * actual_rate / SUB_GHZ_SAMPLE_RATE_HZ),
                                        double(SPECTRUM_DEFAULT_NPERSEG), double(SPECTRUM_DEFAULT_NPERSEG) * 8));
-    Spectrum spec = spectrogram_max_db(iq_raw, actual_rate, nperseg);
+    // Wideband captures (> the 5 Msps scan rate) sample every 4th frame; the
+    // 500 kHz single-channel listen keeps every frame.
+    const int stride = actual_rate > SUB_GHZ_SAMPLE_RATE_HZ ? 4 : 1;
+    Spectrum spec = lora_spectrum_max_db(iq_raw, actual_rate, nperseg, stride);
     double guard_hz = std::max(actual_rate * DC_GUARD_FRACTION, DC_GUARD_MIN_HZ);
     std::vector<bool> dc_mask = mask_dc_guard(spec.freqs_offset_hz, guard_hz);
     std::vector<bool> edge_mask = mask_edge_guard(spec.freqs_offset_hz, actual_rate, EDGE_GUARD_FRACTION);
@@ -2137,6 +2275,18 @@ void Scanner::run() {
     std::string last_band_seen;
     int band_cycle_count = 0;
 
+    // LoRa capture/decode overlap: the next listen capture is taken while a
+    // serial worker processes the previous one (capture order = commit order).
+    // Its detections reach the sub-GHz registry one cycle later.
+    const char* lora_pipeline_env = std::getenv("RFMON_LORA_PIPELINE");
+    const bool lora_pipeline = !(lora_pipeline_env && std::string(lora_pipeline_env) == "0");
+    std::future<std::vector<Detection>> lora_pending;
+    auto drain_lora = [&] {
+        if (!lora_pending.valid()) return;
+        auto late = lora_pending.get();
+        registry_for(BAND_SUB_GHZ).update_cycle(late, now_seconds());
+    };
+
     bool next_wifi_5g = false;
     while (!stop_flag_.load()) {
         std::string band;
@@ -2159,6 +2309,7 @@ void Scanner::run() {
             // Explicit coordinated mode owns its own lanes; finish any queued
             // band-mode Wi-Fi work first so the two never run together.
             if (wifi_lane) wifi_lane->wait_idle();
+            drain_lora();
             run_coordinated(profile, wifi_rate_override);
             last_band_seen = requested_band;
             band_cycle_count = 0;
@@ -2177,6 +2328,7 @@ void Scanner::run() {
         // Wi-Fi step (and its status marker) before a non-Wi-Fi cycle starts.
         const bool wifi_cycle = band == BAND_WIFI_2G4 || band == BAND_WIFI_5G;
         if (wifi_lane && !wifi_cycle) wifi_lane->wait_idle();
+        if (band != BAND_SUB_GHZ) drain_lora();
 
         std::vector<Detection> detections;
         bool any_overflow = false;
@@ -2397,8 +2549,21 @@ void Scanner::run() {
                                           locked_freq.has_value() ? " (locked)" : "");
                         status_.active_step_label = label;
                     }
-                    if (listen.wideband) run_lora_wideband_step(listen, profile, threshold, detections);
-                    else run_lora_listen_step(listen.center_hz, profile, threshold, detections);
+                    auto captured = std::make_shared<LoraCaptured>(capture_lora(listen, profile));
+                    // The previous capture was processed while this one ran.
+                    if (lora_pending.valid()) {
+                        auto previous = lora_pending.get();
+                        detections.insert(detections.end(), previous.begin(), previous.end());
+                    }
+                    if (lora_pipeline) {
+                        lora_pending = std::async(std::launch::async, [this, captured, profile, threshold] {
+                            std::vector<Detection> out;
+                            process_lora(*captured, profile, threshold, out);
+                            return out;
+                        });
+                    } else {
+                        process_lora(*captured, profile, threshold, detections);
+                    }
                 }
             }
         }
@@ -2446,6 +2611,10 @@ void Scanner::run() {
             }
         }
     }
+
+    // The last LoRa capture is still processed and committed before stop()
+    // stops the security monitor.
+    drain_lora();
 
     // Drain and join the lane before the radio goes and before stop() stops
     // the security monitor (stop() joins this thread first), so every queued

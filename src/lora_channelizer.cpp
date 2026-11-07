@@ -11,9 +11,10 @@ namespace rfmon::lora_channelizer {
 namespace {
 
 // Output transform size per block. N = M*D input samples per block; the first
-// and last N/8 of each block are overlap (discarded), so S = 3N/4 input
-// samples, 3M/4 output samples, are kept per block. M divisible by 8 keeps
-// every boundary on a multiple of D.
+// and last N/16 of each block are overlap (discarded), so S = 7N/8 input
+// samples, 7M/8 output samples, are kept per block. The flat-top mask's
+// impulse response is ~50 output samples, well inside the 64-sample overlap.
+// M divisible by 16 keeps every boundary on a multiple of D.
 constexpr size_t M = 1024;
 
 struct Fft {
@@ -35,7 +36,7 @@ std::vector<std::vector<std::complex<float>>> extract(const std::vector<std::com
     if (!std::isfinite(ratio) || ratio < 2 || std::abs(ratio - std::round(ratio)) > 1e-9)
         throw std::invalid_argument("Channel rate must divide the capture rate by an integer >= 2");
     const size_t D = size_t(std::llround(ratio));
-    const size_t N = M * D, S = 3 * N / 4, V2 = N / 8;  // block, kept span, half overlap
+    const size_t N = M * D, S = 7 * N / 8, V2 = N / 16;  // block, kept span, half overlap
     const size_t keep = S / D, skip = V2 / D;            // output samples kept / skipped per block
     const double bin_hz = in_rate_hz / double(N);
     for (double off : offsets_hz)
@@ -91,12 +92,18 @@ std::vector<std::vector<std::complex<float>>> extract(const std::vector<std::com
                 // at the output rate, referenced to global input time.
                 const double block_phase = -2 * M_PI * std::fmod(double(ch[c].k0) * double(start), double(N)) / double(N);
                 const size_t o0 = b * keep;
+                // Rotation for output o0 exactly, then advanced by a constant
+                // step per output (recurrence in double, re-anchored every
+                // block): no per-sample cos/sin.
+                const double ph0 = block_phase - 2 * M_PI * std::fmod(ch[c].residual_hz * double(o0 * D) / in_rate_hz, 1.0);
+                const double dph = -2 * M_PI * ch[c].residual_hz * double(D) / in_rate_hz;
+                std::complex<double> rot = std::polar(1.0, ph0);
+                const std::complex<double> step = std::polar(1.0, dph);
                 for (size_t p = 0; p < keep && o0 + p < out_len; ++p) {
-                    const size_t j = o0 + p;  // global output index; input index j*D
-                    const double ph = block_phase - 2 * M_PI * std::fmod(ch[c].residual_hz * double(j * D) / in_rate_hz, 1.0);
-                    const std::complex<float> rot(float(std::cos(ph)), float(std::sin(ph)));
                     const auto& v = res[skip + p];
-                    out[c][j] = std::complex<float>(v.r * scale, v.i * scale) * rot;
+                    out[c][o0 + p] = std::complex<float>(v.r * scale, v.i * scale) *
+                                     std::complex<float>(float(rot.real()), float(rot.imag()));
+                    rot *= step;
                 }
             }
         }

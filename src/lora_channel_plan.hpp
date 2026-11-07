@@ -311,6 +311,8 @@ struct ListenStats {
     bool last_wideband = false;
     std::map<double, double> channel_listened_s;  // channel -> seconds of IQ decoded
     double first_listen_steady_s = 0;             // steady clock at the first listen's start
+    // Wideband processing stages of the last capture (wall seconds).
+    double last_channelize_s = 0, last_energy_s = 0, last_analyze_s = 0, last_commit_s = 0;
 };
 
 // Energy-scan rows the GUI already has (registry DeviceRow fields, copied in

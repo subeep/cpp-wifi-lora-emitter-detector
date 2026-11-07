@@ -930,6 +930,20 @@ void draw_lora_receiver_panel(const LoraReceiverView& v, const LoraTabActions& a
         ImGui::Text("Last capture: %s %.4f MHz @ %.2f Msps, %zu channel(s) | %.2f s IQ | %.2f s decode after capture",
                     st.last_wideband ? "wideband" : "single", st.last_center_hz / 1e6, st.last_rate_hz / 1e6, st.last_channels,
                     st.last_capture_s, st.last_decode_s);
+        // Processing load: decoding overlaps the next capture, so it keeps up
+        // while it takes less time than one capture.
+        if (st.last_wideband && st.last_capture_s > 0) {
+            const double load = st.last_decode_s / st.last_capture_s;
+            ImGui::Text("Processing: channelize %.2f s, energy map %.2f s, decode %.2f s, commit %.2f s",
+                        st.last_channelize_s, st.last_energy_s, st.last_analyze_s, st.last_commit_s);
+            ImGui::SameLine();
+            if (load <= 0.8) ImGui::TextColored(kGood, "| load %.0f%% of real time", 100 * load);
+            else if (load <= 1.0) ImGui::TextColored(kCaution, "| load %.0f%% of real time (near the limit)", 100 * load);
+            else ImGui::TextColored(kBad, "| load %.0f%% of real time: falling behind", 100 * load);
+            if (load > 1.0)
+                ImGui::TextWrapped("This PC decodes slower than it captures, so listening time drops. A narrower capture width "
+                                   "(Auto) or fewer channels reduces the work; nothing is lost, the radio just waits.");
+        }
         const double wall = std::max(1e-9, v.now_steady_s - st.first_listen_steady_s);
         if (ImGui::BeginTable("lora_listen_share", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
             for (const char* c : {"Channel (MHz)", "IQ captured", "Share of wall time"}) ImGui::TableSetupColumn(c);

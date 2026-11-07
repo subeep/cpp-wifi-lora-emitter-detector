@@ -234,7 +234,13 @@ std::vector<LoraPacketRow> analyze_lora_packets(const std::vector<std::complex<f
         }
         rows.push_back(std::move(row));
     }
-    if (rows.empty()) {
+    // The legacy burst search repeats the receiver's own windowed dechirp
+    // scan with a stricter rule (6 identical bins, ratio > 0.5, against the
+    // receiver's 6 bins within +/-1.5); with no receiver preamble candidate
+    // it cannot find one, so it only runs when there is one. SF5/6 are not
+    // scanned by the receiver (explicit headers start at SF7), so there the
+    // legacy search is the only detector and always runs.
+    if (rows.empty() && (diagnostics.preamble_candidates || sf < 7)) {
         auto burst = lora::detect_burst(iq, sf);
         if (burst || diagnostics.preamble_candidates) {
             LoraPacketRow row; row.sf = sf; if (burst) row.cfo_bins = burst->cfo_bins;

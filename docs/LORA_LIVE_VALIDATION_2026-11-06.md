@@ -458,3 +458,83 @@ TarangMini ST22LR01, EUI 3cc1f6050005d8eb, TarangNet v0_0_6, 865.1 MHz,
 SF7/BW125, power 22 dBm default) in the same session as the Heltec. The fit's
 remaining ~20% EVM is still model error worth removing (receive-filter
 reference) before judging separation.
+
+**TarangMini check (2026-11-07, no configuration changes).** The second
+TarangMini (EUI 3cc1f6050005d8eb, router mode, 865.1 MHz, 22 dBm) answered
+data-send commands with "Uplink ACK" (`2b038100`) but put nothing on air:
+2 Msps and 20 MHz captures during sends showed no burst near 865.1 MHz (at
+22 dBm and 2-3 m it would sit near -8 dBFS; the Heltec at 0 dBm read
+-30.6 dBFS at X310 gain 0). A 10-minute passive watch with the board next to
+the X310 (5 decoded channels incl. 865.1, energy map over 858-873 MHz,
+listen-only serial logger) recorded no packets, no LoRa-like energy and no
+serial events. Consistent with a router waiting for a root. The two-device
+fingerprint comparison is on hold until it has a root (another TarangMini as
+root) or is switched to root mode. Sender for later use:
+`tools/lora_validation/tarangmini_send.py` (send commands only, logs settings
+and every send).
+
+## Efficiency, capture/decode overlap and fingerprint robustness (2026-11-07)
+
+Goal: run well on a modest PC (baseline 4 cores, 8 GB), not this 20-core
+machine. New radio-free benchmark `build/lora_bench` (tools/lora_bench.cpp):
+a 6 s, 20 Msps capture with receiver noise and the recorded SX1262 packet
+FFT-upsampled onto the planned channels, through the production
+capture/process path; restrict cores with `taskset`.
+
+| Processing one 6 s, 20 MHz capture | Before | After |
+|---|---:|---:|
+| 4 cores, 4 channels | 5.2 s wall, 17.5 CPU-s | **2.1 s, 7.7 CPU-s** (2.8x real time) |
+| 4 cores, 13 channels | 12.8 s, 48 CPU-s (falls behind) | **5.1 s, 19.8 CPU-s** (keeps up) |
+| 2 cores, 4 channels | - | 4.1 s (1.5x real time) |
+| 2 cores, 13 channels | - | 9.9 s (falls behind: use Auto width or fewer channels) |
+| Per decoded packet (fingerprint, phase retry) | ~21 ms CPU | ~18 ms CPU |
+
+LoRa processing needs ~1-1.2 GB at 20 MHz (one capture plus channel IQ).
+
+Changes:
+- Receiver window scan (`lora_receiver.cpp`): squared-norm peak search and
+  sqrt instead of `std::abs`/`std::hypot` (runs per window, SF, BW, polarity).
+- Legacy burst search only when the receiver found a preamble candidate (it
+  repeats the receiver's scan with a stricter rule); always for SF5/6, which
+  the receiver does not scan.
+- Energy map: every 4th 8192-point frame (one per 1.6 ms) for wideband
+  captures; LoRa packets (>= ~25 ms) still span dozens of frames.
+- Channelizer: 1/16 overlap instead of 1/8 (filter response ~50 outputs vs 64
+  overlap), and a per-block phase recurrence instead of cos/sin per sample.
+- Wide capture freed once channels and the energy map are extracted.
+- Fingerprint down-chirp check: phase recurrence instead of sin/cos per sample.
+- Receiver panel: per-stage times and processing load vs real time (green,
+  amber near the limit, red with advice when falling behind).
+
+**Capture/decode overlap.** Each LoRa listen is split into `capture_lora`
+(radio) and `process_lora` (serial worker); the scan loop takes the next
+capture while the previous one is processed, commits stay in capture order,
+detections reach the registry one cycle later, the radio session is recorded
+at capture time, and the worker is drained on band change, coordinated mode
+and stop. At most one capture waits, so a slow PC loses listening time, not
+data. `RFMON_LORA_PIPELINE=0` disables it. Live (t8pipe, 4 channels, 20 MHz):
+listen share **0.73 -> 0.93**, recall **0.72 -> 0.88** (95/108), zero false
+positives, cycle 6.4 s.
+
+**One-device robustness sweep** (t9robust, then t10sf; Heltec on
+865.4025 MHz). Transmit power -9/0/6/14 dBm (SNR 50-72 dB): every feature
+constant, one cluster. Spreading factor: the chip-rate fit split SF7/9/11
+into three clusters, with IRR/eps/phase shrinking as SF rose, so the fit was
+measuring its own error. Fixes:
+1. `extract_lora_fingerprint_oversampled`: the fit on the 500 kHz channel IQ
+   (before decimation) against an analytic continuous-phase chirp at a
+   fractional symbol boundary found by a quarter-sample search (after the
+   existing phase/pairing selection). EVM 19-25% -> ~10%.
+2. Even then IRR, DC, eps and phase fell exactly as 1/N with SF (IRR
+   -46/-57/-68 dB, DC -42/-54/-65 dBc at SF7/9/11): a once-per-symbol
+   boundary transient, not hardware IQ imbalance or LO leakage (those are
+   below ~-65 dB on the SX1262). The four terms are now reported per symbol
+   boundary, scaled to the SF7 symbol length.
+
+Result (t10sf rerun): **1 cluster, 92 readings across SF7/9/11 and 0/14 dBm**;
+IRR -46.4/-44.7/-43.3 dB, DC -42.6/-41.8/-41.7 dBc, eps 0.008/0.010/0.010,
+phase -0.28/-0.35/-0.51 deg, CFO within +/-0.07 ppm. SF11 fits are noisier
+(EVM ~32%, likely phase drift over 16 ms symbols). The features are now
+stable for one device across power, SF, channel and weeks; whether they
+separate two devices still needs a second transmitter (TarangMini on hold,
+see above).

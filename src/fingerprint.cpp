@@ -74,6 +74,172 @@ std::string num_or_null(double v, double res) {
 }  // namespace
 
 namespace {
+// CFO refinement, widely-linear fit r' = mu*s + nu*conj(s) + c, EVM,
+// sync_corr and the fit-quality gates, on a unit-RMS received segment
+// `r_tilde` against its reference `s` (fit_len symbols of `sps` samples at
+// `sample_rate_hz`), starting from CFO estimate `delta_f_hz`. Fills `fp`.
+void fit_reference(LoraFingerprint& fp, const std::vector<std::complex<double>>& r_tilde,
+                   const std::vector<std::complex<double>>& s, int fit_len, long sps, double sample_rate_hz,
+                   double delta_f_hz, double center_hz) {
+    const long fit_samples = long(fit_len) * sps;
+    const size_t fit_samples_sz = size_t(fit_samples);
+    // --- CFO refinement (source spec §3.1 derotation, precision fixed
+    // up front here) - cfo_bins is the codec's own raw FFT-peak bin
+    // (see find_preamble() in lora_phy.cpp), with no sub-bin
+    // resolution: up to +/-0.5 bin of true CFO always remains after
+    // derotating by it alone. That residual's accumulated phase drift
+    // across the whole preamble is pi*preamble_len radians regardless
+    // of SF/BW (N and BW cancel exactly) - real captures run
+    // 8-40+ symbols (see TARANGMINI_LORA_FINDINGS.md), so at
+    // preamble_len=40 even the full +/-0.5 bin case wraps ~20 times,
+    // which wrecks EVM/sync_corr below on every real capture, correct
+    // (SF, BW) hypothesis included (confirmed: 0% of real captures
+    // passed the gate before this was added). Refined here via the
+    // classic differential (Moose-style) estimator: correlate each
+    // preamble symbol against the known reference, then the phase
+    // rotation between consecutive symbols' correlations is exactly
+    // the leftover sub-bin frequency error - unambiguous over one
+    // symbol of spacing precisely because the residual is bounded to
+    // +/-0.5 bin by cfo_bins already being the nearest integer.
+    double residual_bins = 0.0;
+    if (fit_len >= 2) {
+        double coarse_phase_inc = -2.0 * M_PI * delta_f_hz / sample_rate_hz;
+        size_t fit_len_sz = size_t(fit_len);
+        std::vector<std::complex<double>> sym_corr(fit_len_sz);
+        double phase = 0.0;
+        for (int m = 0; m < fit_len; ++m) {
+            std::complex<double> corr(0.0, 0.0);
+            for (long n = 0; n < sps; ++n) {
+                long i = long(m) * sps + n;
+                std::complex<double> rot(std::cos(phase), std::sin(phase));
+                corr += (r_tilde[size_t(i)] * rot) * std::conj(s[size_t(i)]);
+                phase += coarse_phase_inc;
+                if (phase > M_PI) phase -= 2.0 * M_PI;
+                else if (phase < -M_PI) phase += 2.0 * M_PI;
+            }
+            sym_corr[size_t(m)] = corr;
+        }
+        std::complex<double> diff_sum(0.0, 0.0);
+        for (int m = 0; m + 1 < fit_len; ++m) {
+            diff_sum += sym_corr[size_t(m + 1)] * std::conj(sym_corr[size_t(m)]);
+        }
+        if (std::abs(diff_sum) > 1e-12) {
+            residual_bins = std::arg(diff_sum) / (2.0 * M_PI);
+        }
+    }
+    double delta_f_hz_refined = delta_f_hz + residual_bins * sample_rate_hz / double(sps);
+    fp.cfo_ppm = (delta_f_hz_refined / center_hz) * 1e6;
+
+    double phase_inc = -2.0 * M_PI * delta_f_hz_refined / sample_rate_hz;
+    double phase = 0.0;
+    std::vector<std::complex<double>> r_prime(fit_samples_sz);
+    for (long i = 0; i < fit_samples; ++i) {
+        std::complex<double> rot(std::cos(phase), std::sin(phase));
+        r_prime[size_t(i)] = r_tilde[size_t(i)] * rot;
+        phase += phase_inc;
+        if (phase > M_PI) phase -= 2.0 * M_PI;
+        else if (phase < -M_PI) phase += 2.0 * M_PI;
+    }
+
+    // --- I/Q imbalance + DC offset: one least-squares solve (source
+    // spec §3.4). Widely-linear model r' = mu*s + nu*conj(s) + c,
+    // solved via the normal equations on A = [s, conj(s), 1]. ---
+    std::complex<double> ata[3][3] = {};
+    std::complex<double> atr[3] = {};
+    double sum_s2 = 0.0;   // sum |s[n]|^2, reused for sync_corr below
+    double sum_r2 = 0.0;   // sum |r'[n]|^2, reused for sync_corr below
+    std::complex<double> sum_s = 0.0, sum_s_sq = 0.0, sum_conj_s_sq = 0.0;
+    for (long i = 0; i < fit_samples; ++i) {
+        std::complex<double> si = s[size_t(i)];
+        std::complex<double> ci = std::conj(si);
+        sum_s += si;
+        sum_s_sq += si * si;
+        sum_conj_s_sq += ci * ci;
+        sum_s2 += std::norm(si);
+        sum_r2 += std::norm(r_prime[size_t(i)]);
+        atr[0] += ci * r_prime[size_t(i)];
+        atr[1] += si * r_prime[size_t(i)];
+        atr[2] += r_prime[size_t(i)];
+    }
+    ata[0][0] = sum_s2;
+    ata[0][1] = sum_conj_s_sq;
+    ata[0][2] = std::conj(sum_s);
+    ata[1][0] = sum_s_sq;
+    ata[1][1] = sum_s2;
+    ata[1][2] = sum_s;
+    ata[2][0] = sum_s;
+    ata[2][1] = std::conj(sum_s);
+    ata[2][2] = double(fit_samples);
+
+    std::complex<double> theta[3];
+    if (!solve3x3(ata, atr, theta)) {
+        fp.gated_out = true;
+        fp.gate_reason = "IQ-imbalance fit singular";
+        return;
+    }
+    std::complex<double> mu = theta[0], nu = theta[1], c = theta[2];
+    if (std::abs(mu) < 1e-12) {
+        fp.gated_out = true;
+        fp.gate_reason = "degenerate mu in IQ-imbalance fit";
+        return;
+    }
+
+    std::complex<double> q = nu / mu;
+    fp.irr_db = 20.0 * std::log10(std::abs(q));
+    fp.iq_eps = -2.0 * q.real();
+    fp.iq_phi_deg = -2.0 * q.imag() * 180.0 / M_PI;
+    fp.dc_dbc = 20.0 * std::log10(std::abs(c) / std::abs(mu));
+    fp.dc_ang_deg = std::arg(c / mu) * 180.0 / M_PI;
+    fp.n_samp = int(fit_samples);
+
+    // --- Residual / EVM (source spec §3.4) ---
+    double err_power = 0.0, s_power = 0.0;
+    for (long i = 0; i < fit_samples; ++i) {
+        std::complex<double> model = mu * s[size_t(i)] + nu * std::conj(s[size_t(i)]) + c;
+        std::complex<double> e = r_prime[size_t(i)] - model;
+        err_power += std::norm(e);
+        s_power += std::norm(s[size_t(i)]);
+    }
+    fp.evm_pct = 100.0 * std::sqrt((err_power / fit_samples) / (s_power / fit_samples));
+
+    // --- sync_corr (source spec §3.3), reusing `mu` from the fit above
+    // as the channel-scalar stand-in rather than a separate plain-
+    // channel fit - a deliberate simplification for this first pass. ---
+    fp.sync_corr = std::min(1.0, std::abs(mu) * std::sqrt(sum_s2) / std::sqrt(sum_r2));
+
+    // --- Fit-quality gate (thresholds calibrated from real controlled
+    // TarangMini data, not the source spec's generic 10%/0.95 - see
+    // LORA_EVM_CEILING_PCT's own comment in fingerprint.hpp for the
+    // full story) - a high SNR alone doesn't mean this was a genuinely
+    // correct (SF, BW) match: real strong ambient signal can sit behind
+    // a WRONG hypothesis and still clear the SNR floor, while the fit
+    // itself (evm_pct/sync_corr) reveals it doesn't actually explain
+    // the captured signal. Confirmed worth adding: real captures showed
+    // implausible CFO swings (thousands of ppm - no real crystal drifts
+    // that much) specifically on readings with high SNR but poor
+    // sync_corr/evm_pct, consistent with a cross-hypothesis false
+    // match rather than a genuine preamble lock. evm_pct/sync_corr
+    // stay populated even when this gate rejects (source spec's own
+    // "record rejections, don't silently drop them") - the identity
+    // parameters above (irr_db etc.) are still computed too, but the
+    // caller should not trust them when gated_out is true regardless
+    // of which specific gate caused it.
+    if (fp.evm_pct > LORA_EVM_CEILING_PCT) {
+        fp.gated_out = true;
+        fp.gate_reason = "EVM above ceiling";
+        return;
+    }
+    if (fp.sync_corr < LORA_SYNC_CORR_FLOOR) {
+        fp.gated_out = true;
+        fp.gate_reason = "sync_corr below floor";
+        return;
+    }
+
+    fp.gated_out = false;
+}
+}  // namespace
+
+namespace {
 // Shared body. Noise power from [noise_start, noise_start + N); signal power
 // over `preamble_len` symbols from `start_sample`; the CFO refinement and
 // widely-linear fit over `fit_len` symbols from `fit_start`.
@@ -154,160 +320,7 @@ LoraFingerprint fingerprint_core(const std::vector<std::complex<float>>& iq, int
         s[size_t(i)] = std::complex<double>(v.real(), v.imag());
     }
 
-    // --- CFO refinement (source spec §3.1 derotation, precision fixed
-    // up front here) - cfo_bins is the codec's own raw FFT-peak bin
-    // (see find_preamble() in lora_phy.cpp), with no sub-bin
-    // resolution: up to +/-0.5 bin of true CFO always remains after
-    // derotating by it alone. That residual's accumulated phase drift
-    // across the whole preamble is pi*preamble_len radians regardless
-    // of SF/BW (N and BW cancel exactly) - real captures run
-    // 8-40+ symbols (see TARANGMINI_LORA_FINDINGS.md), so at
-    // preamble_len=40 even the full +/-0.5 bin case wraps ~20 times,
-    // which wrecks EVM/sync_corr below on every real capture, correct
-    // (SF, BW) hypothesis included (confirmed: 0% of real captures
-    // passed the gate before this was added). Refined here via the
-    // classic differential (Moose-style) estimator: correlate each
-    // preamble symbol against the known reference, then the phase
-    // rotation between consecutive symbols' correlations is exactly
-    // the leftover sub-bin frequency error - unambiguous over one
-    // symbol of spacing precisely because the residual is bounded to
-    // +/-0.5 bin by cfo_bins already being the nearest integer.
-    double delta_f_hz = double(cfo_bins) * bandwidth_hz / double(N);
-    double residual_bins = 0.0;
-    if (fit_len >= 2) {
-        double coarse_phase_inc = -2.0 * M_PI * delta_f_hz / bandwidth_hz;
-        size_t fit_len_sz = size_t(fit_len);
-        std::vector<std::complex<double>> sym_corr(fit_len_sz);
-        double phase = 0.0;
-        for (int m = 0; m < fit_len; ++m) {
-            std::complex<double> corr(0.0, 0.0);
-            for (int n = 0; n < N; ++n) {
-                long i = long(m) * N + n;
-                std::complex<double> rot(std::cos(phase), std::sin(phase));
-                corr += (r_tilde[size_t(i)] * rot) * std::conj(s[size_t(i)]);
-                phase += coarse_phase_inc;
-                if (phase > M_PI) phase -= 2.0 * M_PI;
-                else if (phase < -M_PI) phase += 2.0 * M_PI;
-            }
-            sym_corr[size_t(m)] = corr;
-        }
-        std::complex<double> diff_sum(0.0, 0.0);
-        for (int m = 0; m + 1 < fit_len; ++m) {
-            diff_sum += sym_corr[size_t(m + 1)] * std::conj(sym_corr[size_t(m)]);
-        }
-        if (std::abs(diff_sum) > 1e-12) {
-            residual_bins = std::arg(diff_sum) / (2.0 * M_PI);
-        }
-    }
-    double delta_f_hz_refined = delta_f_hz + residual_bins * bandwidth_hz / double(N);
-    fp.cfo_ppm = (delta_f_hz_refined / center_hz) * 1e6;
-
-    double phase_inc = -2.0 * M_PI * delta_f_hz_refined / bandwidth_hz;
-    double phase = 0.0;
-    std::vector<std::complex<double>> r_prime(fit_samples_sz);
-    for (long i = 0; i < fit_samples; ++i) {
-        std::complex<double> rot(std::cos(phase), std::sin(phase));
-        r_prime[size_t(i)] = r_tilde[size_t(i)] * rot;
-        phase += phase_inc;
-        if (phase > M_PI) phase -= 2.0 * M_PI;
-        else if (phase < -M_PI) phase += 2.0 * M_PI;
-    }
-
-    // --- I/Q imbalance + DC offset: one least-squares solve (source
-    // spec §3.4). Widely-linear model r' = mu*s + nu*conj(s) + c,
-    // solved via the normal equations on A = [s, conj(s), 1]. ---
-    std::complex<double> ata[3][3] = {};
-    std::complex<double> atr[3] = {};
-    double sum_s2 = 0.0;   // sum |s[n]|^2, reused for sync_corr below
-    double sum_r2 = 0.0;   // sum |r'[n]|^2, reused for sync_corr below
-    std::complex<double> sum_s = 0.0, sum_s_sq = 0.0, sum_conj_s_sq = 0.0;
-    for (long i = 0; i < fit_samples; ++i) {
-        std::complex<double> si = s[size_t(i)];
-        std::complex<double> ci = std::conj(si);
-        sum_s += si;
-        sum_s_sq += si * si;
-        sum_conj_s_sq += ci * ci;
-        sum_s2 += std::norm(si);
-        sum_r2 += std::norm(r_prime[size_t(i)]);
-        atr[0] += ci * r_prime[size_t(i)];
-        atr[1] += si * r_prime[size_t(i)];
-        atr[2] += r_prime[size_t(i)];
-    }
-    ata[0][0] = sum_s2;
-    ata[0][1] = sum_conj_s_sq;
-    ata[0][2] = std::conj(sum_s);
-    ata[1][0] = sum_s_sq;
-    ata[1][1] = sum_s2;
-    ata[1][2] = sum_s;
-    ata[2][0] = sum_s;
-    ata[2][1] = std::conj(sum_s);
-    ata[2][2] = double(fit_samples);
-
-    std::complex<double> theta[3];
-    if (!solve3x3(ata, atr, theta)) {
-        fp.gated_out = true;
-        fp.gate_reason = "IQ-imbalance fit singular";
-        return fp;
-    }
-    std::complex<double> mu = theta[0], nu = theta[1], c = theta[2];
-    if (std::abs(mu) < 1e-12) {
-        fp.gated_out = true;
-        fp.gate_reason = "degenerate mu in IQ-imbalance fit";
-        return fp;
-    }
-
-    std::complex<double> q = nu / mu;
-    fp.irr_db = 20.0 * std::log10(std::abs(q));
-    fp.iq_eps = -2.0 * q.real();
-    fp.iq_phi_deg = -2.0 * q.imag() * 180.0 / M_PI;
-    fp.dc_dbc = 20.0 * std::log10(std::abs(c) / std::abs(mu));
-    fp.dc_ang_deg = std::arg(c / mu) * 180.0 / M_PI;
-    fp.n_samp = int(fit_samples);
-
-    // --- Residual / EVM (source spec §3.4) ---
-    double err_power = 0.0, s_power = 0.0;
-    for (long i = 0; i < fit_samples; ++i) {
-        std::complex<double> model = mu * s[size_t(i)] + nu * std::conj(s[size_t(i)]) + c;
-        std::complex<double> e = r_prime[size_t(i)] - model;
-        err_power += std::norm(e);
-        s_power += std::norm(s[size_t(i)]);
-    }
-    fp.evm_pct = 100.0 * std::sqrt((err_power / fit_samples) / (s_power / fit_samples));
-
-    // --- sync_corr (source spec §3.3), reusing `mu` from the fit above
-    // as the channel-scalar stand-in rather than a separate plain-
-    // channel fit - a deliberate simplification for this first pass. ---
-    fp.sync_corr = std::min(1.0, std::abs(mu) * std::sqrt(sum_s2) / std::sqrt(sum_r2));
-
-    // --- Fit-quality gate (thresholds calibrated from real controlled
-    // TarangMini data, not the source spec's generic 10%/0.95 - see
-    // LORA_EVM_CEILING_PCT's own comment in fingerprint.hpp for the
-    // full story) - a high SNR alone doesn't mean this was a genuinely
-    // correct (SF, BW) match: real strong ambient signal can sit behind
-    // a WRONG hypothesis and still clear the SNR floor, while the fit
-    // itself (evm_pct/sync_corr) reveals it doesn't actually explain
-    // the captured signal. Confirmed worth adding: real captures showed
-    // implausible CFO swings (thousands of ppm - no real crystal drifts
-    // that much) specifically on readings with high SNR but poor
-    // sync_corr/evm_pct, consistent with a cross-hypothesis false
-    // match rather than a genuine preamble lock. evm_pct/sync_corr
-    // stay populated even when this gate rejects (source spec's own
-    // "record rejections, don't silently drop them") - the identity
-    // parameters above (irr_db etc.) are still computed too, but the
-    // caller should not trust them when gated_out is true regardless
-    // of which specific gate caused it.
-    if (fp.evm_pct > LORA_EVM_CEILING_PCT) {
-        fp.gated_out = true;
-        fp.gate_reason = "EVM above ceiling";
-        return fp;
-    }
-    if (fp.sync_corr < LORA_SYNC_CORR_FLOOR) {
-        fp.gated_out = true;
-        fp.gate_reason = "sync_corr below floor";
-        return fp;
-    }
-
-    fp.gated_out = false;
+    fit_reference(fp, r_tilde, s, fit_len, N, bandwidth_hz, double(cfo_bins) * bandwidth_hz / double(N), center_hz);
     return fp;
 }
 }  // namespace
@@ -325,6 +338,70 @@ LoraFingerprint extract_lora_fingerprint_at(const std::vector<std::complex<float
                                              int fit_symbols, long noise_start, int cfo_bins) {
     return fingerprint_core(iq, sf, bandwidth_hz, center_hz, noise_start, fit_start, fit_symbols, fit_start,
                             fit_symbols, cfo_bins);
+}
+
+LoraFingerprint extract_lora_fingerprint_oversampled(const std::vector<std::complex<float>>& raw,
+                                                     double sample_rate_hz, int sf, double bandwidth_hz,
+                                                     double center_hz, double t0, int symbols, long noise_start,
+                                                     double cfo_hz) {
+    LoraFingerprint fp;
+    const long N = 1L << sf;
+    const double os = sample_rate_hz / bandwidth_hz;
+    const long sps = std::lround(double(N) * os);
+    const long i0 = long(std::ceil(t0));
+    const long L = long(symbols) * sps;
+    if (symbols < 1 || os < 1 || !std::isfinite(t0) || i0 < 0 || size_t(i0 + L) > raw.size()) {
+        fp.gated_out = true;
+        fp.gate_reason = "insufficient preamble samples";
+        return fp;
+    }
+    if (noise_start < 0 || size_t(noise_start + sps) > raw.size()) {
+        fp.gated_out = true;
+        fp.gate_reason = "no pre-burst noise window available";
+        return fp;
+    }
+    double noise_power = 0, burst_power = 0;
+    for (long i = noise_start; i < noise_start + sps; ++i) noise_power += std::norm(std::complex<double>(raw[size_t(i)]));
+    noise_power /= double(sps);
+    for (long i = i0; i < i0 + L; ++i) burst_power += std::norm(std::complex<double>(raw[size_t(i)]));
+    burst_power /= double(L);
+    if (noise_power <= 0.0 || burst_power <= noise_power) {
+        fp.gated_out = true;
+        fp.gate_reason = "SNR non-positive";
+        return fp;
+    }
+    fp.snr_db = 10.0 * std::log10((burst_power - noise_power) / noise_power);
+    if (fp.snr_db < LORA_SNR_FLOOR_DB) {
+        fp.gated_out = true;
+        fp.gate_reason = "below SNR floor";
+        return fp;
+    }
+    const double g = std::sqrt(burst_power);
+    std::vector<std::complex<double>> r_tilde(static_cast<size_t>(L)), ref(static_cast<size_t>(L));
+    for (long i = 0; i < L; ++i) {
+        r_tilde[size_t(i)] = std::complex<double>(raw[size_t(i0 + i)]) / g;
+        // Continuous-phase up-chirp, u chips after a symbol boundary at t0:
+        // phase pi*(u^2/N - u), the base chirp extended between chip instants.
+        double u = std::fmod((double(i0 + i) - t0) / os, double(N));
+        if (u < 0) u += double(N);
+        ref[size_t(i)] = std::polar(1.0, M_PI * (u * u / double(N) - u));
+    }
+    fit_reference(fp, r_tilde, ref, symbols, sps, sample_rate_hz, cfo_hz, center_hz);
+    // Per-symbol-boundary normalisation. Live (Heltec SX1262, 865.4 MHz) the
+    // conj(s) and constant terms fell exactly as 1/N with spreading factor:
+    // IRR -46/-57/-68 dB and DC -42/-54/-65 dBc at SF7/9/11, eps and phase
+    // /4 per two SFs. Hardware IQ imbalance and LO leakage would not depend
+    // on SF; a transient once per symbol boundary does. So these four are
+    // expressed per symbol boundary, scaled to the SF7 symbol length, which
+    // makes one transmitter read the same at every SF.
+    if (fp.n_samp > 0) {
+        const double k = double(N) / 128.0;
+        fp.iq_eps *= k;
+        fp.iq_phi_deg *= k;
+        fp.irr_db += 20.0 * std::log10(k);
+        fp.dc_dbc += 20.0 * std::log10(k);
+    }
+    return fp;
 }
 
 void append_fingerprint_record(const std::string& path, const std::string& time_hhmmss,
