@@ -102,6 +102,26 @@ int main() {
         auto far = plan({865.0625e6, 915e6}, o = PlanOptions{500e3, 20e6, true, 20e6, 863e6, 868e6});
         check(far.size() == 2 && far[0].covers_range && !far[1].covers_range, "far_channels_split_and_range_kept_where_possible");
     }
+    {   // IQ-imbalance images: no planned channel on another's mirror (2*centre - f).
+        PlanOptions o;
+        o.preferred_rate = 20e6;
+        o.cover_lo = 863e6;
+        o.cover_hi = 868e6;
+        for (const auto& preset : presets())
+            for (const auto& c : plan(preset.channels_hz, o))
+                check(!c.wideband || (c.mirror_clearance_hz >= DEFAULT_MIN_MIRROR_CLEARANCE_HZ &&
+                                      std::abs(c.mirror_clearance_hz - mirror_clearance(c.channels_hz, c.center_hz)) < 1 &&
+                                      c.dc_clearance_hz >= 100e3),
+                      (std::string("mirror_clear_20mhz ") + preset.name).c_str(), std::to_string(c.mirror_clearance_hz));
+        // The live collisions: 865.0625 <-> 865.985 about 865.505, 865.0625 -> 867.5 about 866.263.
+        check(mirror_clearance(LORA_LISTEN_CHANNELS_HZ, 865.505e6) < 50e3, "live_4ch_centre_collided");
+        check(mirror_clearance(presets().back().channels_hz, 866.263e6) < 50e3, "live_13ch_centre_collided");
+        bool ok = true;  // auto width: also image-clear
+        for (const auto& preset : presets())
+            for (const auto& c : plan(preset.channels_hz, 500e3, 20e6, true))
+                ok = ok && (!c.wideband || c.mirror_clearance_hz >= DEFAULT_MIN_MIRROR_CLEARANCE_HZ);
+        check(ok, "mirror_clear_auto_width");
+    }
     if (failures) {
         std::printf("%d channel plan check(s) failed\n", failures);
         return 1;

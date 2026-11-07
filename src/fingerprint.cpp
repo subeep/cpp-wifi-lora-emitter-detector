@@ -73,83 +73,16 @@ std::string num_or_null(double v, double res) {
 
 }  // namespace
 
-LoraFingerprint extract_lora_fingerprint(const std::vector<std::complex<float>>& iq, int sf,
-                                          double bandwidth_hz, double center_hz,
-                                          long start_sample, int preamble_len, int cfo_bins) {
-    LoraFingerprint fp;
-    int N = 1 << sf;
-    long preamble_samples = long(preamble_len) * N;
-
-    if (preamble_len < 1 || start_sample < 0 ||
-        size_t(start_sample + preamble_samples) > iq.size()) {
-        fp.gated_out = true;
-        fp.gate_reason = "insufficient preamble samples";
-        return fp;
-    }
-    if (start_sample < N) {
-        fp.gated_out = true;
-        fp.gate_reason = "no pre-burst noise window available";
-        return fp;
-    }
-
-    // --- SNR gate (source spec §2.2) - a low-SNR packet doesn't
-    // produce a slightly worse parameter, it produces a wrong one, so
-    // this rejects before any of the fitting below runs at all. ---
-    double noise_power = 0.0;
-    for (long i = start_sample - N; i < start_sample; ++i) {
-        noise_power += double(iq[size_t(i)].real()) * iq[size_t(i)].real() +
-                       double(iq[size_t(i)].imag()) * iq[size_t(i)].imag();
-    }
-    noise_power /= double(N);
-
-    double burst_power = 0.0;
-    for (long i = start_sample; i < start_sample + preamble_samples; ++i) {
-        burst_power += double(iq[size_t(i)].real()) * iq[size_t(i)].real() +
-                       double(iq[size_t(i)].imag()) * iq[size_t(i)].imag();
-    }
-    burst_power /= double(preamble_samples);
-
-    if (noise_power <= 0.0 || burst_power <= noise_power) {
-        fp.gated_out = true;
-        fp.gate_reason = "SNR non-positive";
-        return fp;
-    }
-    fp.snr_db = 10.0 * std::log10((burst_power - noise_power) / noise_power);
-    if (fp.snr_db < LORA_SNR_FLOOR_DB) {
-        fp.gated_out = true;
-        fp.gate_reason = "below SNR floor";
-        return fp;
-    }
-
-    // --- Unit-RMS normalize the preamble segment (source spec §2.3 -
-    // this is what makes every ratio below receiver-gain-invariant).
-    // Everything from here down uses only the first LORA_FP_MAX_FIT_SYMBOLS
-    // of the (possibly much longer) measured preamble - see that
-    // constant's own comment for why. burst_power/SNR above deliberately
-    // stayed on the full preamble; a longer average there is strictly
-    // better, it's only the CFO/LS fit that a long window hurts. ---
-    int fit_len = std::min(preamble_len, LORA_FP_MAX_FIT_SYMBOLS);
-    long fit_samples = long(fit_len) * N;
-    size_t fit_samples_sz = size_t(fit_samples);
-    double g = std::sqrt(burst_power);
-    std::vector<std::complex<double>> r_tilde(fit_samples_sz);
-    for (long i = 0; i < fit_samples; ++i) {
-        r_tilde[size_t(i)] = std::complex<double>(iq[size_t(start_sample + i)].real(),
-                                                    iq[size_t(start_sample + i)].imag()) /
-                              g;
-    }
-
-    // --- Reference signal: the ideal ppm=sf upchirp, tiled once per
-    // preamble symbol (source spec §3.2 - "for fixed preambles, s[n]
-    // is known a priori... synthesise it once"). Built before the CFO
-    // refinement below since that needs it too, not just the LS fit. ---
-    auto up = base_upchirp(sf);
-    std::vector<std::complex<double>> s(fit_samples_sz);
-    for (long i = 0; i < fit_samples; ++i) {
-        auto v = up[size_t(i % N)];
-        s[size_t(i)] = std::complex<double>(v.real(), v.imag());
-    }
-
+namespace {
+// CFO refinement, widely-linear fit r' = mu*s + nu*conj(s) + c, EVM,
+// sync_corr and the fit-quality gates, on a unit-RMS received segment
+// `r_tilde` against its reference `s` (fit_len symbols of `sps` samples at
+// `sample_rate_hz`), starting from CFO estimate `delta_f_hz`. Fills `fp`.
+void fit_reference(LoraFingerprint& fp, const std::vector<std::complex<double>>& r_tilde,
+                   const std::vector<std::complex<double>>& s, int fit_len, long sps, double sample_rate_hz,
+                   double delta_f_hz, double center_hz) {
+    const long fit_samples = long(fit_len) * sps;
+    const size_t fit_samples_sz = size_t(fit_samples);
     // --- CFO refinement (source spec §3.1 derotation, precision fixed
     // up front here) - cfo_bins is the codec's own raw FFT-peak bin
     // (see find_preamble() in lora_phy.cpp), with no sub-bin
@@ -168,17 +101,16 @@ LoraFingerprint extract_lora_fingerprint(const std::vector<std::complex<float>>&
     // the leftover sub-bin frequency error - unambiguous over one
     // symbol of spacing precisely because the residual is bounded to
     // +/-0.5 bin by cfo_bins already being the nearest integer.
-    double delta_f_hz = double(cfo_bins) * bandwidth_hz / double(N);
     double residual_bins = 0.0;
     if (fit_len >= 2) {
-        double coarse_phase_inc = -2.0 * M_PI * delta_f_hz / bandwidth_hz;
+        double coarse_phase_inc = -2.0 * M_PI * delta_f_hz / sample_rate_hz;
         size_t fit_len_sz = size_t(fit_len);
         std::vector<std::complex<double>> sym_corr(fit_len_sz);
         double phase = 0.0;
         for (int m = 0; m < fit_len; ++m) {
             std::complex<double> corr(0.0, 0.0);
-            for (int n = 0; n < N; ++n) {
-                long i = long(m) * N + n;
+            for (long n = 0; n < sps; ++n) {
+                long i = long(m) * sps + n;
                 std::complex<double> rot(std::cos(phase), std::sin(phase));
                 corr += (r_tilde[size_t(i)] * rot) * std::conj(s[size_t(i)]);
                 phase += coarse_phase_inc;
@@ -195,10 +127,10 @@ LoraFingerprint extract_lora_fingerprint(const std::vector<std::complex<float>>&
             residual_bins = std::arg(diff_sum) / (2.0 * M_PI);
         }
     }
-    double delta_f_hz_refined = delta_f_hz + residual_bins * bandwidth_hz / double(N);
+    double delta_f_hz_refined = delta_f_hz + residual_bins * sample_rate_hz / double(sps);
     fp.cfo_ppm = (delta_f_hz_refined / center_hz) * 1e6;
 
-    double phase_inc = -2.0 * M_PI * delta_f_hz_refined / bandwidth_hz;
+    double phase_inc = -2.0 * M_PI * delta_f_hz_refined / sample_rate_hz;
     double phase = 0.0;
     std::vector<std::complex<double>> r_prime(fit_samples_sz);
     for (long i = 0; i < fit_samples; ++i) {
@@ -243,13 +175,13 @@ LoraFingerprint extract_lora_fingerprint(const std::vector<std::complex<float>>&
     if (!solve3x3(ata, atr, theta)) {
         fp.gated_out = true;
         fp.gate_reason = "IQ-imbalance fit singular";
-        return fp;
+        return;
     }
     std::complex<double> mu = theta[0], nu = theta[1], c = theta[2];
     if (std::abs(mu) < 1e-12) {
         fp.gated_out = true;
         fp.gate_reason = "degenerate mu in IQ-imbalance fit";
-        return fp;
+        return;
     }
 
     std::complex<double> q = nu / mu;
@@ -295,15 +227,180 @@ LoraFingerprint extract_lora_fingerprint(const std::vector<std::complex<float>>&
     if (fp.evm_pct > LORA_EVM_CEILING_PCT) {
         fp.gated_out = true;
         fp.gate_reason = "EVM above ceiling";
-        return fp;
+        return;
     }
     if (fp.sync_corr < LORA_SYNC_CORR_FLOOR) {
         fp.gated_out = true;
         fp.gate_reason = "sync_corr below floor";
-        return fp;
+        return;
     }
 
     fp.gated_out = false;
+}
+}  // namespace
+
+namespace {
+// Shared body. Noise power from [noise_start, noise_start + N); signal power
+// over `preamble_len` symbols from `start_sample`; the CFO refinement and
+// widely-linear fit over `fit_len` symbols from `fit_start`.
+LoraFingerprint fingerprint_core(const std::vector<std::complex<float>>& iq, int sf, double bandwidth_hz,
+                                 double center_hz, long noise_start, long start_sample, int preamble_len,
+                                 long fit_start, int fit_len, int cfo_bins) {
+    LoraFingerprint fp;
+    int N = 1 << sf;
+    long preamble_samples = long(preamble_len) * N;
+
+    if (preamble_len < 1 || fit_len < 1 || start_sample < 0 || fit_start < 0 ||
+        size_t(start_sample + preamble_samples) > iq.size() || size_t(fit_start + long(fit_len) * N) > iq.size()) {
+        fp.gated_out = true;
+        fp.gate_reason = "insufficient preamble samples";
+        return fp;
+    }
+    if (noise_start < 0 || size_t(noise_start + N) > iq.size()) {
+        fp.gated_out = true;
+        fp.gate_reason = "no pre-burst noise window available";
+        return fp;
+    }
+    const long start_sample_noise = noise_start;
+
+    // --- SNR gate (source spec §2.2) - a low-SNR packet doesn't
+    // produce a slightly worse parameter, it produces a wrong one, so
+    // this rejects before any of the fitting below runs at all. ---
+    double noise_power = 0.0;
+    for (long i = start_sample_noise; i < start_sample_noise + N; ++i) {
+        noise_power += double(iq[size_t(i)].real()) * iq[size_t(i)].real() +
+                       double(iq[size_t(i)].imag()) * iq[size_t(i)].imag();
+    }
+    noise_power /= double(N);
+
+    double burst_power = 0.0;
+    for (long i = start_sample; i < start_sample + preamble_samples; ++i) {
+        burst_power += double(iq[size_t(i)].real()) * iq[size_t(i)].real() +
+                       double(iq[size_t(i)].imag()) * iq[size_t(i)].imag();
+    }
+    burst_power /= double(preamble_samples);
+
+    if (noise_power <= 0.0 || burst_power <= noise_power) {
+        fp.gated_out = true;
+        fp.gate_reason = "SNR non-positive";
+        return fp;
+    }
+    fp.snr_db = 10.0 * std::log10((burst_power - noise_power) / noise_power);
+    if (fp.snr_db < LORA_SNR_FLOOR_DB) {
+        fp.gated_out = true;
+        fp.gate_reason = "below SNR floor";
+        return fp;
+    }
+
+    // --- Unit-RMS normalize the preamble segment (source spec §2.3 -
+    // this is what makes every ratio below receiver-gain-invariant).
+    // Everything from here down uses only the first LORA_FP_MAX_FIT_SYMBOLS
+    // of the (possibly much longer) measured preamble - see that
+    // constant's own comment for why. burst_power/SNR above deliberately
+    // stayed on the full preamble; a longer average there is strictly
+    // better, it's only the CFO/LS fit that a long window hurts. ---
+    long fit_samples = long(fit_len) * N;
+    size_t fit_samples_sz = size_t(fit_samples);
+    double g = std::sqrt(burst_power);
+    std::vector<std::complex<double>> r_tilde(fit_samples_sz);
+    for (long i = 0; i < fit_samples; ++i) {
+        r_tilde[size_t(i)] = std::complex<double>(iq[size_t(fit_start + i)].real(),
+                                                    iq[size_t(fit_start + i)].imag()) /
+                              g;
+    }
+
+    // --- Reference signal: the ideal ppm=sf upchirp, tiled once per
+    // preamble symbol (source spec §3.2 - "for fixed preambles, s[n]
+    // is known a priori... synthesise it once"). Built before the CFO
+    // refinement below since that needs it too, not just the LS fit. ---
+    auto up = base_upchirp(sf);
+    std::vector<std::complex<double>> s(fit_samples_sz);
+    for (long i = 0; i < fit_samples; ++i) {
+        auto v = up[size_t(i % N)];
+        s[size_t(i)] = std::complex<double>(v.real(), v.imag());
+    }
+
+    fit_reference(fp, r_tilde, s, fit_len, N, bandwidth_hz, double(cfo_bins) * bandwidth_hz / double(N), center_hz);
+    return fp;
+}
+}  // namespace
+
+LoraFingerprint extract_lora_fingerprint(const std::vector<std::complex<float>>& iq, int sf,
+                                          double bandwidth_hz, double center_hz,
+                                          long start_sample, int preamble_len, int cfo_bins) {
+    const long N = 1L << sf;
+    return fingerprint_core(iq, sf, bandwidth_hz, center_hz, start_sample - N, start_sample, preamble_len,
+                            start_sample, std::min(preamble_len, LORA_FP_MAX_FIT_SYMBOLS), cfo_bins);
+}
+
+LoraFingerprint extract_lora_fingerprint_at(const std::vector<std::complex<float>>& iq, int sf,
+                                             double bandwidth_hz, double center_hz, long fit_start,
+                                             int fit_symbols, long noise_start, int cfo_bins) {
+    return fingerprint_core(iq, sf, bandwidth_hz, center_hz, noise_start, fit_start, fit_symbols, fit_start,
+                            fit_symbols, cfo_bins);
+}
+
+LoraFingerprint extract_lora_fingerprint_oversampled(const std::vector<std::complex<float>>& raw,
+                                                     double sample_rate_hz, int sf, double bandwidth_hz,
+                                                     double center_hz, double t0, int symbols, long noise_start,
+                                                     double cfo_hz) {
+    LoraFingerprint fp;
+    const long N = 1L << sf;
+    const double os = sample_rate_hz / bandwidth_hz;
+    const long sps = std::lround(double(N) * os);
+    const long i0 = long(std::ceil(t0));
+    const long L = long(symbols) * sps;
+    if (symbols < 1 || os < 1 || !std::isfinite(t0) || i0 < 0 || size_t(i0 + L) > raw.size()) {
+        fp.gated_out = true;
+        fp.gate_reason = "insufficient preamble samples";
+        return fp;
+    }
+    if (noise_start < 0 || size_t(noise_start + sps) > raw.size()) {
+        fp.gated_out = true;
+        fp.gate_reason = "no pre-burst noise window available";
+        return fp;
+    }
+    double noise_power = 0, burst_power = 0;
+    for (long i = noise_start; i < noise_start + sps; ++i) noise_power += std::norm(std::complex<double>(raw[size_t(i)]));
+    noise_power /= double(sps);
+    for (long i = i0; i < i0 + L; ++i) burst_power += std::norm(std::complex<double>(raw[size_t(i)]));
+    burst_power /= double(L);
+    if (noise_power <= 0.0 || burst_power <= noise_power) {
+        fp.gated_out = true;
+        fp.gate_reason = "SNR non-positive";
+        return fp;
+    }
+    fp.snr_db = 10.0 * std::log10((burst_power - noise_power) / noise_power);
+    if (fp.snr_db < LORA_SNR_FLOOR_DB) {
+        fp.gated_out = true;
+        fp.gate_reason = "below SNR floor";
+        return fp;
+    }
+    const double g = std::sqrt(burst_power);
+    std::vector<std::complex<double>> r_tilde(static_cast<size_t>(L)), ref(static_cast<size_t>(L));
+    for (long i = 0; i < L; ++i) {
+        r_tilde[size_t(i)] = std::complex<double>(raw[size_t(i0 + i)]) / g;
+        // Continuous-phase up-chirp, u chips after a symbol boundary at t0:
+        // phase pi*(u^2/N - u), the base chirp extended between chip instants.
+        double u = std::fmod((double(i0 + i) - t0) / os, double(N));
+        if (u < 0) u += double(N);
+        ref[size_t(i)] = std::polar(1.0, M_PI * (u * u / double(N) - u));
+    }
+    fit_reference(fp, r_tilde, ref, symbols, sps, sample_rate_hz, cfo_hz, center_hz);
+    // Per-symbol-boundary normalisation. Live (Heltec SX1262, 865.4 MHz) the
+    // conj(s) and constant terms fell exactly as 1/N with spreading factor:
+    // IRR -46/-57/-68 dB and DC -42/-54/-65 dBc at SF7/9/11, eps and phase
+    // /4 per two SFs. Hardware IQ imbalance and LO leakage would not depend
+    // on SF; a transient once per symbol boundary does. So these four are
+    // expressed per symbol boundary, scaled to the SF7 symbol length, which
+    // makes one transmitter read the same at every SF.
+    if (fp.n_samp > 0) {
+        const double k = double(N) / 128.0;
+        fp.iq_eps *= k;
+        fp.iq_phi_deg *= k;
+        fp.irr_db += 20.0 * std::log10(k);
+        fp.dc_dbc += 20.0 * std::log10(k);
+    }
     return fp;
 }
 

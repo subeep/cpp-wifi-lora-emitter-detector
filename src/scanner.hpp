@@ -363,6 +363,22 @@ private:
     // 500 kHz decode rate and decoded like a single-channel listen.
     void run_lora_wideband_step(const lora_plan::Capture& plan, const DeviceProfile& profile,
                                 double threshold_db, std::vector<Detection>& detections);
+    // A LoRa listen split into its two halves so the scan loop can take the
+    // next capture while the previous one is decoded (run(): one serial
+    // worker, so commits stay in capture order). capture_lora() touches only
+    // the radio; process_lora() does everything the step did after capturing.
+    struct LoraCaptured {
+        lora_plan::Capture plan;  // wideband, or one channel at the decode rate
+        CaptureResult received;
+        double host_start = 0, capture_seconds = 0, steady_captured = 0;
+        std::optional<double> gain;
+        uint64_t radio_session = 0;
+    };
+    LoraCaptured capture_lora(const lora_plan::Capture& plan, const DeviceProfile& profile);
+    void process_lora(LoraCaptured& captured, const DeviceProfile& profile, double threshold_db,
+                      std::vector<Detection>& detections);
+    void process_lora_wideband(LoraCaptured& captured, const DeviceProfile& profile, double threshold_db,
+                               std::vector<Detection>& detections);
     void append_lora_energy_segments(const std::vector<std::complex<float>>& iq, double rate_hz,
                                      double center_hz, double threshold_db, std::vector<Detection>& detections);
     void note_lora_listen(const lora_plan::Capture& plan, double capture_s, double decode_s);

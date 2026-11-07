@@ -65,6 +65,11 @@ struct LoraPacketRow {
     // Persistent master cluster (lora_master) whose accepted fingerprint was
     // taken from this same burst. Heuristic RF match, not authentication.
     std::optional<int> rf_cluster_id;
+    // Set when this row is most likely the receiver's IQ-imbalance image of a
+    // stronger packet decoded at the same time (tag_lora_iq_images()): the
+    // channel (MHz) of that packet. The row is a receiver artefact, not a
+    // separate transmission.
+    std::optional<double> iq_image_of_mhz;
 
     // Fit-quality covariates - shown regardless of gate outcome, once
     // actually computed (unset only if gating happened before the fit
@@ -111,6 +116,37 @@ const char* lora_crc_label(LoraPacketRow::Crc crc);
 // detection-only) have separate budgets, so a burst of undecodable
 // hypotheses can never push a decoded packet out. Time order is kept.
 void trim_lora_packet_log(std::vector<LoraPacketRow>& log, size_t decoded_max, size_t other_max);
+
+// analyze_lora_packets() on `decimated` (= `raw` decimated by `factor` at
+// sub-chip phase 0, lora_decimator.hpp), then every explicit-PHY row whose
+// header decoded but whose payload CRC failed is re-decoded over its own span
+// at the other factor-1 sub-chip sampling phases of `raw`; the first CRC-valid
+// result of the same polarity and data start replaces it (timing mapped back
+// to the phase-0 grid, detail says so). The decoder aligns timing to whole
+// samples at one sample per chip, so the residual sub-chip offset depends on
+// where the raw samples fall; on the recorded SX1262 fixtures one phase alone
+// decodes 44 of 60 phase/CFO cases CRC-valid, any of four phases 60 of 60.
+// A CRC check gates every replacement. Laboratory mode and factor <= 1 return
+// the phase-0 rows unchanged.
+std::vector<LoraPacketRow> analyze_lora_packets_phased(const std::vector<std::complex<float>>& raw,
+                                                       const std::vector<std::complex<float>>& decimated, int factor,
+                                                       int sf, double bandwidth, bool laboratory_mode);
+
+// Rows of one channel and bandwidth hypothesis from a single wideband capture.
+struct LoraRowGroup {
+    double channel_hz = 0, bw_hz = 0;
+    std::vector<LoraPacketRow>* rows = nullptr;
+};
+// Receiver IQ imbalance mirrors every signal about the tuned centre: a packet
+// at f also appears, much weaker, at 2*center - f with the opposite IQ
+// polarity. Tags (iq_image_of_mhz, detail) each decoded row whose mirror
+// frequency holds a packet of the same SF/BW and opposite polarity, starting
+// within 4 symbols, that is either CRC-valid (or stronger) while this row is
+// not CRC-valid, or CRC-valid with the same bytes and a stronger preamble
+// while this row is CRC-valid too (an image can decode cleanly). Returns the
+// number of rows tagged.
+size_t tag_lora_iq_images(const std::vector<LoraRowGroup>& groups, double center_hz,
+                          double freq_tolerance_hz = 10e3);
 void set_lora_integrity(LoraPacketRow& row, bool complete, bool crc_on, bool crc_valid);
 // Production defaults to the receive-only explicit PHY. Legacy codecs are
 // available only through the explicit laboratory flag; never an auto fallback.

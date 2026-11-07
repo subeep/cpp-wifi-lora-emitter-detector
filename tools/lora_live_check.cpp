@@ -116,7 +116,8 @@ int main(int argc, char** argv) {
         for (const auto& c : scanner.lora_listen_plan())
             plan.push_back({{"center_mhz", c.center_hz / 1e6}, {"rate_msps", c.rate_hz / 1e6}, {"wideband", c.wideband},
                             {"channels_mhz", lora_plan::format_channels_mhz(c.channels_hz)},
-                            {"dc_clearance_khz", c.dc_clearance_hz / 1e3}});
+                            {"dc_clearance_khz", c.dc_clearance_hz / 1e3},
+                            {"mirror_clearance_khz", c.mirror_clearance_hz / 1e3}});
         out["plan"] = plan;
         out["energy_scan_replaced"] = scanner.lora_capture_replaces_energy_scan();
         std::printf("LoRa live check: %.0f s, %s, plan %s\n", seconds, lock ? "locked" : wideband ? "wideband" : "rotate",

@@ -108,7 +108,10 @@ void draw_packet_row(const LoraPacketRow& d, bool child, size_t group_size, bool
     if (child) ImGui::Unindent(14);
     ImGui::PopID();
     ImGui::TableNextColumn();
-    ImGui::TextColored(verified ? kGood : d.crc == LoraPacketRow::Crc::Failed ? kBad : kDim, "%s", d.status.c_str());
+    if (d.iq_image_of_mhz)
+        ImGui::TextColored(kDim, "IQ image of %.4f MHz", *d.iq_image_of_mhz);
+    else
+        ImGui::TextColored(verified ? kGood : d.crc == LoraPacketRow::Crc::Failed ? kBad : kDim, "%s", d.status.c_str());
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", d.detail.c_str());
     ImGui::TableNextColumn();
     ImGui::TextUnformatted(d.decoder.c_str());
@@ -884,8 +887,9 @@ void draw_lora_receiver_panel(const LoraReceiverView& v, const LoraTabActions& a
             ImGui::TextDisabled("The separate sub-GHz energy scan still runs each cycle (plan does not fit one capture keeping 863-868 MHz).");
     }
 
-    if (!v.plan.empty() && ImGui::BeginTable("lora_plan", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
-        for (const char* c : {"Capture", "Mode", "Tuned (MHz)", "Rate (Msps)", "Usable span (MHz)", "Channels (MHz)", "DC clearance"})
+    if (!v.plan.empty() && ImGui::BeginTable("lora_plan", 8, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+        for (const char* c : {"Capture", "Mode", "Tuned (MHz)", "Rate (Msps)", "Usable span (MHz)", "Channels (MHz)", "DC clearance",
+                              "Mirror clearance"})
             ImGui::TableSetupColumn(c);
         ImGui::TableHeadersRow();
         for (size_t i = 0; i < v.plan.size(); ++i) {
@@ -903,6 +907,17 @@ void draw_lora_receiver_panel(const LoraReceiverView& v, const LoraTabActions& a
             ImGui::TableNextColumn(); ImGui::TextUnformatted(lora_plan::format_channels_mhz(c.channels_hz).c_str());
             ImGui::TableNextColumn();
             if (c.wideband) ImGui::Text("%.0f kHz", c.dc_clearance_hz / 1e3); else ImGui::TextDisabled("centred");
+            ImGui::TableNextColumn();
+            if (!c.wideband) ImGui::TextDisabled("centred");
+            else if (c.mirror_clearance_hz >= lora_plan::DEFAULT_MIN_MIRROR_CLEARANCE_HZ)
+                ImGui::TextColored(kGood, "%.0f kHz", c.mirror_clearance_hz / 1e3);
+            else
+                ImGui::TextColored(kCaution, "%.0f kHz", c.mirror_clearance_hz / 1e3);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("How close any channel's IQ-imbalance image (2 x tuned - f) comes to a planned channel.\n"
+                                  "Below %.0f kHz a strong packet can show up as an inverted-IQ ghost on another channel;\n"
+                                  "such rows are tagged \"IQ image\" in the packet table.",
+                                  lora_plan::DEFAULT_MIN_MIRROR_CLEARANCE_HZ / 1e3);
         }
         ImGui::EndTable();
     }
@@ -915,6 +930,20 @@ void draw_lora_receiver_panel(const LoraReceiverView& v, const LoraTabActions& a
         ImGui::Text("Last capture: %s %.4f MHz @ %.2f Msps, %zu channel(s) | %.2f s IQ | %.2f s decode after capture",
                     st.last_wideband ? "wideband" : "single", st.last_center_hz / 1e6, st.last_rate_hz / 1e6, st.last_channels,
                     st.last_capture_s, st.last_decode_s);
+        // Processing load: decoding overlaps the next capture, so it keeps up
+        // while it takes less time than one capture.
+        if (st.last_wideband && st.last_capture_s > 0) {
+            const double load = st.last_decode_s / st.last_capture_s;
+            ImGui::Text("Processing: channelize %.2f s, energy map %.2f s, decode %.2f s, commit %.2f s",
+                        st.last_channelize_s, st.last_energy_s, st.last_analyze_s, st.last_commit_s);
+            ImGui::SameLine();
+            if (load <= 0.8) ImGui::TextColored(kGood, "| load %.0f%% of real time", 100 * load);
+            else if (load <= 1.0) ImGui::TextColored(kCaution, "| load %.0f%% of real time (near the limit)", 100 * load);
+            else ImGui::TextColored(kBad, "| load %.0f%% of real time: falling behind", 100 * load);
+            if (load > 1.0)
+                ImGui::TextWrapped("This PC decodes slower than it captures, so listening time drops. A narrower capture width "
+                                   "(Auto) or fewer channels reduces the work; nothing is lost, the radio just waits.");
+        }
         const double wall = std::max(1e-9, v.now_steady_s - st.first_listen_steady_s);
         if (ImGui::BeginTable("lora_listen_share", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
             for (const char* c : {"Channel (MHz)", "IQ captured", "Share of wall time"}) ImGui::TableSetupColumn(c);
