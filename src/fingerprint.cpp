@@ -73,30 +73,35 @@ std::string num_or_null(double v, double res) {
 
 }  // namespace
 
-LoraFingerprint extract_lora_fingerprint(const std::vector<std::complex<float>>& iq, int sf,
-                                          double bandwidth_hz, double center_hz,
-                                          long start_sample, int preamble_len, int cfo_bins) {
+namespace {
+// Shared body. Noise power from [noise_start, noise_start + N); signal power
+// over `preamble_len` symbols from `start_sample`; the CFO refinement and
+// widely-linear fit over `fit_len` symbols from `fit_start`.
+LoraFingerprint fingerprint_core(const std::vector<std::complex<float>>& iq, int sf, double bandwidth_hz,
+                                 double center_hz, long noise_start, long start_sample, int preamble_len,
+                                 long fit_start, int fit_len, int cfo_bins) {
     LoraFingerprint fp;
     int N = 1 << sf;
     long preamble_samples = long(preamble_len) * N;
 
-    if (preamble_len < 1 || start_sample < 0 ||
-        size_t(start_sample + preamble_samples) > iq.size()) {
+    if (preamble_len < 1 || fit_len < 1 || start_sample < 0 || fit_start < 0 ||
+        size_t(start_sample + preamble_samples) > iq.size() || size_t(fit_start + long(fit_len) * N) > iq.size()) {
         fp.gated_out = true;
         fp.gate_reason = "insufficient preamble samples";
         return fp;
     }
-    if (start_sample < N) {
+    if (noise_start < 0 || size_t(noise_start + N) > iq.size()) {
         fp.gated_out = true;
         fp.gate_reason = "no pre-burst noise window available";
         return fp;
     }
+    const long start_sample_noise = noise_start;
 
     // --- SNR gate (source spec §2.2) - a low-SNR packet doesn't
     // produce a slightly worse parameter, it produces a wrong one, so
     // this rejects before any of the fitting below runs at all. ---
     double noise_power = 0.0;
-    for (long i = start_sample - N; i < start_sample; ++i) {
+    for (long i = start_sample_noise; i < start_sample_noise + N; ++i) {
         noise_power += double(iq[size_t(i)].real()) * iq[size_t(i)].real() +
                        double(iq[size_t(i)].imag()) * iq[size_t(i)].imag();
     }
@@ -128,14 +133,13 @@ LoraFingerprint extract_lora_fingerprint(const std::vector<std::complex<float>>&
     // constant's own comment for why. burst_power/SNR above deliberately
     // stayed on the full preamble; a longer average there is strictly
     // better, it's only the CFO/LS fit that a long window hurts. ---
-    int fit_len = std::min(preamble_len, LORA_FP_MAX_FIT_SYMBOLS);
     long fit_samples = long(fit_len) * N;
     size_t fit_samples_sz = size_t(fit_samples);
     double g = std::sqrt(burst_power);
     std::vector<std::complex<double>> r_tilde(fit_samples_sz);
     for (long i = 0; i < fit_samples; ++i) {
-        r_tilde[size_t(i)] = std::complex<double>(iq[size_t(start_sample + i)].real(),
-                                                    iq[size_t(start_sample + i)].imag()) /
+        r_tilde[size_t(i)] = std::complex<double>(iq[size_t(fit_start + i)].real(),
+                                                    iq[size_t(fit_start + i)].imag()) /
                               g;
     }
 
@@ -305,6 +309,22 @@ LoraFingerprint extract_lora_fingerprint(const std::vector<std::complex<float>>&
 
     fp.gated_out = false;
     return fp;
+}
+}  // namespace
+
+LoraFingerprint extract_lora_fingerprint(const std::vector<std::complex<float>>& iq, int sf,
+                                          double bandwidth_hz, double center_hz,
+                                          long start_sample, int preamble_len, int cfo_bins) {
+    const long N = 1L << sf;
+    return fingerprint_core(iq, sf, bandwidth_hz, center_hz, start_sample - N, start_sample, preamble_len,
+                            start_sample, std::min(preamble_len, LORA_FP_MAX_FIT_SYMBOLS), cfo_bins);
+}
+
+LoraFingerprint extract_lora_fingerprint_at(const std::vector<std::complex<float>>& iq, int sf,
+                                             double bandwidth_hz, double center_hz, long fit_start,
+                                             int fit_symbols, long noise_start, int cfo_bins) {
+    return fingerprint_core(iq, sf, bandwidth_hz, center_hz, noise_start, fit_start, fit_symbols, fit_start,
+                            fit_symbols, cfo_bins);
 }
 
 void append_fingerprint_record(const std::string& path, const std::string& time_hhmmss,

@@ -183,8 +183,38 @@ int main() {
         std::filesystem::resize_file(std::filesystem::path(second)/"iq.cf32_le", 10);
         rejected([&]{ load_lora_capture(second); });
         c.iq.clear(); rejected([&]{ save_lora_capture(tmp, c); });
+        {   // IQ-imbalance images, numbers from the 2026-11-06 live run (centre 866.263 MHz).
+            auto row=[](bool inverted,LoraPacketRow::Crc crc,double cfo,double offset,double peak){
+                LoraPacketRow r;r.header_valid=true;r.sf=7;r.inverted_iq=inverted;r.crc=crc;r.cfo_hz=cfo;
+                r.capture_offset_s=offset;r.preamble_peak_ratio=peak;r.detail="Payload CRC failed.";return r;};
+            using C=LoraPacketRow::Crc;
+            std::vector<LoraPacketRow> real={row(false,C::Valid,-200,1.000,1.0)};
+            std::vector<LoraPacketRow> mirror={row(true,C::Failed,-35118,1.0005,0.65),   // image: tagged
+                                               row(true,C::Failed,-35118,2.5,0.65),      // other time: kept
+                                               row(false,C::Failed,-35118,1.0005,0.65),  // same polarity: kept
+                                               row(true,C::Valid,-35118,1.0005,0.65)};   // CRC-valid: kept
+            real[0].payload_hex="01 02";mirror[3].payload_hex="09 09";  // CRC-valid with other bytes: a real packet
+            std::vector<LoraPacketRow> other_sf={row(true,C::Failed,-35118,1.0005,0.65)};other_sf[0].sf=8;
+            const size_t n=tag_lora_iq_images({{865.0625e6,125e3,&real},{867.5e6,125e3,&mirror},{867.5e6,125e3,&other_sf}},866.263e6);
+            check(n==1&&mirror[0].iq_image_of_mhz&&std::abs(*mirror[0].iq_image_of_mhz-865.0625)<1e-9&&
+                  mirror[0].detail.find("IQ-imbalance image")!=std::string::npos,"Mirrored inverted-IQ ghost not tagged");
+            check(!mirror[1].iq_image_of_mhz&&!mirror[2].iq_image_of_mhz&&!mirror[3].iq_image_of_mhz&&
+                  !other_sf[0].iq_image_of_mhz&&!real[0].iq_image_of_mhz,"Non-image row tagged as IQ image");
+            // A clean image can decode CRC-valid (same bytes, mirrored, weaker).
+            std::vector<LoraPacketRow> realv={row(false,C::Valid,-200,1.000,1.0)};realv[0].payload_hex="01 02";
+            std::vector<LoraPacketRow> imagev={row(true,C::Valid,-35118,1.0005,0.65)};imagev[0].payload_hex="01 02";
+            std::vector<LoraPacketRow> otherv={row(true,C::Valid,-35118,1.0005,0.65)};otherv[0].payload_hex="09 09";
+            check(tag_lora_iq_images({{865.0625e6,125e3,&realv},{867.5e6,125e3,&imagev}},866.263e6)==1&&imagev[0].iq_image_of_mhz&&
+                  !realv[0].iq_image_of_mhz,"CRC-valid image with the same bytes not tagged");
+            check(tag_lora_iq_images({{865.0625e6,125e3,&realv},{867.5e6,125e3,&otherv}},866.263e6)==0,
+                  "CRC-valid packet with different bytes tagged as an image");
+            std::vector<LoraPacketRow> weak={row(false,C::Failed,-200,1.000,0.3)};
+            std::vector<LoraPacketRow> strong={row(true,C::Failed,-35118,1.0005,0.9)};
+            check(tag_lora_iq_images({{865.0625e6,125e3,&weak},{867.5e6,125e3,&strong}},866.263e6)==1&&
+                  weak[0].iq_image_of_mhz&&!strong[0].iq_image_of_mhz,"The weaker of a mirrored pair must be the image");
+        }
         std::filesystem::remove_all(tmp);
-        std::cout << "PASS: integrity states, corrupt/truncated/CRC-absent waveforms, decoder provenance, capture/replay and malformed files\n";
+        std::cout << "PASS: IQ-image tagging, integrity states, corrupt/truncated/CRC-absent waveforms, decoder provenance, capture/replay and malformed files\n";
     } catch (const std::exception& e) {
         std::cerr << "FAIL: " << e.what() << " (fixtures retained at " << tmp << ")\n"; return 1;
     }

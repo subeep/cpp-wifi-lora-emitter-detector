@@ -14,6 +14,7 @@
 #include <limits>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "config.hpp"
@@ -111,8 +112,30 @@ struct Capture {
     std::vector<double> channels_hz;
     bool wideband = false;
     double dc_clearance_hz = 0;  // nearest channel centre to the tuned centre (wideband only)
+    // Nearest any channel's IQ-imbalance image (2*centre - f) comes to a planned
+    // channel, its own included (wideband only; see mirror_clearance()).
+    double mirror_clearance_hz = 0;
     bool covers_range = false;   // the requested extra range (PlanOptions::cover_*) is inside too
 };
+
+// Receiver IQ imbalance puts a weak conjugate image of a signal at f on the
+// other side of the tuned centre, at 2*centre - f, where it decodes as an
+// inverted-IQ packet (seen live with the X310, which cannot correct RX IQ
+// balance). The image of channel a lands on channel b when a + b is near
+// 2*centre; this is the smallest |a + b - 2*centre| over all pairs, a == b
+// included (a channel near the centre images onto itself).
+inline double mirror_clearance(const std::vector<double>& channels, double center) {
+    double nearest = std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < channels.size(); ++i)
+        for (size_t j = i; j < channels.size(); ++j)
+            nearest = std::min(nearest, std::abs(channels[i] + channels[j] - 2 * center));
+    return nearest;
+}
+
+// Default image guard: the decoder accepts a frequency offset up to half the
+// signal bandwidth (BW500: 250 kHz), so an image this far off a channel
+// cannot be decoded on it.
+constexpr double DEFAULT_MIN_MIRROR_CLEARANCE_HZ = 250e3;
 
 // Wideband rates tried in order; each is an exact X310 clock division
 // (200 MHz / n) and a multiple of the 500 kHz decode rate.
@@ -122,13 +145,15 @@ inline const std::vector<double>& wideband_rates() {
 }
 
 // Tuned centre for `channels` at `rate`: every channel (and, when given and
-// possible, the range [cover_lo, cover_hi]) inside the usable band; among
+// possible, the range [cover_lo, cover_hi]) inside the usable band. Preference:
 // centres at least `min_clearance` from every channel centre (receiver DC/LO
-// residue), the one nearest the middle of what is covered, else the centre
-// with the most clearance. Returns false when the channels do not fit.
+// residue) and at least `min_mirror` of mirror clearance, nearest the middle
+// of what is covered; else, among DC-clear centres, the most mirror clearance;
+// else the most DC clearance. Returns false when the channels do not fit.
 inline bool place_center(const std::vector<double>& channels, double rate, double channel_rate, double& center,
                          double& clearance, bool& covers_range, double cover_lo = 0, double cover_hi = 0,
-                         double min_clearance = 100e3) {
+                         double min_clearance = 100e3, double* mirror_out = nullptr,
+                         double min_mirror = DEFAULT_MIN_MIRROR_CLEARANCE_HZ) {
     const double usable = usable_half_span(rate);
     const double reach = usable - channel_rate / 2;
     if (reach <= 0 || channels.empty()) return false;
@@ -152,16 +177,24 @@ inline bool place_center(const std::vector<double>& channels, double rate, doubl
         for (double f : channels) nearest = std::min(nearest, std::abs(f - c));
         return nearest;
     };
-    // Candidates: whole kHz across [lo, hi]; prefer >= min_clearance nearest mid.
+    // Candidates: whole kHz across [lo, hi].
     const double step = std::max(1e3, std::round((hi - lo) / 2000 / 1e3) * 1e3);
-    double best_ok = std::numeric_limits<double>::quiet_NaN(), best_any = mid, best_clear = -1;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    double best_ok = nan, best_dc = nan, best_dc_mirror = -1, best_any = mid, best_clear = -1;
     for (double c = std::ceil(lo / 1e3) * 1e3; c <= hi; c += step) {
         const double cl = clear_at(c);
-        if (cl >= min_clearance && (std::isnan(best_ok) || std::abs(c - mid) < std::abs(best_ok - mid))) best_ok = c;
         if (cl > best_clear) { best_clear = cl; best_any = c; }
+        if (cl < min_clearance) continue;
+        const double mc = mirror_clearance(channels, c);
+        if (mc >= min_mirror && (std::isnan(best_ok) || std::abs(c - mid) < std::abs(best_ok - mid))) best_ok = c;
+        if (mc > best_dc_mirror || (mc == best_dc_mirror && std::abs(c - mid) < std::abs(best_dc - mid))) {
+            best_dc_mirror = mc;
+            best_dc = c;
+        }
     }
-    center = std::isnan(best_ok) ? best_any : best_ok;
+    center = !std::isnan(best_ok) ? best_ok : !std::isnan(best_dc) ? best_dc : best_any;
     clearance = clear_at(center);
+    if (mirror_out) *mirror_out = mirror_clearance(channels, center);
     return true;
 }
 
@@ -172,6 +205,7 @@ struct PlanOptions {
     double preferred_rate = 0;     // 0: narrowest rate that fits; else this rate when allowed
     double cover_lo = 0, cover_hi = 0;  // also keep this range in the capture when possible
     double min_dc_clearance = 100e3;
+    double min_mirror_clearance = DEFAULT_MIN_MIRROR_CLEARANCE_HZ;
 };
 
 // Captures that together cover every channel once per rotation.
@@ -214,18 +248,27 @@ inline std::vector<Capture> plan(const std::vector<double>& channels_in, const P
         std::vector<double> cluster(channels.begin() + long(i), channels.begin() + long(j));
         Capture best;
         bool found = false;
+        // Narrowest rate whose centre is DC- and image-clear; failing that, the
+        // rate giving the best centre (DC-clear first, then mirror clearance).
+        auto rank = [&](double dc, double mirror) {
+            return std::make_pair(dc >= o.min_dc_clearance ? 1 : 0,
+                                  dc >= o.min_dc_clearance ? std::min(mirror, o.min_mirror_clearance) : dc);
+        };
         for (double r : rates) {
-            double c = 0, clear = 0;
+            double c = 0, clear = 0, mirror = 0;
             bool covers = false;
-            if (!place_center(cluster, r, o.channel_rate, c, clear, covers, o.cover_lo, o.cover_hi, o.min_dc_clearance)) continue;
-            if (!found || (best.dc_clearance_hz < o.min_dc_clearance && clear > best.dc_clearance_hz)) {
+            if (!place_center(cluster, r, o.channel_rate, c, clear, covers, o.cover_lo, o.cover_hi, o.min_dc_clearance,
+                              &mirror, o.min_mirror_clearance))
+                continue;
+            if (!found || rank(clear, mirror) > rank(best.dc_clearance_hz, best.mirror_clearance_hz)) {
                 best.center_hz = c;
                 best.rate_hz = r;
                 best.dc_clearance_hz = clear;
+                best.mirror_clearance_hz = mirror;
                 best.covers_range = covers;
                 found = true;
             }
-            if (best.dc_clearance_hz >= o.min_dc_clearance) break;
+            if (best.dc_clearance_hz >= o.min_dc_clearance && best.mirror_clearance_hz >= o.min_mirror_clearance) break;
         }
         if (!found) {
             for (double f : cluster) single(f);

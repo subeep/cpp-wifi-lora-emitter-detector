@@ -59,7 +59,7 @@ std::string packets_csv(const std::vector<LoraPacketRow>& rows) {
                           "reception_id", "reception_hypotheses", "rf_cluster_id", "lorawan_candidate",
                           "lorawan_device_kind", "lorawan_device_id", "lorawan_detail", "payload_hex", "snr_db",
                           "evm_pct", "sync_corr", "cfo_ppm", "irr_db", "iq_eps", "iq_phi_deg", "dc_dbc", "dc_ang_deg",
-                          "fingerprint_gate", "detail"});
+                          "fingerprint_gate", "iq_image_of_mhz", "detail"});
     for (const auto& r : rows)
         s += line({r.time, r.status, r.decoder, r.header_valid ? "true" : "false", r.payload_complete ? "true" : "false",
                    lora_crc_label(r.crc), num(r.freq_mhz, "%.6f"), std::to_string(r.sf), num(r.bandwidth_khz),
@@ -70,7 +70,7 @@ std::string packets_csv(const std::vector<LoraPacketRow>& rows) {
                    opt(r.lorawan_device_kind), opt(r.lorawan_device_id), opt(r.lorawan_detail), r.payload_hex,
                    opt(r.fp_snr_db), opt(r.fp_evm_pct), opt(r.fp_sync_corr), opt(r.fp_cfo_ppm), opt(r.fp_irr_db),
                    opt(r.fp_iq_eps), opt(r.fp_iq_phi_deg), opt(r.fp_dc_dbc), opt(r.fp_dc_ang_deg),
-                   opt(r.fp_gate_reason), r.detail});
+                   opt(r.fp_gate_reason), opt(r.iq_image_of_mhz), r.detail});
     return s;
 }
 
@@ -95,7 +95,7 @@ std::string packets_json(const std::vector<LoraPacketRow>& rows) {
                                         {"irr_db", jopt(r.fp_irr_db)}, {"iq_eps", jopt(r.fp_iq_eps)},
                                         {"iq_phi_deg", jopt(r.fp_iq_phi_deg)}, {"dc_dbc", jopt(r.fp_dc_dbc)},
                                         {"dc_ang_deg", jopt(r.fp_dc_ang_deg)}, {"gate_reason", jopt(r.fp_gate_reason)}}},
-                       {"detail", r.detail}});
+                       {"iq_image_of_mhz", jopt(r.iq_image_of_mhz)}, {"detail", r.detail}});
     }
     return out.dump(1) + "\n";
 }

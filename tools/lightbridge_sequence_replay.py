@@ -11,8 +11,8 @@ from tools.lightbridge_prefix_check import channel
 from tools.lightbridge_full_scan import RATE, FFT_SIZE, EDGES
 
 
-def search(path, band, templates):
-    hz=sum(EDGES[band:band+2])*RATE/(2*FFT_SIZE)
+def search(path, band, templates, frequency_shift_hz=0.):
+    hz=sum(EDGES[band:band+2])*RATE/(2*FFT_SIZE)+frequency_shift_hz
     samples=path.stat().st_size//8
     step=RATE//20
     hits=[]

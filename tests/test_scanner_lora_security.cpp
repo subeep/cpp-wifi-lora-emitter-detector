@@ -3,8 +3,12 @@
 #include "scanner.hpp"
 #include "lora_capture.hpp"
 #include "channelize.hpp"
+#include <nlohmann/json.hpp>
+#include <fstream>
+#include <cctype>
 #include <kissfft/kiss_fft.h>
 #include <chrono>
+#include <set>
 #include <filesystem>
 #include <iostream>
 #include <unistd.h>
@@ -71,6 +75,76 @@ int main(){char tmp[]="/tmp/rfmon-scanner-lora-XXXXXX";if(!mkdtemp(tmp))return 1
         check(fs::file_size(std::string(tmp)+"/lora_security/events.ndjson")>0,"Live LoRa capture evidence persists to bounded recording");
     }
     {
+        // Adjacent channel 200 kHz away (EU868 spacing): the packet must not fold
+        // into this channel's BW125 hypothesis (live: 866.9 MHz seen on 867.1 MHz
+        // at +50 kHz). On its own channel it still decodes.
+        // analyze_lora_capture shares the scanner's decimator (lora_decimator.hpp).
+        const double rate=fixture.sample_rate_hz;
+        auto shifted=[&](double hz){
+            auto out=fixture.iq;
+            for(size_t i=0;i<out.size();++i){const double c=hz*double(i)/rate;out[i]*=std::polar(1.0f,float(2*M_PI*(c-std::floor(c))));}
+            return out;};
+        auto valid=[](const std::vector<LoraPacketRow>& rows){
+            for(const auto& r:rows)if(r.crc==LoraPacketRow::Crc::Valid&&r.payload_repr&&r.payload_repr->find("888MHz")!=std::string::npos)return true;
+            return false;};
+        check(rate==500e3,"SX1262 fixture is a 500 kHz capture");
+        check(valid(analyze_lora_capture(fixture.iq,rate,888e6)),"Packet decodes on its own channel");
+        // Sub-chip timing: every quarter-chip sampling phase and crystal-scale
+        // CFO of all three recorded packets must decode CRC-valid (phase 0
+        // alone: 44 of 60; the retry at the other phases recovers the rest).
+        {
+            const auto expected=nlohmann::json::parse(std::ifstream(std::string(PROJECT_ROOT_DIR)+"/tests/fixtures/lora_sx1262/expected.json"));
+            int ok=0,cases=0,recovered=0;
+            for(const auto& e:expected){
+                const auto cap=load_lora_capture(std::string(PROJECT_ROOT_DIR)+"/tests/fixtures/lora_sx1262/"+e["directory"].get<std::string>());
+                for(double cfo:{0.0,-20e3,20e3})for(int phase=0;phase<4;++phase){
+                    std::vector<std::complex<float>> x(cap.iq.begin()+phase,cap.iq.end());
+                    for(size_t i=0;i<x.size();++i){const double c=cfo*double(i)/rate;x[i]*=std::polar(1.0f,float(2*M_PI*(c-std::floor(c))));}
+                    bool good=false;
+                    for(const auto& r:analyze_lora_capture(x,rate,888e6))
+                        if(r.crc==LoraPacketRow::Crc::Valid&&r.bandwidth_khz==125&&r.sf==7){
+                            std::string hex;for(char ch:r.payload_hex)if(ch!=' ')hex+=char(std::tolower(ch));
+                            if(hex==e["payload_hex"].get<std::string>()){good=true;recovered+=r.detail.find("sub-chip sampling phase")!=std::string::npos;}
+                        }
+                    ok+=good;++cases;
+                }
+            }
+            std::cout<<"INFO sub-chip phases: "<<ok<<"/"<<cases<<" CRC-valid ("<<recovered<<" recovered by the phase retry)\n";
+            check(ok==cases,"Every sub-chip sampling phase and CFO of the recorded packets decodes CRC-valid");
+            check(recovered>0,"The phase retry is exercised by the recorded packets");
+        }
+        for(double off:{-200e3,200e3}) {
+            size_t bw125=0;
+            for(const auto& r:analyze_lora_capture(shifted(off),rate,888e6))if(r.header_valid&&r.bandwidth_khz==125)++bw125;
+            std::cout<<"INFO packet at "<<off/1e3<<" kHz: "<<bw125<<" BW125 decoded row(s)\n";
+            check(bw125==0,"A packet 200 kHz away does not alias into this channel's BW125 decode");
+        }
+    }
+    {
+        // RF identity: one transmitter must stay one RF cluster. The three
+        // recorded packets of one SX1262, each at all four sub-chip sampling
+        // phases, go through the production listen path; every decoded packet
+        // is fingerprinted from the decoder's alignment and all land in one
+        // cluster (the burst-search fingerprint split them by arrival time).
+        const std::string root=std::string(tmp)+"/identity";fs::create_directories(root);fs::current_path(root);
+        Scanner scanner(root);
+        int tagged=0,decoded=0;
+        for(const auto& entry:fs::directory_iterator(std::string(PROJECT_ROOT_DIR)+"/tests/fixtures/lora_sx1262"))if(entry.is_directory()){
+            const auto cap=load_lora_capture(entry.path().string());
+            for(int phase=0;phase<4;++phase){
+                auto fake=std::make_unique<FixtureRadio>();fake->iq.assign(cap.iq.begin()+phase,cap.iq.end());
+                ScannerTestAccess::listen(scanner,std::move(fake));
+            }
+        }
+        std::set<int> clusters;
+        for(const auto& r:scanner.lora_packets())if(r.crc==LoraPacketRow::Crc::Valid){++decoded;if(r.rf_cluster_id){++tagged;clusters.insert(*r.rf_cluster_id);}}
+        const auto rows=scanner.lora_master_snapshot();
+        std::cout<<"INFO identity: "<<decoded<<" CRC-valid packets, "<<tagged<<" fingerprinted, "<<rows.size()<<" RF cluster(s)\n";
+        check(decoded==12&&tagged>=10,"Every decoded packet of the recorded transmitter is fingerprinted");
+        check(rows.size()==1&&clusters.size()==1,"One transmitter at every sub-chip phase forms one RF cluster");
+        fs::current_path(tmp);
+    }
+    {
         // Wideband listen: the 888.0 MHz SX1262 packet placed inside a 3-channel
         // capture is derived and decoded on its own channel only.
         const std::string root=std::string(tmp)+"/wideband";fs::create_directories(root);fs::current_path(root);
@@ -125,10 +199,11 @@ int main(){char tmp[]="/tmp/rfmon-scanner-lora-XXXXXX";if(!mkdtemp(tmp))return 1
         // capture covering the planned channels, then decoded on its channel.
         const std::string root=std::string(tmp)+"/wideband20";fs::create_directories(root);fs::current_path(root);
         Scanner scanner(root);
-        scanner.set_lora_channels({887.6e6,888.0e6,888.9e6});
+        // 13 channels, as in the broad IN865 + EU868 preset: one evidence batch each.
+        scanner.set_lora_channels({883e6,884e6,885e6,886e6,887.6e6,888.0e6,888.9e6,889.5e6,890e6,891e6,892e6,893e6,894e6});
         check(scanner.lora_wideband_rate()==std::optional<double>(20e6),"LoRa wideband listening defaults to 20 MHz");
         const auto rotation=scanner.lora_listen_plan();
-        check(rotation.size()==1&&rotation[0].wideband&&rotation[0].rate_hz==20e6&&rotation[0].channels_hz.size()==3,
+        check(rotation.size()==1&&rotation[0].wideband&&rotation[0].rate_hz==20e6&&rotation[0].channels_hz.size()==13,
               "Planned channels share one 20 MHz capture");
         const auto& plan=rotation[0];
         const size_t n=80000,up=40,big=n*up;
@@ -151,9 +226,10 @@ int main(){char tmp[]="/tmp/rfmon-scanner-lora-XXXXXX";if(!mkdtemp(tmp))return 1
             else off_channel=true;
         }
         check(on_channel&&!off_channel,"20 MHz capture decodes the packet on its channel only");
-        check(scanner.lora_security_snapshot()->captures==3&&scanner.lora_security_snapshot()->excluded==0,
-              "20 MHz derived channels are usable evidence");
-        std::cout<<"INFO 20 Msps wideband step (3 channels, 0.16 s IQ) took "<<took<<" s\n";
+        const auto evidence=scanner.lora_security_snapshot();
+        check(evidence->captures==13&&evidence->excluded==0&&evidence->input_loss==0,
+              "All 13 derived channels reach the evidence monitor as usable evidence");
+        std::cout<<"INFO 20 Msps wideband step (13 channels, 0.16 s IQ) took "<<took<<" s\n";
         fs::current_path(tmp);
     }
     fs::current_path(cwd);fs::remove_all(tmp);return 0;

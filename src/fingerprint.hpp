@@ -112,6 +112,19 @@ LoraFingerprint extract_lora_fingerprint(const std::vector<std::complex<float>>&
                                           double bandwidth_hz, double center_hz,
                                           long start_sample, int preamble_len, int cfo_bins);
 
+// Same fit, placed by a decoded packet's own alignment instead of the
+// symbol-granular burst search: `fit_symbols` clean preamble up-chirps from
+// `fit_start` (on the decoder's symbol grid, past the first partial symbol and
+// before the sync word), noise from [noise_start, noise_start + 2^sf), and
+// cfo_bins the decoder's CFO rounded to a bin (the fit refines the rest).
+// detect_burst()'s start is only symbol-granular, so its cfo_bins absorbs the
+// arrival time within a symbol and the fit window takes in pre-burst samples
+// and sync-word symbols; on recorded SX1262 packets that gave EVM 43-70% and
+// features that moved with the sampling phase as much as between devices.
+LoraFingerprint extract_lora_fingerprint_at(const std::vector<std::complex<float>>& iq, int sf,
+                                             double bandwidth_hz, double center_hz, long fit_start,
+                                             int fit_symbols, long noise_start, int cfo_bins);
+
 // Appends one NDJSON record for this fingerprint attempt to `path`
 // (created if missing, opened in append mode and closed on every call -
 // slightly more I/O overhead than holding an open handle, but the

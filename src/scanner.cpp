@@ -13,6 +13,7 @@
 
 #include "channelize.hpp"
 #include "lora_channelizer.hpp"
+#include "lora_decimator.hpp"
 #include "classifier.hpp"
 #include "fingerprint.hpp"
 #include "lora_phy.hpp"
@@ -43,6 +44,12 @@
 #endif
 
 namespace rfmon {
+namespace {
+// A wideband LoRa capture submits one evidence batch per derived channel at once;
+// leave room for two captures' worth so a 13-32 channel plan loses nothing.
+constexpr size_t LORA_SECURITY_QUEUE_CAPACITY = 2 * lora_plan::MAX_CHANNELS;
+}  // namespace
+
 
 namespace {
 double now_seconds() {
@@ -100,26 +107,84 @@ int nearest_wifi_channel(const std::string& band, double freq_hz) {
     return best_ch;
 }
 
-// Decimate-by-factor with a basic boxcar (moving-average) anti-alias
-// filter, rather than naive sample-dropping - used only when a
-// device's achievable LoRa-listen capture rate isn't exactly the rate
-// the LoRa codec assumes (125kHz, see lora_phy.hpp and
-// DeviceProfile::lora_listen_capture_rate_hz in config.hpp). Not a
-// rigorous polyphase resampler, but factor==2 (the only case this is
-// currently used for - the X310) puts the new Nyquist edge exactly at
-// the real LoRa signal's own occupied-bandwidth edge, so a simple
-// 2-tap average is a real low-pass step, not just decoration.
-// factor<=1 (the B210, already at exactly 125kHz) is a no-op copy.
-std::vector<std::complex<float>> decimate_boxcar(const std::vector<std::complex<float>>& in,
-                                                  int factor) {
-    if (factor <= 1) return in;
-    std::vector<std::complex<float>> out(in.size() / factor);
-    for (size_t i = 0; i < out.size(); ++i) {
-        std::complex<float> sum(0.0f, 0.0f);
-        for (int j = 0; j < factor; ++j) sum += in[i * factor + j];
-        out[i] = sum / float(factor);
+// RF fingerprint of one CRC-valid decoded packet, placed by the decoder's own
+// alignment (fingerprint::extract_lora_fingerprint_at): the clean preamble
+// up-chirps before the sync word, fitted at each sub-chip sampling phase of
+// the channel IQ; the lowest-EVM fit is kept. On recorded SX1262 packets the
+// burst-search fingerprint moved with sampling phase as much as between
+// devices (EVM 43-70%); this one repeats to ~0.5 dB IRR / 0.003 IQ eps.
+// Uplink polarity only (the fit's reference is the up-chirp preamble).
+std::optional<fingerprint::LoraFingerprint> fingerprint_decoded_row(
+        const std::vector<std::complex<float>>& raw, int factor, const LoraPacketRow& row, int sf,
+        double bw_hz, double center_hz) {
+    if (row.crc != LoraPacketRow::Crc::Valid || row.inverted_iq.value_or(false) || !row.decoder_data_start ||
+        !row.decoder_sample_start || !row.cfo_hz || sf < 7 || sf > 12 || factor < 1)
+        return std::nullopt;
+    const long n = 1L << sf, f = factor;
+    const long aligned = long(*row.decoder_data_start) - 9 * n / 4;   // first SFD down-chirp
+    const long start = long(*row.decoder_sample_start);
+    const int symbols = int(std::min<long>(8, (aligned - 2 * n - (start + n)) / n));
+    const long noise = start - 3 * n;
+    if (symbols < 3 || noise < 0) return std::nullopt;
+    const long fit = aligned - 2 * n - long(symbols) * n;
+    const double cfo_frac = *row.cfo_hz * double(n) / bw_hz;
+    // For up-chirps a one-sample time shift is indistinguishable from a
+    // one-bin frequency shift, so the preamble fit alone cannot pin the pair,
+    // and a sub-chip timing residual tau also reads as +tau bins of CFO. The
+    // SFD down-chirps separate them: with the fit's refined CFO removed, they
+    // sit -2*tau bins from zero at the right pairing and ~2 bins away at a
+    // one-sample-off pairing. Candidates: every sub-chip phase x +/-1 sample
+    // x neighbouring CFO bins; score = |down-chirp residual (bins)| +
+    // EVM/100, an ungated fit always before a gated one.
+    std::vector<std::complex<double>> up(static_cast<size_t>(n));
+    for (long i = 0; i < n; ++i) up[size_t(i)] = std::polar(1.0, M_PI * (double(i) * double(i) / double(n) - double(i)));
+    auto downchirp_residual = [&](const std::vector<std::complex<float>>& iq, long sfd, double cfo_bins) {
+        // Peak of the two dechirped SFD symbols over -2..+2 bins (1/16 bin).
+        double best_bin = 2.5, best_mag = -1;
+        for (int k = -32; k <= 32; ++k) {
+            const double bin = double(k) / 16.0;
+            double mag = 0;
+            for (long sym = 0; sym < 2; ++sym) {
+                std::complex<double> sum = 0;
+                for (long i = 0; i < n; ++i)
+                    sum += std::complex<double>(iq[size_t(sfd + sym * n + i)]) * up[size_t(i)] *
+                           std::polar(1.0, -2 * M_PI * (cfo_bins + bin) * double(i) / double(n));
+                mag += std::abs(sum);
+            }
+            if (mag > best_mag) { best_mag = mag; best_bin = bin; }
+        }
+        return std::abs(best_bin);
+    };
+    const long margin = 16, lo = std::max(0L, noise - margin), hi = aligned + 3 * n + margin;
+    std::optional<fingerprint::LoraFingerprint> best;
+    double best_score = 0;
+    for (long phase = 0; phase < f; ++phase) {
+        const long r0 = lo * f + phase, r1 = hi * f + phase;
+        if (r1 > long(raw.size())) break;
+        const std::vector<std::complex<float>> segment(raw.begin() + r0, raw.begin() + r1);
+        const auto iq = f > 1 ? lora_decimator::decimate(segment, int(f)) : segment;
+        for (long o = -1; o <= 1; ++o) {
+            const long sfd = aligned - lo + o;
+            if (sfd < 0 || sfd + 2 * n > long(iq.size())) continue;
+            // The decoder's CFO came from its own sub-chip grid; at another
+            // phase it can round to the neighbouring bin, beyond the fit's
+            // +/-0.5 bin refinement, so the neighbours are tried too.
+            for (long d = -1; d <= 1; ++d) {
+                auto fp = fingerprint::extract_lora_fingerprint_at(iq, sf, bw_hz, center_hz, fit - lo + o, symbols,
+                                                                   noise - lo,
+                                                                   int(std::lround(cfo_frac + double(o)) + d));
+                if (fp.n_samp <= 0) continue;
+                const double refined = fp.cfo_ppm * center_hz / 1e6 * double(n) / bw_hz;
+                const double score =
+                    downchirp_residual(iq, sfd, refined) + fp.evm_pct / 100.0 + (fp.gated_out ? 10.0 : 0.0);
+                if (!best || score < best_score) {
+                    best = fp;
+                    best_score = score;
+                }
+            }
+        }
     }
-    return out;
+    return best;
 }
 }  // namespace
 
@@ -130,7 +195,10 @@ struct Scanner::LoraAnalysis {
         int sf = 0;
         std::vector<LoraPacketRow> observations;
         std::optional<lora::BurstDetection> burst;
-        std::optional<fingerprint::LoraFingerprint> fp;
+        std::optional<fingerprint::LoraFingerprint> fp;  // legacy burst-search fit (detected-only rows)
+        // Decoder-aligned fingerprint per observation (same index), CRC-valid
+        // uplinks only; these alone feed RF identity (lora_master, registry).
+        std::vector<std::optional<fingerprint::LoraFingerprint>> row_fps;
     };
     std::vector<Hypothesis> hypotheses;  // BW-major, SF-minor (the historical order)
     bool laboratory = false;
@@ -146,7 +214,7 @@ Scanner::Scanner(const std::string& data_root)
     // Baselines and incidents survive restarts (bounded; see wifi_security_baseline.hpp).
     security_config_.state_path = data_root + "/wifi_security/state.json";
     security_ = std::make_unique<wifi_security::WifiSecurityMonitor>(security_config_);
-    lora_security_=std::make_unique<lora_security::Monitor>(data_root+"/lora_security/events.ndjson");
+    lora_security_=std::make_unique<lora_security::Monitor>(data_root+"/lora_security/events.ndjson",LORA_SECURITY_QUEUE_CAPACITY);
 }
 
 Scanner::~Scanner() { stop(); }
@@ -246,7 +314,7 @@ std::shared_ptr<const lora_security::Snapshot> Scanner::lora_security_snapshot()
 }
 bool Scanner::set_lora_security_recording(const std::string& path) {
     if(running_)return false;
-    lora_security_=std::make_unique<lora_security::Monitor>(path);return true;
+    lora_security_=std::make_unique<lora_security::Monitor>(path,LORA_SECURITY_QUEUE_CAPACITY);return true;
 }
 
 void Scanner::request_lora_capture_save(const std::string& directory) {
@@ -758,6 +826,14 @@ void Scanner::run_lora_wideband_step(const lora_plan::Capture& plan, const Devic
         for (size_t i = first; i < last; ++i) analyses[i] = work[i - first].get();
     }
 
+    // Mirror images of strong packets about the tuned centre (receiver IQ
+    // imbalance) are tagged before any row is committed.
+    {
+        std::vector<LoraRowGroup> groups;
+        for (size_t i = 0; i < analyses.size(); ++i)
+            for (auto& h : analyses[i].hypotheses) groups.push_back({plan.channels_hz[i], h.bw_hz, &h.observations});
+        tag_lora_iq_images(groups, plan.center_hz);
+    }
     std::string save_directory;
     {
         std::lock_guard<std::mutex> lock(capture_mutex_);
@@ -854,12 +930,17 @@ Scanner::LoraAnalysis Scanner::analyze_lora_iq(const std::vector<std::complex<fl
         if (!std::isfinite(ratio) || ratio < 1 || ratio > 1024 || std::abs(ratio - std::round(ratio)) > 1e-6) continue;
         per_bw.push_back(std::async(std::launch::async, [&iq_raw, bw_hz, ratio, freq_hz, skip_sync_check] {
             std::vector<LoraAnalysis::Hypothesis> hs;
-            const std::vector<std::complex<float>> iq = decimate_boxcar(iq_raw, int(std::lround(ratio)));
+            const std::vector<std::complex<float>> iq = lora_decimator::decimate(iq_raw, int(std::lround(ratio)));
             for (int sf : LORA_LISTEN_SF_LIST) {
                 LoraAnalysis::Hypothesis h;
                 h.bw_hz = bw_hz;
                 h.sf = sf;
-                h.observations = analyze_lora_packets(iq, sf, bw_hz, skip_sync_check);
+                h.observations = analyze_lora_packets_phased(iq_raw, iq, int(std::lround(ratio)), sf, bw_hz, skip_sync_check);
+                h.row_fps.resize(h.observations.size());
+                if (!skip_sync_check)
+                    for (size_t r = 0; r < h.observations.size(); ++r)
+                        h.row_fps[r] = fingerprint_decoded_row(iq_raw, int(std::lround(ratio)), h.observations[r], sf,
+                                                               bw_hz, freq_hz);
                 if (!h.observations.empty()) {
                     h.burst = lora::detect_burst(iq, sf);
                     if (h.burst)
@@ -923,92 +1004,78 @@ void Scanner::commit_lora_analysis(const std::vector<std::complex<float>>& iq_ra
             for(auto& row:observations)row.bandwidth_khz=bw_khz;
             security_rows.insert(security_rows.end(),observations.begin(),observations.end());
             const bool decoded_present = observations.front().header_valid;
-            const size_t first_decoded_row = display_rows.size();
-            for (auto& decoded : observations) {
+            for (size_t k = 0; k < observations.size(); ++k) {
+                auto& decoded = observations[k];
                 if (!decoded.header_valid) continue;
                 decoded.time = ts; decoded.freq_mhz = freq_hz / 1e6;
                 decoded.bandwidth_khz = bw_khz;
                 if (overflow) decoded.detail += " Capture overflow: sample continuity lost.";
+                // RF identity from this packet's own decoder-aligned fit.
+                const auto& fp = k < hypothesis.row_fps.size() ? hypothesis.row_fps[k] : std::nullopt;
+                if (fp && !decoded.iq_image_of_mhz) {
+                    fingerprint::append_fingerprint_record(LORA_FINGERPRINT_LOG_PATH, ts, freq_hz / 1e6,
+                                                           decoded.sf, bw_khz, *fp);
+                    decoded.fp_evm_pct = fp->evm_pct;
+                    decoded.fp_sync_corr = fp->sync_corr;
+                    if (fp->gated_out) {
+                        decoded.fp_gate_reason = fp->gate_reason;
+                    } else {
+                        decoded.fp_cfo_ppm = fp->cfo_ppm;
+                        decoded.fp_irr_db = fp->irr_db;
+                        decoded.fp_iq_eps = fp->iq_eps;
+                        decoded.fp_iq_phi_deg = fp->iq_phi_deg;
+                        decoded.fp_dc_dbc = fp->dc_dbc;
+                        decoded.fp_dc_ang_deg = fp->dc_ang_deg;
+                        decoded.fp_snr_db = fp->snr_db;
+                        // Session registry (Active emitters identity); peak_db
+                        // is a stand-in from snr_db, not a power measurement.
+                        Segment seg{freq_hz, bw_hz, fp->snr_db};
+                        FingerprintSnapshot snap;
+                        snap.cfo_ppm = fp->cfo_ppm;
+                        snap.irr_db = fp->irr_db;
+                        snap.iq_eps = fp->iq_eps;
+                        snap.iq_phi_deg = fp->iq_phi_deg;
+                        snap.dc_dbc = fp->dc_dbc;
+                        snap.dc_ang_deg = fp->dc_ang_deg;
+                        detections.push_back(Detection{BAND_SUB_GHZ, seg, classify(BAND_SUB_GHZ, seg), snap});
+                        // Permanent cross-run RF cluster (lora_master.hpp).
+                        const int cluster = lora_master_.record_reading(freq_hz, decoded.sf, bw_hz, *fp,
+                                                                        now_epoch_seconds());
+                        decoded.rf_cluster_id = cluster;
+                        if (auto e = lora_master_.enrolment(cluster); e && e->policy == "disallowed")
+                            disallowed_heard.push_back({cluster, e->alias, freq_hz});
+                    }
+                }
                 push_row(std::move(decoded));
             }
-            // Legacy RF fingerprinting has its own preamble alignment/gates.
-            // Do not attach those unrelated estimates to a decoded packet.
-            auto observation = std::optional<LoraPacketRow>(std::move(observations.front()));
-            observation->time = ts;
-            observation->freq_mhz = freq_hz / 1e6;
-            observation->bandwidth_khz = bw_khz;
-            if (overflow) observation->detail += " Capture overflow: sample continuity lost.";
-            const auto& burst = hypothesis.burst;
-            if (!burst && !decoded_present) push_row(std::move(*observation));
-            if (burst.has_value()) {
-                // Preserve the independently gated RF fingerprint registry path
-                // even when PHY decoding succeeds. Its older burst alignment is
-                // not attached to the new packet's header/payload evidence.
-                const auto& fp = *hypothesis.fp;
-                fingerprint::append_fingerprint_record(LORA_FINGERPRINT_LOG_PATH, ts,
-                                                        freq_hz / 1e6, burst->sf, bw_khz, fp);
-
-                LoraPacketRow row = std::move(*observation);
-                if (fp.gated_out) {
-                    row.fp_gate_reason = fp.gate_reason;
-                } else {
-                    row.fp_cfo_ppm = fp.cfo_ppm;
-                    row.fp_irr_db = fp.irr_db;
-                    row.fp_iq_eps = fp.iq_eps;
-                    row.fp_iq_phi_deg = fp.iq_phi_deg;
-                    row.fp_dc_dbc = fp.dc_dbc;
-                    row.fp_dc_ang_deg = fp.dc_ang_deg;
-                    row.fp_snr_db = fp.snr_db;
-                }
-                // n_samp is only ever set once the IQ-imbalance fit has
-                // actually run (see fingerprint.cpp) - shown even when
-                // the EVM/sync_corr gate itself is what rejected this
-                // row, since they're the reason for that rejection.
-                if (fp.n_samp > 0) {
-                    row.fp_evm_pct = fp.evm_pct;
-                    row.fp_sync_corr = fp.sync_corr;
-                }
-                if (!decoded_present) push_row(std::move(row));
-
-                // Feed the registry too, so a fingerprinted burst can
-                // be matched/merged by RF identity (see
-                // registry.hpp/.cpp) rather than only ever by frequency
-                // bucket. peak_db here is a stand-in using snr_db, not
-                // a real power measurement - this Detection's job is
-                // identity matching, not power ranking.
-                if (!fp.gated_out) {
-                    Segment seg{freq_hz, bw_hz, fp.snr_db};
-                    FingerprintSnapshot snap;
-                    snap.cfo_ppm = fp.cfo_ppm;
-                    snap.irr_db = fp.irr_db;
-                    snap.iq_eps = fp.iq_eps;
-                    snap.iq_phi_deg = fp.iq_phi_deg;
-                    snap.dc_dbc = fp.dc_dbc;
-                    snap.dc_ang_deg = fp.dc_ang_deg;
-                    Detection det{BAND_SUB_GHZ, seg, classify(BAND_SUB_GHZ, seg), snap};
-                    detections.push_back(std::move(det));
-
-                    // Permanent, cross-run identity list (see
-                    // lora_master.hpp) - separate from the session-only
-                    // registry fed just above; only ever sees readings
-                    // that already cleared every gate.
-                    const int cluster = lora_master_.record_reading(freq_hz, burst->sf, bw_hz, fp,
-                                                                    now_epoch_seconds());
-                    // Tag decoded packets of this same burst with the cluster:
-                    // same (SF, BW) hypothesis and a start inside the burst's
-                    // preamble span. Other packets in the capture stay untagged.
-                    const size_t tolerance = size_t(burst->preamble_len + 4) << burst->sf;
-                    for (size_t k = first_decoded_row; k < display_rows.size(); ++k) {
-                        auto& d = display_rows[k];
-                        if (!d.header_valid || !d.decoder_sample_start) continue;
-                        const size_t start = *d.decoder_sample_start, b0 = size_t(std::max(0L, burst->start_sample));
-                        if ((start > b0 ? start - b0 : b0 - start) <= tolerance) d.rf_cluster_id = cluster;
+            // Detected-only hypotheses keep the legacy burst-search fit as a
+            // diagnostic on their row. It no longer feeds RF identity: its
+            // start is symbol-granular, so its features follow arrival time
+            // and sampling phase rather than the transmitter.
+            if (!decoded_present) {
+                LoraPacketRow row = std::move(observations.front());
+                row.time = ts;
+                row.freq_mhz = freq_hz / 1e6;
+                row.bandwidth_khz = bw_khz;
+                if (overflow) row.detail += " Capture overflow: sample continuity lost.";
+                if (hypothesis.burst && hypothesis.fp) {
+                    const auto& fp = *hypothesis.fp;
+                    if (fp.gated_out) row.fp_gate_reason = fp.gate_reason;
+                    else {
+                        row.fp_cfo_ppm = fp.cfo_ppm;
+                        row.fp_irr_db = fp.irr_db;
+                        row.fp_iq_eps = fp.iq_eps;
+                        row.fp_iq_phi_deg = fp.iq_phi_deg;
+                        row.fp_dc_dbc = fp.dc_dbc;
+                        row.fp_dc_ang_deg = fp.dc_ang_deg;
+                        row.fp_snr_db = fp.snr_db;
                     }
-                    if (!decoded_present && !display_rows.empty() && display_rows.size() > first_decoded_row)
-                        display_rows.back().rf_cluster_id = cluster;
-                    if (auto e = lora_master_.enrolment(cluster); e && e->policy == "disallowed")
-                        disallowed_heard.push_back({cluster, e->alias, freq_hz});
+                    if (fp.n_samp > 0) {
+                        row.fp_evm_pct = fp.evm_pct;
+                        row.fp_sync_corr = fp.sync_corr;
+                    }
                 }
+                push_row(std::move(row));
             }
         }
     }
@@ -1021,7 +1088,7 @@ void Scanner::commit_lora_analysis(const std::vector<std::complex<float>>& iq_ra
         std::set<std::string> counted;
         const int64_t now_ts=now_epoch_seconds();
         for(const auto& row:display_rows){
-            if(row.crc!=LoraPacketRow::Crc::Valid||!row.lorawan_device_id)continue;
+            if(row.crc!=LoraPacketRow::Crc::Valid||!row.lorawan_device_id||row.iq_image_of_mhz)continue;
             const std::string key=*row.lorawan_device_kind+" "+*row.lorawan_device_id;
             if(!row.reception_id.empty()&&!counted.insert(key+"|"+row.reception_id).second)continue;
             auto& d=lora_devices_[key];
@@ -1038,7 +1105,7 @@ void Scanner::commit_lora_analysis(const std::vector<std::complex<float>>& iq_ra
         // reception carry the same bytes), timed at its coarse start.
         std::set<std::string> ruled;
         for(const auto& row:display_rows){
-            if(row.crc!=LoraPacketRow::Crc::Valid||!row.lorawan_candidate)continue;
+            if(row.crc!=LoraPacketRow::Crc::Valid||!row.lorawan_candidate||row.iq_image_of_mhz)continue;
             if(!row.reception_id.empty()&&!ruled.insert(row.reception_id).second)continue;
             lora_rules::Frame frame;
             frame.ts=provenance.host_start_unix_s+row.capture_offset_s.value_or(0.0);

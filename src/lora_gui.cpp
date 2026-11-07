@@ -108,7 +108,10 @@ void draw_packet_row(const LoraPacketRow& d, bool child, size_t group_size, bool
     if (child) ImGui::Unindent(14);
     ImGui::PopID();
     ImGui::TableNextColumn();
-    ImGui::TextColored(verified ? kGood : d.crc == LoraPacketRow::Crc::Failed ? kBad : kDim, "%s", d.status.c_str());
+    if (d.iq_image_of_mhz)
+        ImGui::TextColored(kDim, "IQ image of %.4f MHz", *d.iq_image_of_mhz);
+    else
+        ImGui::TextColored(verified ? kGood : d.crc == LoraPacketRow::Crc::Failed ? kBad : kDim, "%s", d.status.c_str());
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", d.detail.c_str());
     ImGui::TableNextColumn();
     ImGui::TextUnformatted(d.decoder.c_str());
@@ -884,8 +887,9 @@ void draw_lora_receiver_panel(const LoraReceiverView& v, const LoraTabActions& a
             ImGui::TextDisabled("The separate sub-GHz energy scan still runs each cycle (plan does not fit one capture keeping 863-868 MHz).");
     }
 
-    if (!v.plan.empty() && ImGui::BeginTable("lora_plan", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
-        for (const char* c : {"Capture", "Mode", "Tuned (MHz)", "Rate (Msps)", "Usable span (MHz)", "Channels (MHz)", "DC clearance"})
+    if (!v.plan.empty() && ImGui::BeginTable("lora_plan", 8, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+        for (const char* c : {"Capture", "Mode", "Tuned (MHz)", "Rate (Msps)", "Usable span (MHz)", "Channels (MHz)", "DC clearance",
+                              "Mirror clearance"})
             ImGui::TableSetupColumn(c);
         ImGui::TableHeadersRow();
         for (size_t i = 0; i < v.plan.size(); ++i) {
@@ -903,6 +907,17 @@ void draw_lora_receiver_panel(const LoraReceiverView& v, const LoraTabActions& a
             ImGui::TableNextColumn(); ImGui::TextUnformatted(lora_plan::format_channels_mhz(c.channels_hz).c_str());
             ImGui::TableNextColumn();
             if (c.wideband) ImGui::Text("%.0f kHz", c.dc_clearance_hz / 1e3); else ImGui::TextDisabled("centred");
+            ImGui::TableNextColumn();
+            if (!c.wideband) ImGui::TextDisabled("centred");
+            else if (c.mirror_clearance_hz >= lora_plan::DEFAULT_MIN_MIRROR_CLEARANCE_HZ)
+                ImGui::TextColored(kGood, "%.0f kHz", c.mirror_clearance_hz / 1e3);
+            else
+                ImGui::TextColored(kCaution, "%.0f kHz", c.mirror_clearance_hz / 1e3);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("How close any channel's IQ-imbalance image (2 x tuned - f) comes to a planned channel.\n"
+                                  "Below %.0f kHz a strong packet can show up as an inverted-IQ ghost on another channel;\n"
+                                  "such rows are tagged \"IQ image\" in the packet table.",
+                                  lora_plan::DEFAULT_MIN_MIRROR_CLEARANCE_HZ / 1e3);
         }
         ImGui::EndTable();
     }

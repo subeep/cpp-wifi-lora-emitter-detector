@@ -1,4 +1,5 @@
 #include "lora_observation.hpp"
+#include "lora_decimator.hpp"
 #include "lora_phy.hpp"
 #include "lora_receiver.hpp"
 #include "lorawan_inspect.hpp"
@@ -263,13 +264,10 @@ std::vector<LoraPacketRow> analyze_lora_capture(const std::vector<std::complex<f
         double ratio = rate / bw;
         if (!std::isfinite(ratio) || ratio < 1 || ratio > 1024 || std::abs(ratio - std::round(ratio)) > 1e-6) continue;
         size_t factor = size_t(std::llround(ratio));
-        std::vector<std::complex<float>> iq(raw.size() / factor);
-        for (size_t i = 0; i < iq.size(); ++i) {
-            for (size_t j = 0; j < factor; ++j) iq[i] += raw[i * factor + j];
-            iq[i] /= float(factor);
-        }
+        // Same anti-alias decimation and sub-chip retry as the live scanner.
+        const auto iq = lora_decimator::decimate(raw, int(factor));
         for (int sf : LORA_LISTEN_SF_LIST) {
-            for (auto& row : analyze_lora_packets(iq, sf, bw, laboratory_mode)) {
+            for (auto& row : analyze_lora_packets_phased(raw, iq, int(factor), sf, bw, laboratory_mode)) {
                 row.freq_mhz = frequency / 1e6; row.bandwidth_khz = bw / 1e3;
                 rows.push_back(std::move(row));
             }
@@ -277,5 +275,96 @@ std::vector<LoraPacketRow> analyze_lora_capture(const std::vector<std::complex<f
     }
     if(!laboratory_mode)annotate_lora_receptions(rows,rate,"capture-local");
     return rows;
+}
+std::vector<LoraPacketRow> analyze_lora_packets_phased(const std::vector<std::complex<float>>& raw,
+                                                       const std::vector<std::complex<float>>& decimated, int factor,
+                                                       int sf, double bandwidth, bool laboratory_mode) {
+    auto rows = analyze_lora_packets(decimated, sf, bandwidth, laboratory_mode);
+    if (laboratory_mode || factor <= 1 || sf < 7 || sf > 12) return rows;
+    const size_t n = size_t(1) << sf, f = size_t(factor);
+    for (auto& row : rows) {
+        if (!row.header_valid || row.crc != LoraPacketRow::Crc::Failed || row.decoder != "LoRa explicit PHY" ||
+            !row.decoder_sample_start || !row.decoder_data_start)
+            continue;
+        // Span: from two symbols before the preamble detection to the end of
+        // the declared payload (LDRO width bound), plus margin.
+        const size_t start = *row.decoder_sample_start, data = *row.decoder_data_start;
+        const int len = row.payload_len.value_or(255), cr = row.cr.value_or(4), width = std::max(1, sf - 2);
+        const size_t symbols = 8 + size_t((2 * (len + 2) + width - 1) / width) * size_t(cr + 4) + 4;
+        const size_t lo = start > 2 * n ? start - 2 * n : 0;
+        const size_t hi = std::min(decimated.size(), data + symbols * n + 2 * n);
+        if (hi <= lo) continue;
+        for (size_t phase = 1; phase < f; ++phase) {
+            const size_t r0 = lo * f + phase, r1 = std::min(raw.size(), hi * f + phase);
+            if (r1 <= r0 + f * n) break;
+            const std::vector<std::complex<float>> segment(raw.begin() + long(r0), raw.begin() + long(r1));
+            // Output k of this segment sits phase/f of a chip after phase-0
+            // output lo + k; report it on the nearest phase-0 sample.
+            const size_t shift = lo + (2 * phase >= f ? 1 : 0);
+            bool replaced = false;
+            for (auto& c : analyze_lora_packets(lora_decimator::decimate(segment, factor), sf, bandwidth, false)) {
+                if (c.crc != LoraPacketRow::Crc::Valid || c.inverted_iq != row.inverted_iq || !c.decoder_data_start ||
+                    !c.decoder_sample_start)
+                    continue;
+                const size_t c_data = *c.decoder_data_start + shift;
+                if ((c_data > data ? c_data - data : data - c_data) > 2) continue;
+                const long window_offset = long(*c.decoder_sample_start);
+                c.decoder_sample_start = *c.decoder_sample_start + shift;
+                c.decoder_data_start = c_data;
+                if (c.decoder_sample_end) c.decoder_sample_end = *c.decoder_sample_end + shift;
+                c.capture_offset_s = double(*c.decoder_sample_start) / bandwidth;
+                const std::string from = "Sample offset " + std::to_string(window_offset) + ";";
+                if (auto at = c.detail.find(from); at != std::string::npos)
+                    c.detail.replace(at, from.size(), "Sample offset " + std::to_string(*c.decoder_sample_start) + ";");
+                char note[160];
+                std::snprintf(note, sizeof note,
+                              "Recovered at sub-chip sampling phase %zu/%zu after the phase-0 decode failed CRC. ", phase, f);
+                c.detail = note + c.detail;
+                row = std::move(c);
+                replaced = true;
+                break;
+            }
+            if (replaced) break;
+        }
+    }
+    return rows;
+}
+size_t tag_lora_iq_images(const std::vector<LoraRowGroup>& groups, double center_hz, double freq_tolerance_hz) {
+    struct Ref { const LoraRowGroup* g; LoraPacketRow* r; double apparent_hz; };
+    std::vector<Ref> rows;
+    for (const auto& g : groups) {
+        if (!g.rows) continue;
+        for (auto& r : *g.rows)
+            if (r.header_valid && r.inverted_iq && r.cfo_hz && r.capture_offset_s)
+                rows.push_back({&g, &r, g.channel_hz + *r.cfo_hz});
+    }
+    size_t tagged = 0;
+    for (auto& o : rows) {
+        if (o.r->iq_image_of_mhz) continue;
+        const bool o_valid = o.r->crc == LoraPacketRow::Crc::Valid;
+        const double target = 2 * center_hz - o.apparent_hz;
+        const double symbol_s = double(1 << o.r->sf) / o.g->bw_hz;
+        for (const auto& p : rows) {
+            if (p.r == o.r || p.r->sf != o.r->sf || p.g->bw_hz != o.g->bw_hz) continue;
+            if (*p.r->inverted_iq == *o.r->inverted_iq) continue;
+            if (std::abs(p.apparent_hz - target) > freq_tolerance_hz) continue;
+            if (std::abs(*p.r->capture_offset_s - *o.r->capture_offset_s) > 4 * symbol_s) continue;
+            const bool p_valid = p.r->crc == LoraPacketRow::Crc::Valid;
+            const bool p_stronger = p.r->preamble_peak_ratio.value_or(0) > o.r->preamble_peak_ratio.value_or(0);
+            if (o_valid ? !(p_valid && p_stronger && p.r->payload_hex == o.r->payload_hex) : !(p_valid || p_stronger))
+                continue;
+            o.r->iq_image_of_mhz = p.g->channel_hz / 1e6;
+            char note[256];
+            std::snprintf(note, sizeof note,
+                          "Likely receiver IQ-imbalance image of the packet decoded on %.4f MHz at the same time "
+                          "(mirrored about the %.4f MHz capture centre, opposite IQ polarity); not a separate "
+                          "transmission. ",
+                          p.g->channel_hz / 1e6, center_hz / 1e6);
+            o.r->detail = note + o.r->detail;
+            ++tagged;
+            break;
+        }
+    }
+    return tagged;
 }
 } // namespace rfmon
