@@ -10,13 +10,13 @@ WORKER = sys.argv.pop(1)
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def frame(data, rate=10e6, time=0., epoch=1):
-    return struct.pack('<4sIdddQ', b'DDIQ', len(data)//8, rate, 2444.5e6, time, epoch)+data
+def frame(data, rate=10e6, time=0., epoch=1, centre=2444.5e6):
+    return struct.pack('<4sIdddQ', b'DDIQ', len(data)//8, rate, centre, time, epoch)+data
 
 
 class NativeWorkerTests(unittest.TestCase):
-    def run_frames(self, data):
-        run = subprocess.run([WORKER], input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+    def run_frames(self, data, *args):
+        run = subprocess.run([WORKER, *args], input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
         self.assertEqual(run.returncode, 0, run.stderr.decode())
         rows = [json.loads(line) for line in run.stdout.splitlines()]
         self.assertTrue(rows.pop(0)['ready'])
@@ -35,6 +35,49 @@ class NativeWorkerTests(unittest.TestCase):
         self.assertEqual(p['reported_serial'], '1WNBH3900201N1')
         self.assertEqual(p['generation'], 'unverified')
         self.assertFalse(p['identity_authenticated'])
+        # Payload contract: what the packet says, with the model taken from the product table.
+        self.assertEqual((p['contract'], p['payload_version'], p['identity_readable']), ('droneid-packet-v1', 2, True))
+        self.assertEqual((p['product_code'], p['model'], p['model_source']), (58, 'Mavic Air 2', 'table'))
+        self.assertEqual(p['reported_model'], 'Mavic Air 2')
+
+    def test_second_recorded_model_and_channel_selection(self):
+        data = (ROOT/'tests/fixtures/drones/dji_mini2.fc32').read_bytes()
+        packets = self.run_frames(frame(data, 50e6))[0]['native_packets']
+        self.assertGreaterEqual(len(packets), 1)
+        for p in packets:
+            self.assertEqual((p['product_code'], p['model'], p['identity_readable']), (63, 'Mini 2', True))
+            # The fixture's centre metadata is inherited, so the automatic pass finds it; a payload
+            # is never reported twice even though documented channels are tried as well.
+            self.assertIn(p['channel_selection'], ('documented_droneid_channel',
+                                                   'strongest_10MHz_per_window_not_emitter_identification'))
+        self.assertEqual(len({(p['payload_hex'], p['sample_index']) for p in packets}), len(packets))
+
+    def test_parallel_decode_gives_the_sequential_output(self):
+        data = (ROOT/'tests/fixtures/drones/dji_mini2.fc32').read_bytes()
+        # Two messages, so the overlap carried between messages and the duplicate filter are covered.
+        half = (len(data)//16)*8
+        stream = frame(data[:half], 50e6) + frame(data[half:], 50e6, time=half/8/50e6)
+        def rows(*args):
+            out = self.run_frames(stream, *args)
+            for row in out:
+                row.pop('processing_ms')
+            return out
+        sequential = rows('--threads', '1')
+        self.assertGreaterEqual(sum(len(r['native_packets']) for r in sequential), 1)
+        self.assertEqual(rows('--threads', '6'), sequential)
+        self.assertEqual(rows(), sequential)
+        bad = subprocess.run([WORKER, '--no-such-option'], input=b'', stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        self.assertEqual(bad.returncode, 2)
+
+    def test_listed_channels_only_keeps_automatic_pass_when_no_channel_is_in_view(self):
+        data = (ROOT/'tests/fixtures/drones/dji_mavic_air_2.fc32').read_bytes()
+        # Away from every listed channel the option changes nothing: the automatic pass still runs.
+        packets = self.run_frames(frame(data, 50e6, centre=2600e6), '--listed-channels-only')[0]['native_packets']
+        self.assertEqual([p['product_code'] for p in packets], [58])
+        self.assertNotEqual(packets[0]['channel_selection'], 'documented_droneid_channel')
+        # With listed channels in view only those are tried, so nothing is labelled automatic.
+        packets = self.run_frames(frame(data, 50e6), '--listed-channels-only')[0]['native_packets']
+        self.assertTrue(all(p['channel_selection'] == 'documented_droneid_channel' for p in packets))
 
     def test_o4_context_requires_continuity(self):
         silence = bytes(80000*8)

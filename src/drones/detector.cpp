@@ -19,11 +19,11 @@
 extern char** environ;
 namespace drone {
 Detector::~Detector() { stop(); }
-void Detector::start(bool native_backend) {
+void Detector::start(bool native_backend, bool listed_channels_only) {
     stop();
-    native_backend_=native_backend;
+    native_backend_=native_backend; listed_channels_only_=listed_channels_only;
     { std::lock_guard<std::mutex> lock(mutex_); snapshot_ = {}; queue_.clear(); }
-    dropped_=0; gap_=0; running_=true;
+    dropped_=0; gap_=0; dropped_full_=0; dropped_busy_=0; dropped_invalid_=0; priority_chunks_=0; displaced_chunks_=0; running_=true;
     thread_=std::thread(&Detector::run, this);
 }
 void Detector::stop() {
@@ -42,22 +42,46 @@ void Detector::status(const std::string& text, bool ready) {
 Snapshot Detector::snapshot() {
     std::lock_guard<std::mutex> lock(mutex_);
     auto out=snapshot_; out.dropped=dropped_.load();
+    out.dropped_full=dropped_full_.load(); out.dropped_busy=dropped_busy_.load(); out.dropped_invalid=dropped_invalid_.load();
+    out.priority_chunks=priority_chunks_.load(); out.displaced_chunks=displaced_chunks_.load();
     out.queue_depth=queue_.size();
     if (!queue_.empty()) out.oldest_queue_ms=std::chrono::duration<double,std::milli>(
         std::chrono::steady_clock::now()-queue_.front().enqueued).count();
     return out;
 }
 void Detector::submit(const std::complex<float>* data, size_t count, double rate,
-                      double frequency, double timestamp, uint64_t epoch, const std::string& source) {
+                      double frequency, double timestamp, uint64_t epoch, const std::string& source, bool priority) {
     if (!running_) return;
-    if (!data || count == 0 || count > (native_backend_?40000000u:2000000u) || !std::isfinite(rate) || rate < (native_backend_?10e6:15.26e6) || rate > (native_backend_?250e6:100e6) || (native_backend_ && count/rate>.160001) || !std::isfinite(frequency) || !std::isfinite(timestamp)) { dropped_+=count; ++gap_; return; }
+    if (!data || count == 0 || count > (native_backend_?40000000u:2000000u) || !std::isfinite(rate) || rate < (native_backend_?10e6:15.26e6) || rate > (native_backend_?250e6:100e6) || (native_backend_ && count/rate>.160001) || !std::isfinite(frequency) || !std::isfinite(timestamp)) { dropped_+=count; ++gap_; ++dropped_invalid_; return; }
     std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
-    if (!lock || queue_.size() >= (native_backend_?1u:4u)) {
-        dropped_+=count; ++gap_; return;
+    // The worker holds the mutex only to pop a chunk or publish a result. A capture's chunks
+    // arrive back to back, so give the native path a short bounded retry instead of turning a
+    // momentary collision into a continuity gap. Never blocks.
+    for (int attempt=0; !lock && native_backend_ && attempt<64; ++attempt) { std::this_thread::yield(); lock.try_lock(); }
+    if (!lock) { dropped_+=count; ++gap_; ++dropped_busy_; return; }
+    const auto is_full=[&] {
+        if (queue_.size() >= (native_backend_?kNativeQueueChunks:4u)) return true;
+        if (!native_backend_) return false;
+        size_t queued=count;
+        for (const auto& chunk:queue_) queued+=chunk.data.size();
+        return queued>kNativeQueueSamples;
+    };
+    bool full=is_full();
+    priority=priority && native_backend_;
+    while (full && priority) {
+        // Make room by discarding the oldest waiting ordinary chunk; the gap is counted, so the
+        // rest of that capture starts a new continuity epoch.
+        auto victim=std::find_if(queue_.begin(),queue_.end(),[](const Chunk& chunk){return !chunk.priority;});
+        if (victim==queue_.end()) break;
+        dropped_+=victim->data.size(); ++gap_; ++dropped_full_; ++displaced_chunks_;
+        queue_.erase(victim);
+        full=is_full();
     }
+    if (full) { dropped_+=count; ++gap_; ++dropped_full_; return; }
+    if (priority) ++priority_chunks_;
     // Each RX gap/reconfiguration and local queue loss starts a new continuity epoch.
     queue_.push_back({std::vector<std::complex<float>>(data, data+count),rate,frequency,timestamp,
-                      (epoch<<32) ^ gap_.load(), epoch, source, std::chrono::steady_clock::now()});
+                      (epoch<<32) ^ gap_.load(), epoch, source, std::chrono::steady_clock::now(), priority});
     wake_.notify_one();
 }
 static bool transfer(int fd, void* data, size_t bytes, bool write, const std::atomic<bool>& running) {
@@ -99,7 +123,7 @@ void Detector::run() {
         posix_spawn_file_actions_addclose(&actions,sockets[0]);
         posix_spawn_file_actions_addclose(&actions,sockets[1]);
         const char* args[]={DETECTOR_PYTHON,"-u",DETECTOR_SCRIPT,"--turbo",DETECTOR_TURBO,nullptr};
-        const char* native_args[]={DETECTOR_NATIVE,nullptr};
+        const char* native_args[]={DETECTOR_NATIVE,listed_channels_only_?"--listed-channels-only":nullptr,nullptr};
         int rc=posix_spawn(&child,native_backend_?DETECTOR_NATIVE:DETECTOR_PYTHON,&actions,nullptr,
                            const_cast<char* const*>(native_backend_?native_args:args),environ);
         posix_spawn_file_actions_destroy(&actions);

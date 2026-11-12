@@ -19,6 +19,7 @@
 
 #include "config.hpp"
 #include "coordinated_schedule.hpp"
+#include "drones/droneid_followup.hpp"
 #include "lora_capture.hpp"
 #include "lora_master.hpp"
 #include "lora_observation.hpp"
@@ -89,6 +90,9 @@ struct CoordinatedStatus {
     std::optional<coord::VisitRecord> current;  // visit being acquired now
     std::vector<CoordinatedSlotStatus> slots;
     uint64_t overflows = 0, empty_captures = 0;
+    // DroneID follow-up visits (extra to the schedule; not counted in the slots above).
+    uint64_t followup_visits = 0, followup_valid = 0, followup_analysed = 0;
+    double followup_acquired_s = 0;
 };
 
 // One detected Wi-Fi transmission - a single burst found by
@@ -268,6 +272,10 @@ public:
     // Recent visits (newest last, bounded), for coverage-aware freshness.
     std::deque<coord::VisitRecord> coordinated_visits() const;
     static double now_steady_s();
+    // Optional DroneID follow-up queue (coordinated mode only). Each cycle the scanner asks it
+    // for extra drone-only visits and reports the captures they produced. Not owned; must
+    // outlive the scanner or be cleared with nullptr. Safe to set while running.
+    void set_droneid_followup(droneid_followup::Followup* followup) { droneid_followup_.store(followup); }
 
     // Opt-in evidence retention: after the Wi-Fi processing lane has finished
     // with a Wi-Fi/drone capture, keep its IQ (moved, not copied) for the most
@@ -493,6 +501,7 @@ private:
 
     mutable std::mutex status_mutex_;
     ScannerStatus status_;
+    std::atomic<droneid_followup::Followup*> droneid_followup_{nullptr};
     CoordinatedStatus coordinated_status_;           // guarded by status_mutex_
     std::deque<coord::VisitRecord> coordinated_visits_; // guarded by status_mutex_
     mutable std::mutex retention_mutex_;

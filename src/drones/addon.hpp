@@ -28,6 +28,9 @@ public:
     // discontinuity, so later chunks never bridge a gap.
     std::atomic<double> native_max_capture_s{0.160};
     std::atomic<uint64_t> native_chunks{0};
+    // True for a capture made by a DroneID follow-up visit (set by the wiring, before scanning
+    // starts). Such a capture is offered whole and ahead of waiting ordinary captures.
+    std::function<bool(uint64_t capture_seq)> native_priority;
     void start_unified() {
         if(unified)return;
         native_offered=0;native_omitted=0;native_unhealthy=0;native_max_observer_ns=0;
@@ -35,7 +38,7 @@ public:
         owned_live_=!live.running();owned_rid_=!remote_id.enabled();
         if(owned_live_){offered=0;omitted=0;unhealthy=0;live.start();}
         if(owned_rid_)remote_id.enable(true);
-        native.start(true);unified=true;
+        native.start(true,true);unified=true;
     }
     void stop_unified() {
         native.stop();
@@ -67,7 +70,8 @@ public:
                     // Consecutive contiguous messages from the capture start; retain O4 history
                     // only over actual contiguous samples.
                     const size_t chunk=std::min<size_t>(40000000,size_t(c.sample_rate_hz*.160));
-                    const double limit_s=std::clamp(native_max_capture_s.load(),.160,3600.);
+                    const bool priority=native_priority&&native_priority(c.capture_seq);
+                    const double limit_s=priority?3600.:std::clamp(native_max_capture_s.load(),.160,3600.);
                     const size_t total=std::min<size_t>(iq.size(),size_t(c.sample_rate_hz*limit_s));
                     native_omitted+=iq.size()-total;
                     const double center=c.stream_center_hz();
@@ -76,7 +80,7 @@ public:
                         ++native_chunks;
                         native.submit(iq.data()+offset,n,c.sample_rate_hz,center,c.device_time_ns*1e-9+offset/c.sample_rate_hz,native_epoch_,
                             "LIVE / run "+c.run_id+" / session "+std::to_string(c.radio_session)+
-                            " / capture "+std::to_string(c.capture_seq)+" / sample "+std::to_string(offset));
+                            " / capture "+std::to_string(c.capture_seq)+" / sample "+std::to_string(offset),priority);
                     }
                 }
             } catch(...) { ++native_unhealthy;++native_epoch_; }
