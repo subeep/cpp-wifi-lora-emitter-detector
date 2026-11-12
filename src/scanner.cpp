@@ -2034,7 +2034,7 @@ void Scanner::run_coordinated(const DeviceProfile& profile, std::optional<double
 
         // Plan the whole cycle first so the last sub-GHz visit can commit the
         // sub-GHz registry (one commit per cycle, as the sub-GHz mode does).
-        struct Planned { size_t slot, visit; bool last_of_slot; };
+        struct Planned { size_t slot, visit; bool last_of_slot; std::optional<droneid_followup::Visit> followup; };
         std::vector<Planned> planned;
         std::vector<bool> wrapped(schedule.slots.size(), false);
         for (size_t si = 0; si < schedule.slots.size(); ++si) {
@@ -2042,7 +2042,19 @@ void Scanner::run_coordinated(const DeviceProfile& profile, std::optional<double
             const auto idx = coord::next_visits(schedule.slots[si], cursors[si]);
             const size_t n = schedule.slots[si].visits.size();
             wrapped[si] = !idx.empty() && before + idx.size() >= n;
-            for (size_t k = 0; k < idx.size(); ++k) planned.push_back({si, idx[k], k + 1 == idx.size()});
+            for (size_t k = 0; k < idx.size(); ++k) planned.push_back({si, idx[k], k + 1 == idx.size(), std::nullopt});
+        }
+        // DroneID follow-up visits: extra to the schedule, spread through the cycle, and
+        // bounded by the queue's own time share. They never move a slot's cursor.
+        if (auto* followup = droneid_followup_.load()) {
+            auto extra = followup->plan(now_seconds(), coord::estimate(schedule).cycle_s, schedule.settle_s + schedule.preroll_s);
+            extra.erase(std::remove_if(extra.begin(), extra.end(), [&](const droneid_followup::Visit& f) {
+                return !(f.dwell_s > 0) || (f.dwell_s + schedule.preroll_s) * wifi_rate * 8 > coord::MAX_VISIT_IQ_BYTES;
+            }), extra.end());
+            const size_t ordinary = planned.size();
+            for (size_t k = extra.size(); k-- > 0;)
+                planned.insert(planned.begin() + std::ptrdiff_t((k + 1) * ordinary / (extra.size() + 1)),
+                               Planned{0, 0, false, extra[k]});
         }
 
         const double cycle_start = now_seconds();
@@ -2055,8 +2067,13 @@ void Scanner::run_coordinated(const DeviceProfile& profile, std::optional<double
                 if (coordinated_schedule_version_ != version || wifi_fixed_channel_ || lora_lock_freq_) { abandoned = true; }
             }
             if (abandoned) break;
-            const coord::Slot& slot = schedule.slots[p.slot];
-            const coord::Visit& v = slot.visits[p.visit];
+            const bool is_followup = p.followup.has_value();
+            const coord::Visit followup_visit = is_followup
+                ? coord::Visit{p.followup->band == droneid_followup::Band::B24 ? BAND_WIFI_2G4 : BAND_WIFI_5G,
+                               coord::VisitKind::DroneOnly, p.followup->center_hz, wifi_rate, p.followup->label}
+                : coord::Visit{};
+            const coord::Visit& v = is_followup ? followup_visit : schedule.slots[p.slot].visits[p.visit];
+            const double dwell_s = is_followup ? p.followup->dwell_s : schedule.slots[p.slot].dwell_s;
             coord::VisitRecord rec;
             rec.cycle = cycle;
             rec.visit_seq = ++visit_seq;
@@ -2076,7 +2093,7 @@ void Scanner::run_coordinated(const DeviceProfile& profile, std::optional<double
             }
             const double host_start = std::chrono::duration<double>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
-            const double capture_s = slot.dwell_s + schedule.preroll_s;
+            const double capture_s = dwell_s + schedule.preroll_s;
             CaptureResult cr = sdr_->capture_detailed(v.center_hz, v.sample_rate_hz, capture_s, schedule.settle_s,
                                                       /*retune_always=*/true);
             rec.end_s = now_seconds();
@@ -2120,6 +2137,9 @@ void Scanner::run_coordinated(const DeviceProfile& profile, std::optional<double
                 job.observer_only = v.kind == coord::VisitKind::DroneOnly;
                 auto record = new_capture_record(step, profile, v.sample_rate_hz, capture_s, cr);
                 rec.capture_seq = record.capture_seq;  // links detector evidence back to this visit
+                // Before the capture reaches the observers, so the decoder can serve it first.
+                if (is_followup)
+                    if (auto* followup = droneid_followup_.load()) followup->visit_done(*p.followup, record.capture_seq, rec.valid);
                 if (v.kind == coord::VisitKind::WifiChannel) {
                     std::lock_guard<std::mutex> lock(status_mutex_);
                     status_.wifi_requested_rate_hz = v.sample_rate_hz;
@@ -2158,7 +2178,14 @@ void Scanner::run_coordinated(const DeviceProfile& profile, std::optional<double
             }
             rec.analysed = admitted;
             publish_visit(rec);
-            {
+            if (is_followup) {
+                std::lock_guard<std::mutex> lock(status_mutex_);
+                ++coordinated_status_.followup_visits;
+                if (rec.valid) { ++coordinated_status_.followup_valid; coordinated_status_.followup_acquired_s += rec.acquired_s; }
+                if (admitted) ++coordinated_status_.followup_analysed;
+                if (cr.overflow) ++coordinated_status_.overflows;
+                if (rec.acquired_s == 0) ++coordinated_status_.empty_captures;
+            } else {
                 std::lock_guard<std::mutex> lock(status_mutex_);
                 auto& s = coordinated_status_.slots[p.slot];
                 ++s.visits;

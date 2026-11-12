@@ -158,6 +158,11 @@ int main() {
     std::mutex seen_mu;
     std::vector<Seen> seen;
     std::atomic<int> observer_sleep_ms{0};
+    // Declared before the scanner so it outlives it.
+    droneid_followup::Config followup_config;
+    followup_config.dwell_s = 0.2;
+    followup_config.cooldown_s = 600;
+    droneid_followup::Followup followup(followup_config);
     {
         Scanner scanner(tmp);
         ScannerTestAccess::observer(scanner, [&](const std::vector<cf>& iq, const wifi_security::CaptureRecord& r) {
@@ -284,6 +289,61 @@ int main() {
         bool invalid_visit = false;
         for (const auto& v : scanner.coordinated_visits()) invalid_visit = invalid_visit || (!v.in_progress && !v.valid && v.acquired_s > 0);
         check(invalid_visit, "The overflowed visit is recorded as not valid");
+
+        // --- DroneID follow-up visits: only after a link sighting, bounded, stopped by a packet ---
+        {
+            const auto is_followup = [](const Call& c) { return c.center > 1e9 && std::abs(c.duration - 0.208) < 1e-12; };
+            scanner.set_droneid_followup(&followup);
+            const uint64_t idle_cycle = scanner.coordinated_status().cycle;
+            wait_for([&] { return scanner.coordinated_status().cycle >= idle_cycle + 2; }, 20);
+            check(scanner.coordinated_status().followup_visits == 0, "No follow-up visits without a drone-link sighting");
+            const size_t start = shared->snapshot().size();
+            {
+                std::lock_guard<std::mutex> l(seen_mu);
+                seen.clear();
+            }
+            followup.link_seen({2438.5e6, now_s(), "15kHz"});
+            check(wait_for([&] { return scanner.coordinated_status().followup_visits >= 4; }, 40),
+                  "A 2.4 GHz link sighting starts follow-up visits");
+            const auto all = shared->snapshot();
+            std::vector<Call> extra;
+            double extra_s = 0, total_s = 0;
+            for (size_t i = start; i < all.size(); ++i) {
+                total_s += all[i].settle + all[i].duration;
+                if (is_followup(all[i])) { extra.push_back(all[i]); extra_s += all[i].settle + all[i].duration; }
+            }
+            bool rotation = extra.size() >= 4;
+            const double want[] = {2399.5e6, 2414.5e6, 2429.5e6, 2444.5e6};
+            for (size_t i = 0; rotation && i < 4; ++i)
+                rotation = extra[i].center == want[i] + 1.5e6 && extra[i].rate == 2e6 && extra[i].settle == 0.01 && extra[i].retune;
+            check(rotation, "Follow-up visits rotate through the 2.4 GHz DroneID channels at the Wi-Fi rate");
+            check(extra_s <= 0.27 * total_s, "Follow-up visits stay within their share of scanner time",
+                  std::to_string(extra_s / total_s));
+            bool linked = false, observed = false;
+            for (const auto& v : scanner.coordinated_visits())
+                if (v.label.rfind("DroneID follow-up", 0) == 0 && v.kind == coord::VisitKind::DroneOnly && v.capture_seq)
+                    linked = linked || followup.is_followup_capture(v.capture_seq);
+            check(wait_for([&] {
+                      std::lock_guard<std::mutex> l(seen_mu);
+                      for (const auto& s : seen) observed = observed || (s.center == 2416e6 && s.band == BAND_WIFI_2G4 &&
+                                                                         std::abs(double(s.first) * 1e10 - s.center) < 2e3);
+                      return observed;
+                  }, 10), "Follow-up captures reach the drone/ML observers with their own samples");
+            check(linked, "Follow-up captures are marked for priority decoding");
+            const auto st = scanner.coordinated_status();
+            check(st.followup_valid >= 4 && st.followup_acquired_s > 0.7 && st.slots[1].visits > 0,
+                  "Follow-up visits are counted apart from the schedule's slots");
+            // A decoded DroneID packet ends the request.
+            followup.packet_seen({2414.5e6, now_s(), true});
+            const uint64_t closing_cycle = scanner.coordinated_status().cycle;
+            wait_for([&] { return scanner.coordinated_status().cycle >= closing_cycle + 2; }, 20);
+            const uint64_t settled = scanner.coordinated_status().followup_visits;
+            followup.link_seen({2438.5e6, now_s(), "15kHz"});  // inside the cooldown: must not reopen
+            wait_for([&] { return scanner.coordinated_status().cycle >= closing_cycle + 5; }, 30);
+            check(scanner.coordinated_status().followup_visits == settled && followup.status().bands[0].last_outcome == "packet decoded",
+                  "A decoded DroneID packet stops the follow-up visits");
+            scanner.set_droneid_followup(nullptr);
+        }
 
         // --- Schedule change applies at a boundary and resets cursors ---
         auto only5 = schedule;

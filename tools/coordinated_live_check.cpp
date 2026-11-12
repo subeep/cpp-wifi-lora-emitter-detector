@@ -1,3 +1,5 @@
+#include "drones/drone_track_log.hpp"
+#include "drones/evidence_remote_id.hpp"
 // Receive-only live check of coordinated mode on the real receiver
 // (upgradedplan.md P5 exit evidence). Drives the production Scanner in
 // BAND_COORDINATED with the production drone add-on (native DJI/O4 backend,
@@ -5,6 +7,10 @@
 // exactly as the GUI attaches them. Every persistent store is rooted in a
 // temporary directory, so the project's Wi-Fi/LoRa/security data is never
 // modified. Prints progress every 5 s and a JSON summary at the end.
+//
+// The drone chain is attached as in the GUI: symbol-timing link detector, DroneID follow-up
+// visits (--no-followup leaves them off for an A/B run), and the merged detection rows with
+// their log (--detection-log PATH keeps the log outside the temporary root).
 //
 //   coordinated_live_check [--seconds N] [--device x310|b210] [--ml] [--json PATH] [--mode BAND]
 //                          [--channel N] [--security-record PATH]
@@ -33,6 +39,9 @@
 
 #include "drone_evidence.hpp"
 #include "drones/addon.hpp"
+#include "drones/droneid_followup_wiring.hpp"
+#include "drones/evidence_log.hpp"
+#include "drones/evidence_packet.hpp"
 #include "ml_inference.hpp"
 #include "scanner.hpp"
 
@@ -61,11 +70,16 @@ int main(int argc, char** argv) {
     std::string export_dir;               // with --ml: export the latest model result's evidence here
     SdrDeviceType device = SdrDeviceType::X310;
     std::optional<int> channel;
-    std::string security_record;
+    std::string security_record, detection_log;
+    bool with_followup = true;
+    double simulate_link_hz = 0;  // test hook: report a link sighting here from 15 s to 75 s
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--seconds" && i + 1 < argc) seconds = std::atof(argv[++i]);
         else if (a == "--ml") with_ml = true;
+        else if (a == "--no-followup") with_followup = false;
+        else if (a == "--simulate-link" && i + 1 < argc) simulate_link_hz = std::atof(argv[++i]) * 1e6;
+        else if (a == "--detection-log" && i + 1 < argc) detection_log = std::filesystem::absolute(argv[++i]).string();
         else if (a == "--json" && i + 1 < argc) json_path = argv[++i];
         else if (a == "--mode" && i + 1 < argc) mode = argv[++i];
         else if (a == "--retain" && i + 1 < argc) retain = size_t(std::atoi(argv[++i]));
@@ -82,6 +96,19 @@ int main(int argc, char** argv) {
 
     ml::Inference model;
     drone::Addon drones;
+    symbol_timing::Monitor timing_monitor;
+    timing_monitor.start();
+    droneid_followup::Followup followup;
+    droneid_followup::connect(followup, timing_monitor, drones);
+    followup.set_enabled(with_followup);
+    drone_claims::Store drone_store;
+    drone_claims::DetectionLog drone_log(detection_log.empty() ? std::string(tmp) + "/drone_detections.jsonl" : detection_log);
+    std::map<std::string, drone_claims::Detection> drone_rows;
+    drone_claims::DroneTracks drone_tracks;
+    std::map<std::string, std::string> rows_seen;       // row id -> last identity text
+    std::map<std::string, uint64_t> timing_groups;      // group (or "none") -> captures
+    std::map<std::string, uint64_t> group_centres;      // "group @ MHz" -> captures
+    uint64_t timing_counted = 0, row_refreshes = 0, refreshes_with_rows = 0;
     std::mutex mu;
     std::map<std::string, uint64_t> observed_by_band, frames_by_band, fcs_by_band;
     uint64_t observer_calls = 0, observer_mismatch = 0;
@@ -104,6 +131,7 @@ int main(int argc, char** argv) {
                 }
                 drones.observe(iq, r);
                 model.observe(iq, r);
+                timing_monitor.observe(iq, r);
             },
             [&](const wifi_security::FrameEvent& f) {
                 {
@@ -116,7 +144,8 @@ int main(int argc, char** argv) {
         scanner.set_device_type(device);
         scanner.set_iq_retention(retain);
         drones.native_max_capture_s = mode == BAND_COORDINATED ? 3600 : 0.160;
-        drones.native.start(true);
+        drones.native.start(true, true);  // as Addon::start_unified does
+        scanner.set_droneid_followup(&followup);
         drones.remote_id.enable(true);
         if (with_ml) {
             ml::Options o;
@@ -139,6 +168,35 @@ int main(int argc, char** argv) {
             const double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
             const auto st = scanner.coordinated_status();
             if (st.cycle != last_cycle) { last_cycle = st.cycle; cycle_times.push_back(st.last_cycle_s); }
+            // No drone available: a made-up link sighting exercises the follow-up visits on the
+            // real radio. It goes to the follow-up queue only, never to the detection rows.
+            if (simulate_link_hz > 0 && el >= 15 && el < 75)
+                followup.link_seen({simulate_link_hz, Scanner::now_steady_s(), "simulated"});
+            {   // The GUI's 200 ms row refresh (here every 100 ms).
+                using namespace drone_claims;
+                const auto now = Clock::now();
+                drone_store.expire(now);
+                const auto timing = timing_monitor.snapshot();
+                for (auto it = timing.history.rbegin(); it != timing.history.rend(); ++it)
+                    if (now - it->observed <= lifetime) drone_store.timing(*it);
+                // Tally each completed timing result once (history is newest first, bounded).
+                const uint64_t fresh = std::min<uint64_t>(timing.completed - timing_counted, timing.history.size());
+                for (uint64_t k = 0; k < fresh; ++k) {
+                    const auto& r = timing.history[k];
+                    const std::string g = r.timing_group ? r.timing_group : "none";
+                    ++timing_groups[g];
+                    if (r.timing_group) ++group_centres[g + " @ " + std::to_string(int(std::lround(r.center / 1e6))) + " MHz"];
+                }
+                timing_counted = timing.completed;
+                for (const auto& packet : drones.native.snapshot().native_packets) ingest_native_packet(drone_store, packet, now);
+                drone_rows = detections(drone_store, now, remote_id_sightings(drones.remote_id.snapshot(), now));
+                drone_log.record(drone_rows);
+                drone_tracks.update(drone_rows, now);
+                ++row_refreshes;
+                refreshes_with_rows += !drone_rows.empty();
+                for (const auto& [id, row] : drone_rows) { const auto answer = drone_claims::verdict(row);
+                    rows_seen[id] = display_identity(row) + " | " + drone_claims::tier_name(answer.tier) + ": " + answer.model; }
+            }
             if (el >= next_print || el >= seconds) {
                 next_print += 5;
                 const auto s = scanner.status();
@@ -158,6 +216,13 @@ int main(int argc, char** argv) {
                             static_cast<unsigned long long>(n.o4_windows), static_cast<unsigned long long>(m.processed),
                             static_cast<unsigned long long>(m.dropped), static_cast<unsigned long long>(m.stale),
                             s.error.empty() ? "" : " ERROR: ", s.error.c_str());
+                const auto fs = followup.status();
+                std::printf("          rows=%zu followup visits=%llu open24=%d open58=%d | priority chunks=%llu displaced=%llu\n", drone_rows.size(),
+                            static_cast<unsigned long long>(st.followup_visits), int(fs.bands[0].open), int(fs.bands[1].open),
+                            static_cast<unsigned long long>(n.priority_chunks), static_cast<unsigned long long>(n.displaced_chunks));
+                for (const auto& [id, row] : drone_rows)
+                    std::printf("          row %s | %s | %s | %s\n", id.c_str(), row.band.c_str(),
+                                drone_claims::display_identity(row).c_str(), drone_claims::evidence_sources(row).c_str());
                 std::fflush(stdout);
             }
             if (el >= seconds) break;
@@ -199,6 +264,8 @@ int main(int argc, char** argv) {
         }
         const auto retained_seqs = scanner.retained_capture_seqs();
         scanner.stop();
+        scanner.set_droneid_followup(nullptr);
+        timing_monitor.stop();
         drones.native.stop();
         drones.remote_id.enable(false);
         model.stop();
@@ -270,6 +337,37 @@ int main(int argc, char** argv) {
                          {"packets", native.native_packet_count}, {"o4_windows", native.o4_windows},
                          {"o4_candidates", native.o4_candidates}, {"errors", native.analysis_errors}, {"status", native.status},
                          {"max_observer_ms", drones.native_max_observer_ns.load() * 1e-6}};
+        {
+            const auto timing = timing_monitor.snapshot();
+            out["symbol_timing"] = {{"completed", timing.completed}, {"dropped_full", timing.full}, {"dropped_busy", timing.contention},
+                                    {"invalid", timing.invalid}, {"unavailable", timing.unavailable},
+                                    {"max_handoff_ms", timing.max_handoff_ms}, {"groups", timing_groups}, {"group_centres", group_centres}};
+            double worst_ms = 0;
+            for (const auto& r : timing.history) worst_ms = std::max(worst_ms, r.processing_ms);
+            out["symbol_timing"]["max_processing_ms_recent"] = worst_ms;
+            const auto fs = followup.status();
+            nlohmann::json bands = nlohmann::json::array();
+            for (size_t i = 0; i < fs.bands.size(); ++i) {
+                const auto& b = fs.bands[i];
+                bands.push_back({{"band", droneid_followup::band_name(droneid_followup::Band(i))}, {"requests", b.requests},
+                                 {"visits", b.visits}, {"valid_visits", b.valid_visits}, {"packets", b.packets},
+                                 {"timeouts", b.timeouts}, {"link_lost", b.link_lost}, {"suppressed", b.suppressed},
+                                 {"open_at_end", b.open}, {"group", b.group}, {"last_outcome", b.last_outcome}});
+            }
+            out["followup"] = {{"enabled", with_followup}, {"simulated_link_hz", simulate_link_hz}, {"planned", fs.planned}, {"visits", st.followup_visits},
+                               {"valid", st.followup_valid}, {"analysed", st.followup_analysed},
+                               {"acquired_s", st.followup_acquired_s}, {"bands", bands}};
+            out["drone_rows"] = {{"refreshes", row_refreshes}, {"refreshes_with_rows", refreshes_with_rows}, {"rows_seen", rows_seen},
+                                 {"log_failed", drone_log.failed()}};
+            out["native"]["dropped_full"] = native.dropped_full;
+            out["native"]["dropped_busy"] = native.dropped_busy;
+            out["native"]["priority_chunks"] = native.priority_chunks;
+            out["native"]["displaced_chunks"] = native.displaced_chunks;
+            out["native"]["end_to_end_ms_last"] = native.end_to_end_ms;
+        }
+        out["drone_tracks"] = nlohmann::json::array();
+        for (const auto& [key, track] : drone_tracks.tracks())
+            out["drone_tracks"].push_back(drone_claims::track_json(track));
         out["remote_id_tracks"] = rid.contains("tracks") ? rid["tracks"].size() : 0;
         out["ml"] = {{"enabled", with_ml}, {"state", ml_state.state}, {"processed", ml_state.processed},
                      {"dropped", ml_state.dropped}, {"stale", ml_state.stale}, {"invalid", ml_state.invalid},

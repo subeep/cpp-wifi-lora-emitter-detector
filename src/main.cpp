@@ -1,3 +1,13 @@
+#include "drones/drone_track_log.hpp"
+#include "drones/evidence_remote_id.hpp"
+#include "drones/classifier_hint.hpp"
+#include "drones/model_verdict.hpp"
+#include "drones/evidence_log.hpp"
+#include "drones/evidence_packet.hpp"
+#include "drones/symbol_timing_monitor.hpp"
+#ifdef RFMON_ENABLE_DJI_DRONEID
+#include "drones/droneid_followup_wiring.hpp"
+#endif
 // rf_monitor_gui - live B210 LoRa/Wi-Fi(2.4/5GHz) emitter monitor, ImGui UI.
 //
 // Native display workspace. Navigation and display state are independent of
@@ -272,11 +282,26 @@ int main() {
 #endif
     // On by default: decodes the 2.4 GHz captures the Wi-Fi scan already makes.
     shortrange_monitor.enable(true);
+    rfmon::symbol_timing::Monitor symbol_timing;
+    symbol_timing.start();
+    rfmon::drone_claims::Store drone_evidence;
+    rfmon::drone_claims::DetectionLog drone_log(
+        std::filesystem::path(PROJECT_ROOT_DIR) / "data" / "drone_detections.jsonl");
+    std::map<std::string, rfmon::drone_claims::Detection> drone_rows;
+    rfmon::drone_claims::DroneTracks drone_tracks;
+    rfmon::drone_claims::DroneTrackLog drone_track_log(
+        std::filesystem::path(PROJECT_ROOT_DIR) / "data" / "drone_tracks.jsonl");
+    rfmon::drone_claims::Clock::time_point last_drone_refresh{};
+    std::set<std::string> unmapped_hint_candidates;
     shortrange::PanelState shortrange_panel;
     devices::PanelState devices_panel;
     shortrange_panel.export_dir = std::string(PROJECT_ROOT_DIR) + "/data/shortrange";
 #ifdef RFMON_ENABLE_DJI_DRONEID
     drone::Addon drones; // Outlives scanner and its processing lane.
+    // Extra DroneID-channel visits after a drone-link sighting (coordinated mode). Declared
+    // before the scanner so it outlives it.
+    rfmon::droneid_followup::Followup droneid_followup;
+    rfmon::droneid_followup::connect(droneid_followup, symbol_timing, drones);
     drones.start_classifier=[&] {
         if(model_inference.snapshot().enabled)return false;
         ml::Options options;
@@ -294,16 +319,16 @@ int main() {
             " / offered "+std::to_string(s.offered_samples);
         if(!s.error.empty())state.detail+=" | "+s.error;
         if(!s.model_hash.empty())state.detail+=" | model "+s.model_hash.substr(0,12)+" / "+s.architecture;
-        if(!s.history.empty())state.detail+=" | Last candidate (not accepted): "+s.history.front().candidate;
         return state;
     };
     Scanner scanner([&](const auto& iq, const auto& record) {
-                        drones.observe(iq, record); model_inference.observe(iq, record); shortrange_monitor.observe(iq, record); },
+                        drones.observe(iq, record); model_inference.observe(iq, record); shortrange_monitor.observe(iq, record); symbol_timing.observe(iq, record); },
                     [&](const auto& frame) { drones.remote_id.submit(frame); });
+    scanner.set_droneid_followup(&droneid_followup);
     coordinated::PanelState coordinated_panel;
     coordinated_panel.export_dir=std::string(PROJECT_ROOT_DIR)+"/data/drone_evidence";
 #else
-    Scanner scanner([&](const auto& iq, const auto& record) { model_inference.observe(iq, record); shortrange_monitor.observe(iq, record); });
+    Scanner scanner([&](const auto& iq, const auto& record) { model_inference.observe(iq, record); shortrange_monitor.observe(iq, record); symbol_timing.observe(iq, record); });
 #endif
     bool scanner_started = false;
     // Wi-Fi security monitor recording (opt-in). Applied on the next
@@ -837,8 +862,160 @@ int main() {
                 for(const auto& b:overview_bands)for(const auto& range:track_ranges_for_band(b))draw_frequency_track(range,rf_rows[b]);
             },[&]{devices::draw_panel(devices_panel,inventory,int64_t(std::time(nullptr)));});
         };
+        const auto now = rfmon::drone_claims::Clock::now();
+        if (now - last_drone_refresh >= std::chrono::milliseconds(200)) {
+            using namespace rfmon::drone_claims;
+            last_drone_refresh = now;
+            if (status.connected) {
+                drone_evidence.expire(now);
+                const auto timing = symbol_timing.snapshot();
+                for (auto it = timing.history.rbegin(); it != timing.history.rend(); ++it)
+                    if (now - it->observed <= lifetime) drone_evidence.timing(*it);
+#ifdef RFMON_ENABLE_DJI_DRONEID
+                for (const auto& packet : drones.native.snapshot().native_packets)
+                    ingest_native_packet(drone_evidence, packet, now);
+#endif
+#ifdef RFMON_ENABLE_DJI_DRONEID
+                drone_rows = detections(drone_evidence, now, remote_id_sightings(drones.remote_id.snapshot(), now));
+#else
+                drone_rows = detections(drone_evidence, now);
+#endif
+                add_classifier_hints(drone_rows, model_inference.snapshot(), unmapped_hint_candidates);
+            } else {
+                drone_rows.clear();
+                drone_evidence = Store{};
+            }
+            drone_log.record(drone_rows);
+            drone_track_log.record(drone_tracks.update(drone_rows, now));
+        }
         gui::draw_workspace(ui,context,drones_available,[&](gui::Page page){
             if(ui.setup_open || page==gui::Page::Settings || ui.legacy)draw_setup();
+            const auto draw_symbol_timing = [&] {
+                using namespace rfmon::drone_claims;
+                ImGui::SeparatorText("Current drone detections");
+                if (!status.connected) ImGui::TextUnformatted("Receiver disconnected");
+                else if (drone_rows.empty())
+                    ImGui::TextUnformatted("No drone detected in recent evidence");
+                else if (ImGui::BeginTable("drone_detection_rows", 6, ImGuiTableFlags_RowBg)) {
+                    for (const auto* heading : {"Band / link centres", "Model", "Identity / evidence", "Timing group", "Compatible models", "Evidence"})
+                        ImGui::TableSetupColumn(heading);
+                    ImGui::TableHeadersRow();
+                    for (const auto& [id, row] : drone_rows) {
+                        ImGui::PushID(id.c_str());
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn(); ImGui::TextUnformatted(row.band.c_str());
+                        if (row.timing) {
+                            if (row.link_low_hz == row.link_high_hz)
+                                ImGui::Text("%.1f MHz", row.link_low_hz / 1e6);
+                            else ImGui::Text("%.1f–%.1f MHz", row.link_low_hz / 1e6, row.link_high_hz / 1e6);
+                        }
+                        {
+                            // The one answer to "which model": name, list or family, with its basis.
+                            const auto answer = verdict(row);
+                            ImGui::TableNextColumn(); ImGui::TextWrapped("%s", answer.model.c_str());
+                            ImGui::TextWrapped("%s: %s", tier_name(answer.tier), answer.basis.c_str());
+                            if (!answer.detail.empty()) ImGui::TextWrapped("%s", answer.detail.c_str());
+                        }
+                        ImGui::TableNextColumn(); ImGui::TextWrapped("%s", display_identity(row).c_str());
+                        if (row.packet && row.packet->readable && !row.packet->serial.empty())
+                            ImGui::TextWrapped("%s (self-reported)", row.packet->serial.c_str());
+                        for (const auto& rid : row.remote_id)
+                            ImGui::TextWrapped("%s", remote_id_identity(rid).c_str());
+                        if (row.conflict) ImGui::TextWrapped("Possible conflict between timing and reported identity");
+                        ImGui::TableNextColumn(); ImGui::TextUnformatted(row.group.empty() ? "unresolved" : row.group.c_str());
+                        ImGui::TableNextColumn(); ImGui::TextWrapped("%s", row.candidates.empty() ? "unresolved" : row.candidates.c_str());
+                        if (row.classifier_hint) {
+                            const auto& hint = *row.classifier_hint;
+                            ImGui::TextWrapped("Classifier hint: %s (%zu of %zu voting link captures)",
+                                               hint.model.c_str(), hint.votes, hint.voting_captures);
+                        }
+                        if (!row.only_classifier_class.empty())
+                            ImGui::TextWrapped("Only classifier class available: %s", row.only_classifier_class.c_str());
+                        ImGui::TableNextColumn(); ImGui::TextWrapped("%s", evidence_sources(row).c_str());
+                        ImGui::PopID();
+                    }
+                    ImGui::EndTable();
+                }
+                ImGui::SeparatorText("Drone history");
+                for (const auto& alert : drone_tracks.alerts()) {
+                    ImGui::TextWrapped("%s%s", alert.lower_severity ? "Advisory · " : "", alert.alert.c_str());
+                }
+                std::vector<const DroneTrack*> history;
+                for (const auto& [key, track] : drone_tracks.tracks()) history.push_back(&track);
+                std::sort(history.begin(), history.end(), [](const auto* a, const auto* b) {
+                    return std::tie(a->last_seen, a->id) > std::tie(b->last_seen, b->id);
+                });
+                const auto wall = std::chrono::system_clock::now();
+                const auto show_time = [&](Clock::time_point at) {
+                    const auto local = std::chrono::system_clock::to_time_t(wall -
+                        std::chrono::duration_cast<std::chrono::system_clock::duration>(now - at));
+                    char text[32]{};
+                    std::tm parts{};
+                    if (localtime_r(&local, &parts)) std::strftime(text, sizeof text, "%d %b %H:%M:%S", &parts);
+                    ImGui::TextUnformatted(text);
+                };
+                if (history.empty()) ImGui::TextUnformatted("No drone tracks yet");
+                else if (ImGui::BeginTable("drone_history", 10,
+                           ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY, ImVec2(0, 300))) {
+                    for (const auto* heading : {"Identity", "Best model verdict", "First seen", "Last seen",
+                                                "Time present", "Appearances", "Bands", "Evidence",
+                                                "Last reported positions", "State"})
+                        ImGui::TableSetupColumn(heading);
+                    ImGui::TableSetupScrollFreeze(0, 1);
+                    ImGui::TableHeadersRow();
+                    for (const auto* track : history) {
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn(); ImGui::TextWrapped("%s", track->identity.c_str());
+                        ImGui::TableNextColumn(); ImGui::TextWrapped("%s · %s", tier_name(track->best.tier), track->best.model.c_str());
+                        ImGui::TextWrapped("%s", track->best.basis.c_str());
+                        ImGui::TableNextColumn(); show_time(track->first_seen);
+                        ImGui::TableNextColumn(); show_time(track->last_seen);
+                        ImGui::TableNextColumn(); ImGui::Text("%.0f s", std::chrono::duration<double>(track->time_present).count());
+                        ImGui::TableNextColumn(); ImGui::Text("%zu", track->appearances);
+                        ImGui::TableNextColumn();
+                        for (const auto& band : track->bands) ImGui::TextUnformatted(band.c_str());
+                        ImGui::TableNextColumn();
+                        for (const auto& source : track->evidence) ImGui::TextUnformatted(source.c_str());
+                        if (track->encrypted) ImGui::TextUnformatted("Encrypted identity seen");
+                        if (track->conflict) ImGui::TextUnformatted("Possible conflict seen");
+                        ImGui::TableNextColumn();
+                        const auto show_position = [&](const char* role, const auto& fix) {
+                            if (!fix) return;
+                            ImGui::TextWrapped("%s %.6f, %.6f (%s, self-reported, unauthenticated)",
+                                               role, fix->latitude, fix->longitude, fix->source.c_str());
+                            show_time(fix->observed);
+                        };
+                        show_position("Aircraft", track->positions.aircraft);
+                        show_position("Pilot", track->positions.pilot);
+                        show_position("Home / takeoff", track->positions.home);
+                        show_position("Operator", track->positions.operator_location);
+                        ImGui::TableNextColumn(); ImGui::TextUnformatted(track->present ? "Present" : "Gone");
+                    }
+                    ImGui::EndTable();
+                }
+                if (drone_track_log.failed()) ImGui::TextUnformatted("Could not write drone track log");
+                const auto timing = symbol_timing.snapshot();
+                ImGui::Text("Timing drops | full %llu | busy %llu | invalid %llu | unavailable %llu",
+                    (unsigned long long)timing.full, (unsigned long long)timing.contention,
+                    (unsigned long long)timing.invalid, (unsigned long long)timing.unavailable);
+                if (!unmapped_hint_candidates.empty())
+                    ImGui::Text("Distinct unmapped classifier classes since start: %zu", unmapped_hint_candidates.size());
+                if (drone_log.failed()) ImGui::TextUnformatted("Could not write drone detection log");
+#ifdef RFMON_ENABLE_DJI_DRONEID
+                {
+                    const auto followup = droneid_followup.status();
+                    for (size_t i = 0; i < followup.bands.size(); ++i) {
+                        const auto& b = followup.bands[i];
+                        if (!b.requests) continue;
+                        const char* band = rfmon::droneid_followup::band_name(rfmon::droneid_followup::Band(i));
+                        if (b.open) ImGui::Text("%s: looking for DroneID (%s link), %llu extra visits", band, b.group.c_str(),
+                                                (unsigned long long)b.visits);
+                        else ImGui::Text("%s: DroneID search ended (%s), %llu extra visits, %llu packets", band,
+                                         b.last_outcome.c_str(), (unsigned long long)b.visits, (unsigned long long)b.packets);
+                    }
+                }
+#endif
+            };
             if(ui.legacy){
                 if(ImGui::BeginTabBar("Legacy monitoring views")){
                     if(ImGui::BeginTabItem("Monitoring")){if(active_band==BAND_SUB_GHZ)draw_lora();else draw_wifi(active_band);ImGui::EndTabItem();}
@@ -847,7 +1024,7 @@ int main() {
                     if(ImGui::BeginTabItem("Model Inference")){ml::draw_panel(model_inference,status.connected,active_band);ImGui::EndTabItem();}
                     if(ImGui::BeginTabItem("Bluetooth & Zigbee")){shortrange::draw_page(shortrange_panel,shortrange_monitor,active_band,status.connected);ImGui::EndTabItem();}
 #ifdef RFMON_ENABLE_DJI_DRONEID
-                    if(ImGui::BeginTabItem("Drones")){coordinated::draw_section(coordinated_panel,scanner,drones,model_inference,status.connected,&shortrange_monitor);drone::draw_panel(drones,gui::band_label(active_band),status.connected);ImGui::EndTabItem();}
+                    if(ImGui::BeginTabItem("Drones")){draw_symbol_timing();coordinated::draw_section(coordinated_panel,scanner,drones,model_inference,status.connected,&shortrange_monitor);drone::draw_panel(drones,gui::band_label(active_band),status.connected);ImGui::EndTabItem();}
 #endif
                     if(ImGui::BeginTabItem("Display")){if(ImGui::Button("Return to modern workspace"))ui.legacy=false;ImGui::EndTabItem();}
                     ImGui::EndTabBar();
@@ -864,6 +1041,7 @@ int main() {
             case gui::Page::ModelInference:ml::draw_panel(model_inference,status.connected,active_band);break;
             case gui::Page::Count:break;
             case gui::Page::Drones:
+                draw_symbol_timing();
 #ifdef RFMON_ENABLE_DJI_DRONEID
                 coordinated::draw_section(coordinated_panel,scanner,drones,model_inference,status.connected,&shortrange_monitor);
                 drone::draw_panel(drones,gui::band_label(active_band),status.connected,ui.drones_offline?"Offline IQ review":nullptr);ui.drones_offline=false;
@@ -903,6 +1081,7 @@ int main() {
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
 
+    drone_track_log.record(drone_tracks.finish(rfmon::drone_claims::Clock::now()));
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;

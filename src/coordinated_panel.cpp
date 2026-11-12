@@ -591,11 +591,12 @@ void draw_section(PanelState& state, Scanner& scanner, drone::Addon& drones, ml:
     if (rid.is_null() || ImGui::GetTime() - rid_time > .25) { rid = drones.remote_id.snapshot(); rid_time = ImGui::GetTime(); }
     std::optional<shortrange::Snapshot> ble;
     if (bluetooth) ble = bluetooth->snapshot();
-    const auto entries = build_entries(drones.native.snapshot(), drones.live.snapshot(), rid, model.snapshot(),
+    const auto entries = build_entries(drones.native.snapshot(), drones.live.snapshot(), rid, ml::Snapshot{},
                                        scanner.coordinated_visits(), now, expire_s, ble ? &*ble : nullptr);
-    ImGui::SeparatorText("All detection entries");
-    const auto visits = scanner.coordinated_visits();
-    draw_entry_views(state, scanner, entries, visits, st.config_hash, now);
+    if (ImGui::CollapsingHeader("All detection entries (individual evidence)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const auto visits = scanner.coordinated_visits();
+        draw_entry_views(state, scanner, entries, visits, st.config_hash, now);
+    }
 
     ImGui::SeparatorText("Module health");
     const auto native = drones.native.snapshot();

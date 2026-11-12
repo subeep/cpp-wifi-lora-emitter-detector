@@ -1,14 +1,21 @@
 // Receive-only Linux worker. No UHD/radio linkage. Raw IQ in, bounded evidence out.
 #include "droneid/dji.h"
 #include "droneid/o4_detector.h"
+#include "drones/droneid_packet.hpp"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <cstdlib>
 #include <cstring>
+#include <exception>
+#include <functional>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 #include <sys/resource.h>
 
@@ -16,9 +23,70 @@ using Json=nlohmann::json;
 using Sample=droneid::cf32;
 static_assert(sizeof(Sample)==8,"cf32 ABI required");
 
-int main() {
+namespace {
+// Runs work(0..count-1) on a fixed set of threads plus the caller. The decode windows of one
+// message are independent of each other, so they are decoded side by side and their results
+// are merged afterwards in the original order: the output is the same as decoding in sequence.
+// Threads are kept between messages so each keeps its FFT plans.
+class Pool {
+public:
+    explicit Pool(unsigned helpers) {
+        for(unsigned i=0;i<helpers;++i)threads_.emplace_back([this]{
+            std::unique_lock<std::mutex> lock(mutex_);
+            while(true) {
+                wake_.wait(lock,[this]{return stop_||next_<count_;});
+                if(stop_)return;
+                take(lock);
+            }});
+    }
+    ~Pool() {
+        {std::lock_guard<std::mutex> lock(mutex_);stop_=true;}
+        wake_.notify_all();
+        for(auto& t:threads_)t.join();
+    }
+    // `work` must not throw.
+    void run(size_t count,const std::function<void(size_t)>& work) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        work_=&work;count_=count;next_=0;pending_=count;
+        wake_.notify_all();
+        while(next_<count_)take(lock);
+        done_.wait(lock,[this]{return pending_==0;});
+        count_=0;
+    }
+private:
+    void take(std::unique_lock<std::mutex>& lock) {
+        const size_t index=next_++;
+        lock.unlock();
+        (*work_)(index);
+        lock.lock();
+        if(--pending_==0)done_.notify_all();
+    }
+    std::mutex mutex_;
+    std::condition_variable wake_,done_;
+    std::vector<std::thread> threads_;
+    const std::function<void(size_t)>* work_=nullptr;
+    size_t count_=0,next_=0,pending_=0;
+    bool stop_=false;
+};
+}
+
+int main(int argc,char** argv) {
+    // --listed-channels-only: live captures have an exact centre frequency, so the listed
+    // channels are enough there. --threads N: decode threads (1 = the old sequential path).
+    bool listed_only=false;
+    // Default: one 160 ms message at 20 MSps is 8 windows plus the O4 job, so about ten threads
+    // take it in one round; more than 12 gains nothing there. Some cores are left to the scanner.
+    unsigned threads=std::clamp(std::thread::hardware_concurrency()*3/5,1u,12u);
+    for(int i=1;i<argc;++i) {
+        if(!std::strcmp(argv[i],"--listed-channels-only"))listed_only=true;
+        else if(!std::strcmp(argv[i],"--threads")&&i+1<argc)threads=std::clamp(std::atoi(argv[++i]),1,64);
+        else return 2;
+    }
+    Pool pool(threads-1);
     // Independent process: failures/resources cannot take down scanner or legacy decoder.
     rlimit memory{size_t(3)<<30,size_t(3)<<30};setrlimit(RLIMIT_AS,&memory);
+    // Decoding gives way to the radio and scanner threads when cores are short.
+    setpriority(PRIO_PROCESS,0,10);
     std::cout<<"{\"ready\":true,\"backend\":\"punjdrone_linux_v1\"}"<<std::endl;
     std::unique_ptr<droneid::O4CandidateDetector> detector;
     std::vector<Sample> tail;
@@ -48,22 +116,56 @@ int main() {
                 tail.clear();recent.clear();position=0;
             }
             initialized=true;last_epoch=epoch;last_rate=rate;last_center=center;expected_time=time+count/rate;
-            for(const auto& e:detector->feed(input.data(),input.size(),position)) {
-                auto evidence=Json::parse(e.to_jsonl());
-                evidence["timestamp"]=time+(double(e.start_sample)-double(position))/rate;
-                evidence["continuity_epoch"]=epoch;
-                result["o4_evidence"].push_back(std::move(evidence));
-            }
             // Bounded overlapping decode windows; O4 sees each original sample once.
             const size_t stride=std::min<size_t>(2000000,std::llround(rate*.02));
             const size_t overlap=std::llround(rate*.002);
+            // Tune to each documented DroneID channel that lies inside the capture: a strong
+            // unrelated signal otherwise wins the decoder's own strongest-10-MHz choice. That
+            // automatic choice still runs last, because capture-centre metadata can be wrong and
+            // the 5.8 GHz list is incomplete. A payload found by both is reported once.
+            std::vector<double> channels;
+            for(double channel:drone::droneid::channels_24)
+                if(std::abs(channel-center)<=rate*.45-5e6)channels.push_back(channel);
+            for(double channel:drone::droneid::channels_58)
+                if(std::abs(channel-center)<=rate*.45-5e6)channels.push_back(channel);
+            const size_t passes=channels.size()+(listed_only&&!channels.empty()?0:1);
+            struct Window { std::vector<Sample> samples; size_t offset,carried; };
+            std::vector<Window> windows;
             for(size_t offset=0;offset<input.size();offset+=stride) {
                 const size_t n=std::min(stride,input.size()-offset),carried=tail.size();
                 std::vector<Sample> window=tail;
                 window.insert(window.end(),input.begin()+offset,input.begin()+offset+n);
                 tail.assign(window.end()-std::min(overlap,window.size()),window.end());
-                droneid::dji::DecodeOptions options;options.sample_rate=rate;options.auto_center=true;
-                for(const auto& burst:droneid::dji::decode_samples(window,options)) {
+                windows.push_back({std::move(window),offset,carried});
+            }
+            // Job 0 is the O4 detector (it keeps state, so it stays one job); the rest are one
+            // decode per window and channel.
+            std::vector<droneid::O4Evidence> o4;
+            std::vector<std::vector<droneid::dji::DecodedBurst>> decoded(windows.size()*passes);
+            std::vector<std::exception_ptr> failed(1+decoded.size());
+            pool.run(failed.size(),[&](size_t job) {
+                try {
+                    if(!job){o4=detector->feed(input.data(),input.size(),position);return;}
+                    const size_t pass=(job-1)%passes;
+                    droneid::dji::DecodeOptions options;options.sample_rate=rate;
+                    if(pass<channels.size())options.freq_offset=center-channels[pass]; // shift that channel to baseband
+                    else options.auto_center=true;
+                    decoded[job-1]=droneid::dji::decode_samples(windows[(job-1)/passes].samples,options);
+                }catch(...){failed[job]=std::current_exception();}
+            });
+            if(failed[0])std::rethrow_exception(failed[0]);
+            for(const auto& e:o4) {
+                auto evidence=Json::parse(e.to_jsonl());
+                evidence["timestamp"]=time+(double(e.start_sample)-double(position))/rate;
+                evidence["continuity_epoch"]=epoch;
+                result["o4_evidence"].push_back(std::move(evidence));
+            }
+            for(size_t w=0;w<windows.size();++w) {
+                const size_t offset=windows[w].offset,carried=windows[w].carried;
+                for(size_t pass=0;pass<passes;++pass) {
+                if(failed[1+w*passes+pass])std::rethrow_exception(failed[1+w*passes+pass]);
+                const bool documented=pass<channels.size();
+                for(const auto& burst:decoded[w*passes+pass]) {
                     if(!burst.crc_ok)continue;
                     const int64_t start=int64_t(position+offset)-int64_t(carried)+burst.sample_index;
                     if(start<0)continue;
@@ -83,11 +185,25 @@ int main() {
                         {"timestamp",time+(double(start)-double(position))/rate},{"sample_rate_hz",rate},
                         {"center_hz",center},{"correlation",burst.corr},{"cfo_hz",burst.cfo_hz},
                         {"generation","unverified"},{"identity_authenticated",false},
-                        {"channel_selection","strongest_10MHz_per_window_not_emitter_identification"}};
-                    if(parsed){p["reported_serial"]=telemetry.serial;p["reported_model"]=telemetry.type_name;
+                        {"channel_selection",documented?"documented_droneid_channel"
+                                                        :"strongest_10MHz_per_window_not_emitter_identification"}};
+                    if(documented)p["channel_hz"]=channels[pass];
+                    // Contract fields (drone::droneid::contract_version): what the payload says, not who sent it.
+                    const auto info=drone::droneid::classify(burst.payload,envelope.format);
+                    p["contract"]=drone::droneid::contract_version;p["envelope"]=info.format;
+                    p["payload_version"]=info.payload_version;p["identity_readable"]=info.identity_readable;
+                    p["identity_encrypted"]=info.identity_encrypted;
+                    p["product_code"]=info.product_code;p["model"]=info.model;p["model_source"]=info.model_source;
+                    p["payload_shift"]=info.payload_shift;
+                    if(parsed){p["reported_serial"]=telemetry.serial;
+                        p["reported_model"]=info.model.empty()?telemetry.type_name:info.model;
                         p["sequence"]=telemetry.sequence;p["reported_drone_lat"]=telemetry.drone_lat;
                         p["reported_drone_lon"]=telemetry.drone_lon;}
+                    // Version 3 and padded records: the vendored parser declines them, but the
+                    // serial and product code are plain text at the version-2 offsets.
+                    else if(info.identity_readable){p["reported_serial"]=info.serial;p["reported_model"]=info.model;}
                     result["native_packets"].push_back(std::move(p));
+                }
                 }
             }
             position+=count;
