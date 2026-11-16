@@ -79,7 +79,8 @@ public:
         last_refresh_ = now;
         std::map<std::string, const Detection*> rows;
         for (const auto& [id, row] : detections) {
-            if (row.group.empty() && !row.packet && row.remote_id.empty()) continue;
+            const bool classifier_only = row.universal && row.universal->classifier_only;
+            if (row.group.empty() && !row.packet && row.remote_id.empty() && !classifier_only) continue;
             // Readable serials outrank an attached link. For an anonymous DroneID/link
             // combination, the link remains the stable identity across decoder expiry.
             std::string key = id;
@@ -230,6 +231,7 @@ private:
             track.pending_update |= copy_positions(track.positions, rid.positions);
         }
         if (row.classifier_hint) track.evidence.insert("Classifier hint");
+        if (row.universal && (row.universal->accepted || row.universal->classifier_only)) track.evidence.insert("Classifier");
         track.conflict |= row.conflict;
         auto identity = track.serial.empty() ? display_identity(row) : track.serial + " (self-reported)";
         if (track.serial.empty() && !track.remote_ids.empty())

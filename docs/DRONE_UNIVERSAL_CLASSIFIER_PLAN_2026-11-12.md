@@ -204,69 +204,96 @@ The sealed DRFF-R2 test is run once, after the gates pass and the user says so.
 
 ## 10. Checklist
 
+Implementation and verification history: [change log](DRONE_UNIVERSAL_CLASSIFIER_CHANGELOG_2026-11-12.md).
+
 One list, in order. A step is ticked only when its "done when" is met. Steps marked (gate)
 stop the work until the user decides.
 
 ### Stage A: preparation
 
-- [ ] **A1. Decoder worker emits the remaining DroneID fields** (height, altitude, pilot, home,
+- [x] **A1. Decoder worker emits the remaining DroneID fields** (height, altitude, pilot, home,
       speed). Done when: the worker test checks them on the recorded fixtures and the tracks
       view shows a pilot position from a fixture replay.
-- [ ] **A2. Corpus inventory.** Every recording listed with source, receiver, rate, centre,
+- [x] **A2. Corpus inventory.** Every recording listed with source, receiver, rate, centre,
       aircraft, signal type, model and flags; locked DRFF-R2 units listed as unreadable.
       Done when: one manifest file exists, with counts per class, aircraft and source, and a
       script that refuses locked paths.
-- [ ] **A3. Class list.** Signal types and models fixed from A2, each model flagged
+- [x] **A3. Class list.** Signal types and models fixed from A2, each model flagged
       `multi_aircraft` or `single_unit`. Done when: the list is written with the reason for
       every type assignment and reviewed by the user.
-- [ ] **A4. Background set.** X310 no-drone sessions split by session into training and
+      Reviewed by the user on 12 November: [class review](DRONE_UNIVERSAL_CLASSIFIER_CLASS_REVIEW_2026-11-12.md),
+      including the conservative reporting tier for two-unit classes.
+- [x] **A4. Background set.** X310 no-drone sessions split by session into training and
       held-out. Done when: both parts exist and the held-out part covers every scanned band.
-- [ ] **A5. Own-drone recordings on the X310** (user flies; any drones available). Done when:
+      Whole-session manifest: 237 training captures and 13 held-out development captures;
+      the latter cover all three bands but contain only 3.25 s of IQ. Not sufficient for C4.
+- [x] **A5. Own-drone recordings on the X310** (user flies; any drones available). Done when:
       at least one drone session and one same-day no-drone session are on disk. The plan
       continues without them, but the "other receiver" row of the scorecard stays empty.
+      Existing 23 October Air 3S live-feed and same-day confirmed background sessions satisfy
+      the on-disk requirement; flight generalization and false-row rates remain unproven.
 
 ### Stage B: data for training
 
-- [ ] **B1. 20 MSps views.** Every recording cut into deployment-like views at several
+- [x] **B1. 20 MSps views.** Every recording cut into deployment-like views at several
       offsets. Done when: the window store is on the Storage disk with a count per class.
-- [ ] **B2. Presence labels.** Each window marked signal-present or not, by the timing probe
+- [x] **B2. Presence labels.** Each window marked signal-present or not, by the timing probe
       for OFDM links and a burst detector for the rest. Done when: presence share per class is
       reported and 20 windows per class have been checked by eye against their spectrograms.
-- [ ] **B3. Measured-fact vector.** Lag profile, bandwidth, burst timing, duty cycle,
+- [x] **B3. Measured-fact vector.** Lag profile, bandwidth, burst timing, duty cycle,
       flatness. Done when: the Python extractor agrees with the C++ timing code on a set of
       test captures.
-- [ ] **B4. Splits.** By aircraft and by session; left-out classes chosen for the unknown-model
+- [x] **B4. Splits.** By aircraft and by session; left-out classes chosen for the unknown-model
       test. Done when: no aircraft or session appears on both sides, checked by script.
 
 ### Stage C: models
 
 - [ ] **C1. Type-only baseline.** Done when: scorecard rows for type accuracy and false typed
-      rows per hour exist, over three seeds.
-- [ ] **C2. Two-level model** with the family mask, augmentation and background mixing.
-      Done when: the full scorecard of section 8 exists, over three seeds.
-- [ ] **C3. Ablations.** Without background mixing, without the measured facts, without
+      rows per hour exist, over three seeds. *(13 Nov: type-accuracy rows done for full,
+      spectrogram-only and facts-only models; 60-min X310 background scored: 7-10% of views falsely typed
+      by the full model; a per-row rate needs the C4 aggregation rule.)*
+- [x] **C2. Two-level model** with the family mask, augmentation and background mixing.
+      Done when: the full scorecard of section 8 exists, over three seeds. *(13 Nov: all rows
+      except false rows/hour and accepted-as-wrong-model, which need the C4 rule.)*
+- [x] **C3. Ablations.** Without background mixing, without the measured facts, without
       presence filtering. Done when: each is in the scorecard, so we know what earns its place.
-- [ ] **C4. Thresholds and acceptance rule** set on held-out background only. Done when: the
+      *(14 Nov: facts earn their place (type across datasets, refusal); presence filtering earns
+      it for naming and refusal, not type; mixing helps weak signals and naming but costs ~0.5
+      points of false-typed background views. All kept.)*
+- [x] **C4. Thresholds and acceptance rule** set on held-out background only. Done when: the
       decision file is inside the model package and the false-name rate is measured on a
-      background session not used to set it.
-- [ ] **C5. Scorecard review (gate).** The user sets the gates of section 8 and decides
-      go or no-go. No-go keeps the classifier out of the app.
+      background session not used to set it. *(13 Nov: 0 false rows in 20 min. User: "it should
+      give model name too" — v2 adds open-set training and a distance + score naming rule; names
+      are a Likely top-3 list. 14 Nov: Air 3S moved into training (splits v2), Mini 3 Pro stays
+      the unseen DJI model. C4 v3: naming limits per signal type; unseen models named 0%.)*
+- [x] **C5. Scorecard review (gate).** The user sets the gates of section 8 and decides
+      go or no-go. No-go keeps the classifier out of the app. *(14 Nov, scorecard
+      `DRONE_UNIVERSAL_CLASSIFIER_SCORECARD_2026-11-14.md`. User: record the background later,
+      "for now go ahead and work next things safely": conditional go. Gates as proposed; strict
+      naming point (C4 v3); classifier-only rows (D5) built but off by default until the ~3 h
+      no-drone background shows <= 1 false row per hour.)*
 
 ### Stage D: integration (only after a go at C5)
 
-- [ ] **D1. Worker reply format** frozen and implemented: type, ranked models, acceptance,
+- [x] **D1. Worker reply format** frozen and implemented: type, ranked models, acceptance,
       per-class accuracy, model hash. Done when: old model files still load and a test covers
       the new fields.
-- [ ] **D2. App parsing** in `src/ml_inference.cpp`. Done when: the new fields reach the Drones
+- [x] **D2. App parsing** in `src/ml_inference.cpp`. Done when: the new fields reach the Drones
       view code.
-- [ ] **D3. Decision rule in the app** (family mask, agreement across captures, acceptance),
+- [x] **D3. Decision rule in the app** (family mask, agreement across captures, acceptance),
       replacing the present hint. Done when: tests cover a masked-out answer, a type/family
       disagreement, too few captures, and an accepted model.
-- [ ] **D4. Verdict tiers:** family with a classifier model under it; a "Classifier" tier for
+- [x] **D4. Verdict tiers:** family with a classifier model under it; a "Classifier" tier for
       classifier-only rows. Done when: the verdict tests cover both.
-- [ ] **D5. Classifier-only rows** in the detection rows, tracks and alerts, at the lowest
+- [x] **D5. Classifier-only rows** in the detection rows, tracks and alerts, at the lowest
       severity. Done when: tests cover open, persist, expire and no alert storm.
-- [ ] **D6. Live check tool** prints types, accepted models and rejections.
+- [x] **D6. Live check tool** prints types, accepted models and rejections.
+      *(D1-D6, 14 Nov: package `universal_package.py` -> `data/drone_ml/2026-11-14/universal_package/universal_v1.pt`
+      (seed 2, chosen on validation); worker `universal_worker.py`; parsing in `ml_inference.cpp`;
+      rule and classifier-only rows in `src/drones/universal_claim.hpp`; verdict tiers in
+      `model_verdict.hpp`; D5 rows off by default (Drones view switch, live check
+      `--classifier-rows`). Tests: `test_drone_ml_universal_worker.py` (protocol + parity with the
+      evaluation), `test_ml_inference`, `test_drone_universal_claim`; 92/92 C++ tests pass.)*
 
 ### Stage E: proof
 

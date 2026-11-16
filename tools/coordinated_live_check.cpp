@@ -1,5 +1,6 @@
 #include "drones/drone_track_log.hpp"
 #include "drones/evidence_remote_id.hpp"
+#include "drones/universal_claim.hpp"
 // Receive-only live check of coordinated mode on the real receiver
 // (upgradedplan.md P5 exit evidence). Drives the production Scanner in
 // BAND_COORDINATED with the production drone add-on (native DJI/O4 backend,
@@ -12,7 +13,7 @@
 // visits (--no-followup leaves them off for an A/B run), and the merged detection rows with
 // their log (--detection-log PATH keeps the log outside the temporary root).
 //
-//   coordinated_live_check [--seconds N] [--device x310|b210] [--ml] [--json PATH] [--mode BAND]
+//   coordinated_live_check [--seconds N] [--device x310|b210] [--ml] [--classifier-rows] [--json PATH] [--mode BAND]
 //                          [--channel N] [--security-record PATH]
 // --mode runs a band mode instead (e.g. wifi_both) for an A/B comparison.
 // --channel N holds a Wi-Fi band mode on one channel. --security-record
@@ -21,6 +22,7 @@
 // --retain N keeps the last N Wi-Fi/drone captures' IQ; with --ml and
 // --export-dir, the latest model result's capture is exported as evidence.
 #include <atomic>
+#include <set>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -73,11 +75,13 @@ int main(int argc, char** argv) {
     std::string security_record, detection_log;
     bool with_followup = true;
     double simulate_link_hz = 0;  // test hook: report a link sighting here from 15 s to 75 s
+    bool classifier_rows = false;  // with --ml: also open classifier-only rows (off in the app by default)
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--seconds" && i + 1 < argc) seconds = std::atof(argv[++i]);
         else if (a == "--ml") with_ml = true;
         else if (a == "--no-followup") with_followup = false;
+        else if (a == "--classifier-rows") classifier_rows = true;
         else if (a == "--simulate-link" && i + 1 < argc) simulate_link_hz = std::atof(argv[++i]) * 1e6;
         else if (a == "--detection-log" && i + 1 < argc) detection_log = std::filesystem::absolute(argv[++i]).string();
         else if (a == "--json" && i + 1 < argc) json_path = argv[++i];
@@ -87,7 +91,7 @@ int main(int argc, char** argv) {
         else if (a == "--channel" && i + 1 < argc) channel = std::atoi(argv[++i]);
         else if (a == "--security-record" && i + 1 < argc) security_record = std::filesystem::absolute(argv[++i]).string();
         else if (a == "--device" && i + 1 < argc) device = std::string(argv[++i]) == "b210" ? SdrDeviceType::B210 : SdrDeviceType::X310;
-        else { std::fprintf(stderr, "usage: %s [--seconds N] [--device x310|b210] [--ml] [--json PATH] [--mode BAND] [--channel N] [--security-record PATH] [--retain N] [--export-dir PATH]\n", argv[0]); return 2; }
+        else { std::fprintf(stderr, "usage: %s [--seconds N] [--device x310|b210] [--ml] [--classifier-rows] [--json PATH] [--mode BAND] [--channel N] [--security-record PATH] [--retain N] [--export-dir PATH]\n", argv[0]); return 2; }
     }
     char tmp[] = "/tmp/rfmon-coordinated-live-XXXXXX";
     if (!mkdtemp(tmp)) return 1;
@@ -106,6 +110,11 @@ int main(int argc, char** argv) {
     std::map<std::string, drone_claims::Detection> drone_rows;
     drone_claims::DroneTracks drone_tracks;
     std::map<std::string, std::string> rows_seen;       // row id -> last identity text
+    drone_claims::ClassifierSightings classifier_sightings;
+    // Universal classifier capture decisions, each counted once: type (or "none"), named, refusal reason.
+    std::map<std::string, uint64_t> classifier_types, classifier_reasons;
+    uint64_t classifier_named = 0;
+    std::set<std::string> classifier_counted;
     std::map<std::string, uint64_t> timing_groups;      // group (or "none") -> captures
     std::map<std::string, uint64_t> group_centres;      // "group @ MHz" -> captures
     uint64_t timing_counted = 0, row_refreshes = 0, refreshes_with_rows = 0;
@@ -149,9 +158,9 @@ int main(int argc, char** argv) {
         drones.remote_id.enable(true);
         if (with_ml) {
             ml::Options o;
-            o.model = std::string(PROJECT_ROOT_DIR) + "/data/drone_ml/2026-10-14/expanded_training_01/residual_model/model.pt";
+            o.model = std::string(PROJECT_ROOT_DIR) + "/data/drone_ml/2026-11-14/universal_package/universal_v2.pt";
             o.python = std::string(PROJECT_ROOT_DIR) + "/data/drone_ml/runtime-2026-10-14/bin/python";
-            o.script = std::string(PROJECT_ROOT_DIR) + "/tools/drone_ml/live_worker.py";
+            o.script = std::string(PROJECT_ROOT_DIR) + "/tools/drone_ml/universal_worker.py";
             model.start(o);
         }
         scanner.set_active_band(mode);
@@ -190,6 +199,17 @@ int main(int argc, char** argv) {
                 timing_counted = timing.completed;
                 for (const auto& packet : drones.native.snapshot().native_packets) ingest_native_packet(drone_store, packet, now);
                 drone_rows = detections(drone_store, now, remote_id_sightings(drones.remote_id.snapshot(), now));
+                const auto classifier = model.snapshot();
+                add_universal_claims(drone_rows, classifier);
+                classifier_sightings.ingest(classifier, now);
+                classifier_sightings.add_rows(drone_rows, classifier, now, classifier_rows);
+                for (const auto& r : classifier.history) {
+                    if (!r.universal || !r.capture_decision.present) continue;
+                    if (!classifier_counted.insert(r.run + "/" + std::to_string(r.capture) + "/" + std::to_string(std::llround(r.center))).second) continue;
+                    const auto& d = r.capture_decision;
+                    ++classifier_types[d.type.empty() ? "none" : d.type];
+                    if (!d.type.empty()) { if (d.named) ++classifier_named; else ++classifier_reasons[d.reason]; }
+                }
                 drone_log.record(drone_rows);
                 drone_tracks.update(drone_rows, now);
                 ++row_refreshes;
@@ -220,9 +240,19 @@ int main(int argc, char** argv) {
                 std::printf("          rows=%zu followup visits=%llu open24=%d open58=%d | priority chunks=%llu displaced=%llu\n", drone_rows.size(),
                             static_cast<unsigned long long>(st.followup_visits), int(fs.bands[0].open), int(fs.bands[1].open),
                             static_cast<unsigned long long>(n.priority_chunks), static_cast<unsigned long long>(n.displaced_chunks));
-                for (const auto& [id, row] : drone_rows)
-                    std::printf("          row %s | %s | %s | %s\n", id.c_str(), row.band.c_str(),
-                                drone_claims::display_identity(row).c_str(), drone_claims::evidence_sources(row).c_str());
+                for (const auto& [id, row] : drone_rows) {
+                    const auto answer = drone_claims::verdict(row);
+                    std::printf("          row %s | %s | %s | %s | %s: %s\n", id.c_str(), row.band.c_str(),
+                                drone_claims::display_identity(row).c_str(), drone_claims::evidence_sources(row).c_str(),
+                                drone_claims::tier_name(answer.tier), answer.model.c_str());
+                }
+                if (m.universal) {
+                    std::printf("          classifier captures:");
+                    for (const auto& [type, count] : classifier_types) std::printf(" %s=%llu", type.c_str(), (unsigned long long)count);
+                    std::printf(" | named=%llu | refused:", (unsigned long long)classifier_named);
+                    for (const auto& [why, count] : classifier_reasons) std::printf(" [%s]=%llu", why.c_str(), (unsigned long long)count);
+                    std::printf("\n");
+                }
                 std::fflush(stdout);
             }
             if (el >= seconds) break;
@@ -371,7 +401,9 @@ int main(int argc, char** argv) {
         out["remote_id_tracks"] = rid.contains("tracks") ? rid["tracks"].size() : 0;
         out["ml"] = {{"enabled", with_ml}, {"state", ml_state.state}, {"processed", ml_state.processed},
                      {"dropped", ml_state.dropped}, {"stale", ml_state.stale}, {"invalid", ml_state.invalid},
-                     {"error", ml_state.error}};
+                     {"error", ml_state.error}, {"universal", ml_state.universal},
+                     {"classifier_captures", classifier_types}, {"classifier_named", classifier_named},
+                     {"classifier_refused", classifier_reasons}, {"classifier_only_rows", classifier_rows}};
         out["vm_hwm_mb"] = vm_hwm_kb() / 1024.0;
         out["retained_captures"] = retained_seqs.size();
         out["evidence_export"] = export_info;

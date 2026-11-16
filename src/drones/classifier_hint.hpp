@@ -41,7 +41,8 @@ inline std::pair<std::string, std::size_t> unique_winner(
 inline void add_classifier_hints(std::map<std::string, Detection>& rows,
                                  const ml::Snapshot& classifier,
                                  std::set<std::string>& unmapped) {
-    const bool ready = classifier.enabled && classifier.ready;
+    // The universal classifier has its own rule (universal_claim.hpp); hints are for the old model.
+    const bool ready = classifier.enabled && classifier.ready && !classifier.universal;
     std::set<std::string> models;
     if (ready) {
         std::istringstream classes(classifier.classes);

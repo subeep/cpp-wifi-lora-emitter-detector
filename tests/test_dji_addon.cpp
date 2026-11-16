@@ -1,4 +1,6 @@
 #include "drones/panel.hpp"
+#include "drones/drone_tracks_panel.hpp"
+#include "drones/evidence_packet.hpp"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include <iostream>
@@ -59,6 +61,21 @@ int main(int argc,char** argv) {
     require(native.native_packets.at(0).find("1WNBH3900201N1")!=std::string::npos,"native packet serial missing");
     require(native.native_packets.at(0).find("OFFLINE")!=std::string::npos,"native packet provenance missing");
     require(a.replay_status().find("Native")!=std::string::npos,"native completion not reported");
+    // Replay the actual worker output through production packet ingestion, detections and
+    // tracks. Only this isolated test store is assigned a synthetic acquisition identity.
+    using namespace rfmon::drone_claims;
+    const auto replay_now=Clock::now();
+    Store replay_store;
+    DroneTracks replay_tracks;
+    for(const auto& packet:native.native_packets){
+        auto row=nlohmann::json::parse(packet);
+        row["receiver_source"]="LIVE / run fixture-replay / session 1 / capture 1 / sample 0";
+        row["acquired_steady_s"]=std::chrono::duration<double>(replay_now.time_since_epoch()).count();
+        ingest_native_packet(replay_store,row.dump(),replay_now);
+    }
+    replay_tracks.update(detections(replay_store,replay_now),replay_now);
+    require(replay_tracks.tracks().size()==1,"fixture did not reach track store");
+    require(replay_tracks.tracks().begin()->second.positions.pilot.has_value(),"fixture pilot missing from track");
     a.load("/no/such/recording",50e6,2444.5e6,0); wait_until([&]{return !a.replay_busy;});
     require(a.replay_status().find("regular")!=std::string::npos,"file error not exposed");
     drone::RidJson frames;
@@ -92,6 +109,20 @@ int main(int argc,char** argv) {
         const std::string native_text=ImGui::GetCurrentContext()->LogBuffer.c_str(); ImGui::LogFinish();
         require(native_text.find("CRC24 packets: 1")!=std::string::npos,"native offline count missing from GUI");
         ImGui::End(); ImGui::Render(); require(ImGui::GetDrawData()->TotalVtxCount>0,"empty GUI");
+    }
+    // Render the same history function used in main.cpp, with a real decoded fixture.
+    for(int i=0;i<3;++i) {
+#ifdef DJI_EGL
+        ImGui_ImplOpenGL3_NewFrame();
+#endif
+        ImGui::NewFrame();ImGui::SetNextWindowSize(io.DisplaySize);ImGui::SetNextWindowPos({0,0});
+        ImGui::Begin("Drone history - recorded fixture replay");
+        ImGui::LogToBuffer();draw_drone_history(replay_tracks,replay_now);
+        const std::string rendered=ImGui::GetCurrentContext()->LogBuffer.c_str();ImGui::LogFinish();
+        require(rendered.find("Pilot 51.446230, 7.267104")!=std::string::npos,"fixture pilot missing from history view");
+        require(rendered.find("self-reported, unauthenticated")!=std::string::npos,"history position attribution missing");
+        ImGui::End();ImGui::Render();
+        require(ImGui::GetDrawData()->TotalVtxCount>0,"empty history view");
     }
     // Exercise the native Remote ID inspector independently of the DJI view.
     for(int i=0;i<3;++i) {

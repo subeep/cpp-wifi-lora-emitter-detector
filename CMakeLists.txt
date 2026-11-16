@@ -591,7 +591,7 @@ if(RFMON_ENABLE_DJI_DRONEID)
     ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp ${IMGUI_DIR}/imgui_widgets.cpp)
   target_include_directories(test_dji_addon PRIVATE ${IMGUI_DIR})
   target_compile_definitions(test_dji_addon PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
-  target_link_libraries(test_dji_addon PRIVATE rfmon_drones)
+  target_link_libraries(test_dji_addon PRIVATE rfmon_drones rfmon_symbol_timing)
   if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
     target_sources(test_dji_addon PRIVATE ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
     target_compile_definitions(test_dji_addon PRIVATE DJI_EGL=1)
@@ -947,6 +947,12 @@ target_link_libraries(test_drone_model_verdict PRIVATE rfmon_symbol_timing)
 target_include_directories(test_drone_model_verdict PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
 add_test(NAME drone_model_verdict COMMAND test_drone_model_verdict)
 
+# Universal classifier claims in the Drones view (plan stage D3-D5; header-only).
+add_executable(test_drone_universal_claim tests/test_drone_universal_claim.cpp)
+target_link_libraries(test_drone_universal_claim PRIVATE rfmon_symbol_timing)
+target_include_directories(test_drone_universal_claim PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+add_test(NAME drone_universal_claim COMMAND test_drone_universal_claim)
+
 # DroneID packet contract (pure byte/JSON handling; no decoder or radio).
 add_executable(test_droneid_packet tests/test_droneid_packet.cpp src/drones/droneid_packet.cpp)
 target_include_directories(test_droneid_packet PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
@@ -962,3 +968,8 @@ add_executable(test_drone_tracks tests/test_drone_tracks.cpp)
 target_link_libraries(test_drone_tracks PRIVATE rfmon_symbol_timing)
 target_include_directories(test_drone_tracks PRIVATE ${WIFI_JSON_INCLUDE_DIR})
 add_test(NAME drone_tracks COMMAND test_drone_tracks)
+
+# Offline fixed-block parity adapter for universal-classifier measured facts.
+add_executable(drone_symbol_timing_probe tools/drone_symbol_timing_probe.cpp)
+target_link_libraries(drone_symbol_timing_probe PRIVATE rfmon_symbol_timing)
+target_include_directories(drone_symbol_timing_probe PRIVATE ${WIFI_JSON_INCLUDE_DIR})

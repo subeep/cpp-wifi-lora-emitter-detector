@@ -65,6 +65,32 @@ int main(int argc,char** argv) {
     until([&]{return worker.snapshot().stale>stale_before;});
     require(worker.snapshot().processed==5&&!worker.snapshot().history[0].current,"retune accepted remaining old capture intervals");
     worker.stop();
+    options.model="/universal";require(worker.start(options),"universal fixture start failed");
+    until([&]{return worker.snapshot().ready;});
+    {
+        auto u=worker.snapshot();
+        require(u.universal&&u.universal_types.size()==4&&u.model_types.at("Air 3S")=="dji_ofdm","universal handshake lost");
+        require(u.accuracy.at("Mini 4 Pro").same_unit_right==29&&u.accuracy.at("Mini 4 Pro").unseen_named==1,"measured accuracy lost");
+    }
+    worker.observe(spread,spread_capture);
+    until([&]{return worker.snapshot().processed>=3&&worker.snapshot().history.size()>=3&&worker.snapshot().history[0].universal;});
+    {
+        auto u=worker.snapshot();
+        const auto& last=u.history[0];const auto& first=u.history[2];
+        require(last.interval_index==2&&last.capture_decision.present&&!first.capture_decision.present,"capture decision not on the last interval only");
+        require(last.capture_decision.type=="dji_ofdm"&&last.capture_decision.named&&last.capture_decision.models.size()==3&&
+                last.capture_decision.models[0].name=="Mini 4 Pro"&&last.capture_decision.distance&&*last.capture_decision.distance==4.5,"capture decision lost");
+        require(first.interval_types.at("dji_ofdm")==.9,"interval type scores lost");
+    }
+    worker.stop();
+    options.model="/baduniversal";require(worker.start(options),"bad universal fixture start failed");
+    until([&]{return worker.snapshot().ready;});worker.observe(iq,c);
+    until([&]{return worker.snapshot().state=="Failed";});
+    require(worker.snapshot().error.find("universal classifier score")!=std::string::npos,"out-of-range universal score accepted");
+    options.model="/normal";require(worker.start(options),"old fixture after universal failed");
+    until([&]{return worker.snapshot().ready;});
+    require(!worker.snapshot().universal&&worker.snapshot().accuracy.empty(),"universal state survived a restart with an old model");
+    worker.stop();
     options.model="/badpreview";require(worker.start(options),"bad preview fixture start failed");
     until([&]{return worker.snapshot().ready;});worker.observe(iq,c);
     until([&]{return worker.snapshot().state=="Failed";});

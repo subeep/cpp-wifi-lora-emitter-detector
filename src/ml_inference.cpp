@@ -21,6 +21,54 @@ namespace {
 using Tree=boost::property_tree::ptree;
 using Clock=std::chrono::steady_clock;
 Tree parse(const std::string& text) { Tree t;std::istringstream in(text);boost::property_tree::read_json(in,t);return t; }
+double unit_score(const Tree& t,const std::string& path) {
+    const double v=path.empty()?t.get_value<double>():t.get<double>(path);
+    if(!std::isfinite(v)||v<0||v>1)throw std::runtime_error("Invalid universal classifier score");
+    return v;
+}
+std::optional<double> finite_or_null(const Tree& t,const std::string& path) {
+    auto text=t.get_optional<std::string>(path);
+    if(!text||text->empty()||*text=="null")return {};
+    const double v=t.get<double>(path);
+    if(!std::isfinite(v))throw std::runtime_error("Invalid universal classifier value");
+    return v;
+}
+// Universal worker fields; any schema mismatch fails the worker rather than guessing.
+void parse_universal(const Tree& u,Result& r) {
+    if(u.get<std::string>("schema","")!="rfmon.ml.universal.v1")throw std::runtime_error("Invalid universal classifier contract");
+    r.universal=true;
+    for(auto& [type,score]:u.get_child("interval.types"))r.interval_types[type]=unit_score(score,"");
+    auto capture=u.get_child_optional("capture");
+    if(!capture)return;
+    if(capture->get<std::string>("schema","")!="rfmon.ml.universal.v1.capture")throw std::runtime_error("Invalid universal capture contract");
+    auto& c=r.capture_decision;c.present=true;
+    c.type=capture->get<std::string>("type","");if(c.type=="null")c.type.clear();
+    c.best_type=capture->get<std::string>("best_type","");
+    c.reason=capture->get<std::string>("reason","");
+    c.named=capture->get<bool>("named",false);
+    c.intervals=capture->get<size_t>("intervals",0);
+    if(capture->get_optional<double>("type_score"))c.type_score=unit_score(*capture,"type_score");
+    c.distance=finite_or_null(*capture,"distance");
+    c.distance_limit=finite_or_null(*capture,"distance_limit");
+    c.score_limit=finite_or_null(*capture,"score_limit");
+    if(auto models=capture->get_child_optional("models"))for(auto& m:*models) {
+        if(c.models.size()==3)break;
+        c.models.push_back({m.second.get<std::string>("name"),unit_score(m.second,"score")});
+    }
+    if(c.named&&(c.type.empty()||c.models.empty()))throw std::runtime_error("Universal capture named without a type or model");
+}
+void parse_accuracy(const Tree& t,Snapshot& s) {
+    for(auto& [model,entry]:t) {
+        ModelAccuracy a;
+        if(auto u=entry.get_child_optional("same_unit")) {
+            a.same_unit_captures=u->get<size_t>("captures");a.same_unit_named=u->get<size_t>("named");a.same_unit_right=u->get<size_t>("top1_right");
+        }
+        if(auto u=entry.get_child_optional("unseen_aircraft")) {
+            a.unseen_captures=u->get<size_t>("captures");a.unseen_named=u->get<size_t>("named");a.unseen_right=u->get<size_t>("top1_right");
+        }
+        s.accuracy[model]=a;
+    }
+}
 std::string encode(const Tree& t){std::ostringstream out;boost::property_tree::write_json(out,t,false);return out.str();}
 struct Client {
     int fd=-1;pid_t pid=-1;
@@ -107,6 +155,8 @@ bool Inference::start(Options options) {
     {
         std::lock_guard<std::mutex> l(mutex_);
         state_.state="Loading";state_.error.clear();state_.model_hash.clear();state_.classes.clear();
+        state_.universal=false;state_.universal_decision.clear();state_.universal_types.clear();
+        state_.model_types.clear();state_.accuracy.clear();
         state_.audit_status="disabled";state_.audit_path.clear();state_.audit_error.clear();state_.audit_saved=0;
         queued_=false;source_key_.clear();last_submit_={};
         dispersed_intervals_=options.dispersed_intervals;
@@ -195,6 +245,13 @@ void Inference::run(Options options) {
             state_.audit_path=hello.get<std::string>("audit.path","");
             state_.audit_error=hello.get<std::string>("audit.error","");
             for(auto& x:hello.get_child("classes"))state_.classes+=x.second.get_value<std::string>()+"\n";
+            if(auto u=hello.get_child_optional("universal")) {
+                if(u->get<std::string>("schema","")!="rfmon.ml.universal.v1")throw std::runtime_error("Invalid universal classifier handshake");
+                state_.universal=true;state_.universal_decision=u->get<std::string>("decision","");
+                for(auto& x:u->get_child("types"))state_.universal_types.push_back(x.second.get_value<std::string>());
+                for(auto& [model,type]:u->get_child("model_types"))state_.model_types[model]=type.get_value<std::string>();
+                if(auto a=u->get_child_optional("accuracy"))parse_accuracy(*a,state_);
+            }
             state_.state="Waiting for compatible Wi-Fi data";
         }
         ready_=true;
@@ -292,6 +349,7 @@ void Inference::run(Options options) {
                 if(!std::isfinite(score)||score<0||score>1)throw std::runtime_error("Invalid model score");
                 if(result.top.size()<3)result.top.push_back({r.second.get<std::string>("label"),score});
             }
+            if(auto u=t.get_child_optional("universal"))parse_universal(*u,result);
             result.processing_ms=t.get<double>("processing_ms");
             if(auto offset=t.get_optional<double>("selected_offset_hz")) {
                 if(!std::isfinite(*offset))throw std::runtime_error("Invalid selected view");

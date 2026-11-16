@@ -12,7 +12,12 @@ def read(n):
     return b
 def send(x):
     b=json.dumps(x).encode();s.sendall(struct.pack('<I',len(b))+b)
-send(dict(schema='rfmon.ml.ready.v1',model_sha256='fixture',architecture='fixture',classes=['synthetic']))
+hello=dict(schema='rfmon.ml.ready.v1',model_sha256='fixture',architecture='fixture',classes=['synthetic'])
+if 'universal' in a.model:
+    hello['universal']=dict(schema='rfmon.ml.universal.v1',types=['dji_ofdm','lightbridge','hopping_controller','not_a_drone'],
+        decision='universal_c4_decision_v3',model_types={'Mini 4 Pro':'dji_ofdm','Air 3S':'dji_ofdm'},
+        accuracy={'Mini 4 Pro':dict(same_unit=dict(captures=40,named=30,top1_right=29),unseen_aircraft=dict(captures=20,named=1,top1_right=1))})
+send(hello)
 try:
     while True:
         n=struct.unpack('<I',read(4))[0];r=json.loads(read(n));iq=read(int(r['samples'])*8)
@@ -24,6 +29,13 @@ try:
         result=dict(schema='rfmon.ml.result.v1',request=r,status='identification_unavailable',
                   accepted_class='unqualified_identity',candidate='synthetic',top_candidates=[dict(label='synthetic',score=.99999)],
                   processing_ms=1,selected_offset_hz=0,reason=['synthetic_fixture'])
+        if 'universal' in a.model:
+            result['universal']=dict(schema='rfmon.ml.universal.v1',interval=dict(types=dict(dji_ofdm=.9,lightbridge=0,hopping_controller=0,not_a_drone=.1),allowed=['dji_ofdm','not_a_drone']))
+            if int(r.get('interval_index',0))==int(r.get('interval_count',1))-1:
+                result['universal']['capture']=dict(schema='rfmon.ml.universal.v1.capture',intervals=int(r.get('interval_count',1)),
+                    type='dji_ofdm',best_type='dji_ofdm',type_score=.95,named=True,reason='named',distance=4.5,distance_limit=20.,score_limit=.6,
+                    models=[dict(name='Mini 4 Pro',score=.8),dict(name='Air 3S',score=.15),dict(name='Avata 2',score=.05)])
+            if a.model.endswith('baduniversal'):result['universal']['interval']['types']['dji_ofdm']=1.5
         if r.get('dsp_triage') in (True,'true','1'):
             result['dsp_triage']=dict(schema='rfmon.ml.dsp_triage.v1',mode='observe',route='model',
                 assessment='unresolved_activity',review_flag='noise_like_review_only',reason='fixture',
