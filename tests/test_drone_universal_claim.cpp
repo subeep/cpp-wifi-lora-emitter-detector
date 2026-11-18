@@ -164,6 +164,91 @@ int main() try {
         sightings.add_rows(rows, s, t0 + std::chrono::seconds(30) + classifier_row_lifetime + std::chrono::seconds(1), true);
         require(rows.empty(), "classifier row did not expire");
     }
+    // Sightings stay in time order when one snapshot brings several new captures (history is newest
+    // first): the older one expires first and the pair still opens a row.
+    {
+        const Clock::time_point t0{std::chrono::seconds(1000)};
+        auto s = snapshot();
+        ClassifierSightings sightings;
+        s.history = {decision(3, 2440e6, "hopping_controller", false, {}, t0 + std::chrono::seconds(100)),
+                     decision(2, 2440e6, "hopping_controller", false, {}, t0 + std::chrono::seconds(60)),
+                     decision(1, 2440e6, "hopping_controller", false, {}, t0)};
+        sightings.ingest(s, t0 + std::chrono::seconds(100));
+        require(sightings.size() == 3, "sightings missing");
+        std::map<std::string, Detection> rows;
+        sightings.add_rows(rows, s, t0 + std::chrono::seconds(100), true);
+        require(rows.size() == 1 && rows.begin()->second.universal->typed == 3, "time-ordered run not opened");
+        // At t0+301 s only capture 1 is past classifier_row_merge: exactly one is dropped.
+        s.history.clear();
+        sightings.ingest(s, t0 + std::chrono::seconds(301));
+        require(sightings.size() == 2, "expiry dropped the wrong sightings");
+    }
+    // C4 row rule: a capture that did not open a row (next one more than the window later) is not
+    // part of the row opened after it, even inside the merge time.
+    {
+        const Clock::time_point t0{std::chrono::seconds(1000)};
+        auto s = snapshot();
+        ClassifierSightings sightings;
+        s.history = {decision(3, 2440e6, "hopping_controller", false, {}, t0 + std::chrono::seconds(260)),
+                     decision(2, 2440e6, "hopping_controller", false, {}, t0 + std::chrono::seconds(250)),
+                     decision(1, 2440e6, "hopping_controller", true, {{"WLtoys", .9}}, t0)};
+        sightings.ingest(s, t0 + std::chrono::seconds(260));
+        std::map<std::string, Detection> rows;
+        sightings.add_rows(rows, s, t0 + std::chrono::seconds(260), true);
+        require(rows.size() == 1, "row not opened by the later pair");
+        const auto& u = *rows.begin()->second.universal;
+        require(u.captures == 2 && u.named == 0, "a capture before the opening joined the row");
+    }
+    // One decision per run, session, capture and centre: a new session reusing capture numbers counts.
+    {
+        auto a = decision(7, 2440e6, "dji_ofdm", false), b = a;
+        b.session = 2;
+        require(capture_id(a) != capture_id(b), "sessions share a capture id");
+        b = a; b.center += 400;                                      // same capture, same kHz slot
+        require(capture_id(a) == capture_id(b), "one capture counted twice");
+    }
+    // A classifier-only track's first and last seen are its captures' times, not the refresh time.
+    {
+        const Clock::time_point t0{std::chrono::seconds(1000)};
+        auto s = snapshot();
+        ClassifierSightings sightings;
+        s.history = {decision(2, 2440e6, "hopping_controller", false, {}, t0 + std::chrono::seconds(30)),
+                     decision(1, 2440e6, "hopping_controller", false, {}, t0)};
+        const auto later = t0 + std::chrono::seconds(50);
+        sightings.ingest(s, later);
+        std::map<std::string, Detection> rows;
+        sightings.add_rows(rows, s, later, true);
+        DroneTracks tracks;
+        tracks.update(rows, later);
+        require(tracks.tracks().size() == 1, "no classifier track");
+        const auto& track = tracks.tracks().begin()->second;
+        require(track.first_seen == t0 && track.last_seen == t0 + std::chrono::seconds(30),
+                "classifier track times are the refresh time, not the captures'");
+    }
+    // A DroneID row without a measured link covers its slot too; a Remote ID row does not (its
+    // frequency is the broadcast channel, not the drone's link).
+    {
+        const Clock::time_point t0{std::chrono::seconds(1000)};
+        auto s = snapshot();
+        ClassifierSightings sightings;
+        s.history = {decision(2, 2440e6, "dji_ofdm", false, {}, t0 + std::chrono::seconds(30)),
+                     decision(1, 2440e6, "dji_ofdm", false, {}, t0)};
+        sightings.ingest(s, t0 + std::chrono::seconds(30));
+        Detection droneid;
+        droneid.id = "serial:X";
+        droneid.packet = Packet{"Mini 3 Pro", "X", true};
+        droneid.packet->frequency = 2444.5e6;
+        droneid.packet_key = {"run", 1, 9, 2440e6};
+        std::map<std::string, Detection> rows{{"serial:X", droneid}};
+        sightings.add_rows(rows, s, t0 + std::chrono::seconds(30), true);
+        require(rows.size() == 1, "classifier row duplicated a DroneID row");
+        Detection rid;
+        rid.id = "rid:T";
+        rid.remote_id.push_back(RemoteIdSighting{"T", "ID", "", "wifi", false, 2437e6, t0});
+        rows = {{"rid:T", rid}};
+        sightings.add_rows(rows, s, t0 + std::chrono::seconds(30), true);
+        require(rows.size() == 2, "a Remote ID broadcast channel hid a classifier row");
+    }
     std::cout << "Universal classifier claims: family check, agreement, verdicts, classifier-only rows: PASS\n";
     return 0;
 } catch (const std::exception& e) {

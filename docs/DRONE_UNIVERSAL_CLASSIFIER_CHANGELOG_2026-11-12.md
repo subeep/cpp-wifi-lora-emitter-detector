@@ -812,3 +812,130 @@ validation; sha256 `2d29cb1b…`; the scale-mask check passes). The app, the liv
 worker tests use it; v1 is kept. Worker tests pass and 92/92 C++ tests pass. End to end, the
 held-out Air 3S capture (2452 MHz) is now named Air 3S (0.85, limit 0.65; v1 refused it). The
 Phantom capture is still "not a drone" (the gate needs the 10.9375 kHz check).
+
+## 2026-11-16 — DroneRFa download repaired; view-offset bug; E4 inputs
+
+**Download.** The DroneRFa archive (one RAR5, 615,955,805,466 bytes) failed its MD5. Cause:
+`download.py` v1 used curl `--retry`, which restarts a broken range from its first byte; the
+script appended that stream, leaving shifted copies of earlier data (47 gaps between 40 and
+224 GB, about 41.6 GB). v2 drops `--retry` and checks every reply. `repair.py` re-fetches byte
+ranges and writes one piece only after status 206, an exact Content-Range and an exact length;
+it obeys the server's `retry-after` (China time). The true member layout was read from the
+server (`data/drone_ml/2026-11-16/e4/layout.json`), because the local walk resynced onto copied
+headers. Gaps first, then the full spans of the 74 members that still failed their CRC; after
+that, all 630 recordings unpack with a passing CRC (no other check needed).
+
+**View-offset bug (B1).** `universal_views.deployment_view` did `x = np.asarray(iq, complex128)`
+then `x *= exp(...)`: for a complex128 caller the window was changed in place, so the 7 offsets
+of one window accumulated (duplicate pairs, real centres −35, +41.7, +30 and 0 MHz). Affected:
+DRFF-R2, DroneRFb-DIR, KU Leuven, Tampere and 9 multi-offset X310 records; RFUAV, single-offset
+X310 records and the live path were not. Fixed (always a copy, `VERSION ..._v2`), with a test
+that the input is unchanged and each offset peaks at its own view. All views rebuilt
+(`views-v2`: 6,399 recordings, 101,175 windows, 0 errors, 0 duplicates).
+
+**DroneRFa into views (E4).** `universal_dronerfa.py`: one recording per channel
+(2440/5800 MHz; 2440 MHz only for the 915/2440 MHz controllers), 21 views per channel (blocks 2,
+7, 12 from sample 100,000; 7 offsets). Files with 12 blocks use their last block; a file that
+unpacks but cannot be cut is logged, not fatal. Licence CC BY-NC-SA 4.0.
+
+**Families measured** (`e4/family_measure.txt`, share of views with timing ratio > 4):
+
+| Model | 15 kHz | 30 kHz | 32.8 kHz | Rule |
+|---|---|---|---|---|
+| Mavic 3 (5.8 GHz) | 0.52 | 0.05 | 0 | 15 kHz |
+| Phantom 4 RTK | 0.16 | 0 | 0 | 15 kHz (new) |
+| DJI link module (self-built) | 0.13 | 0.01 | 0 | 15 kHz (new) |
+| Matrice 30T | 0.22 | 0.23 | 0 | either |
+| Avata | 0.06 | 0.03 | 0 | either |
+| Inspire 2, Matrice 200, Matrice 600 Pro, Phantom 4 Pro | 0 | 0 | 0.03–0.21 | Lightbridge |
+| Phantom 3, Matrice 100 | 0 | 0 | 0 | no presence: not trained |
+
+Low shares are expected: a view covers one 20 MHz slot of a 100 MHz recording and most links
+hop. The DroneRFa controllers have no presence rule and are not trained this pass.
+
+**Splits v3.** Phantom 4 Pro and Matrice 100 leave the open (never-seen) set and are trained
+from DroneRFa; DroneRFa is split by flight distance (D00 train, D01 val, D10 unit test) and
+indoor segments; its background trains only where no drone timing fires.
+
+**Code review fixes** (one at a time, each with a failing test first; 92/92 C++ and all Python
+modules pass after each): classifier sightings kept in time order; a DroneID row without a
+link covers its slot; live classifier-only rows follow the C4 row rule exactly; classifier-only
+tracks use capture times; the live-check decision count includes the session; a refused last
+interval still ends its capture; the worker runs the network once per interval; one sha256
+helper.
+
+**Live check, X310 `326CF02`** (3 min, v2, classifier-only rows on): 22 cycles of 7.7 s, 3
+overflows, 223 of 225 captures timed, 654 intervals classified, 218 capture decisions, 3,568
+Wi-Fi frames. One unnamed classifier-only row (hopping controller, 5747 MHz) with no drone
+present, which is why those rows stay off. An earlier run failed with every capture invalid:
+NIC CRC errors after a radio swap; reseating the cable fixed it. The other X310 (`326CEFE`) has
+an FPGA image too old for this UHD.
+
+**Held-out background B.** `/media/sudeep/Storage/x310_sessions/bg-heldout-B-20261116-114917`:
+0.5 s captures over 11 slots, 1,027 clean from 17:19 to 19:00 IST (the radio stopped answering
+at 19:00:20; later captures are empty and marked). Never used for training.
+
+## 2026-11-18 — E4 trained; package v3
+
+A reboot on 17–18 Nov stopped the first E4 run at the presence step and left the data disk
+"dirty" (NTFS); the user ran `ntfsfix -d`, all 952 cached presence results checked out, and the
+run resumed (`data/drone_ml/2026-11-16/e4/run.sh`, log `run.log`; 11:43–12:49 IST).
+
+**Data.** Splits v3: 34,896 windows (train 19,742, val 3,190, unit test 2,742, test 7,076, open
+test 1,824, cross test 212, background test 39). DroneRFa trains Air 2S, Avata, DJI link module
+(self-built), Inspire 2, Matrice 200, Matrice 300, Matrice 30T, Matrice 600 Pro, Mavic 3, Mini 2,
+Phantom 4 Pro and Phantom 4 RTK, plus its own background. Models: 21 → 28 (new: Avata, DJI link
+module, Matrice 200, Matrice 30T, Matrice 600 Pro, Phantom 4 Pro, Phantom 4 RTK).
+
+**Results** (C4 v3 rule, seeds 1–3; `e4/c2/c4_report.json` against `2026-11-14/universal_c2d/`):
+
+| | v2 (C2d) | v3 (E4) |
+|---|---|---|
+| Never-seen models: type right, captures | 0.79–0.86 | 0.97–1.00 |
+| Never-seen models: type right, recordings | 0.76–0.82 | 0.94–1.00 |
+| Never-seen models named as a known model, captures | 0 | 0.012–0.030 |
+| … recordings (a row needs 2 named captures) | 0 | 0–0.015 |
+| Known units: captures named / top-1 right when named | 0.69–0.74 / 0.997 | 0.63–0.64 / 0.987–0.995 |
+| Other aircraft of trained models: top-1 right when named | 1.00 | 0.72–1.00 |
+| Cross-dataset: top-3 right when named | 1.00 | 0.80–1.00 |
+| Site background (20 min): typed captures / rows | 1 of 127 / 0 | 1 of 127 / 0 |
+
+- The open (never-seen) set is not the same as v2's: Phantom 4 Pro and Matrice 100 left it (now
+  trained) and DroneRFa's Mavic Pro and Mini 3 Pro joined (338 captures against 140), so the
+  type and naming rows above compare different sets.
+- Unknown-model naming is no longer zero: mostly DroneRFa Mini 3 Pro named as a known model
+  (seed 3: 4 of 175 captures, no recording). Still inside the ≤ 5% gate.
+- Known units are named a little less often (28 models to separate against 21).
+
+**Package v3.** `data/drone_ml/2026-11-14/universal_package/universal_v3.pt` (seed 3 on
+validation; sha256 `1616c162…`). The app (`src/main.cpp`), the live check and the worker tests
+now use it; v1 and v2 are kept. Worker tests, including parity with the evaluation on a v3
+unit-test Air 3S recording, pass; 92/92 C++ tests and all Python modules pass (three failures
+that predate this work: missing matplotlib and pyserial, and a stale fake engine in
+`test_drone_ml_presence_audit`). Not yet run live on the X310 (radio not connected) and not yet
+measured on held-out background B.
+
+## 2026-11-18 — Held-out background B scored (v2 and v3)
+
+`data/drone_ml/2026-11-16/e4/bg_b_eval.py` (result `bg_b_eval.json`): 1,027 clean 0.5 s captures,
+16 Nov 17:19–19:00 IST (1.68 h), the app's three views per capture, shipped packages, C4 row rule.
+
+| | v2 | v3 |
+|---|---|---|
+| Captures typed | 11 (DJI OFDM 7, Lightbridge 1, hopping 3) | 1 (hopping, minute 63.9, 2470 MHz) |
+| Rows / named rows | 2 (DJI OFDM, 5835 and 5855 MHz, minutes 1–3) / 0 | 0 / 0 |
+
+**Caveat: the first 18 minutes may not be drone-free.** 53 of 3,081 views carry drone-link
+timing, all before minute 18.4: 15 kHz at 5735 and 5835 MHz (ratios 8–42, all three views of a
+capture) and 30 kHz at 5855 MHz (12–34) in minutes 0.4–3.1, then 32.8 kHz without Wi-Fi at 5735
+and 5815 MHz in minutes 13–18.3. Nothing fires in the remaining ~83 minutes. Until the user
+confirms what was switched on, v2's two rows may be true detections and v3's silence there may
+be a missed type. Over minutes 18.4–101 (1.38 h) both packages give 0 rows.
+
+The user is not sure what was on in minutes 0–18, so the rate uses minutes 18.5–101 only (834
+captures, 1.37 h): v2 typed 2 (hopping), v3 typed 1 (hopping), 0 rows and 0 named rows for both.
+With the 13 Nov held-out minutes: 0 rows in 1.71 h, a 95% bound of about 1.8 false rows per hour;
+the ≤ 1 / h gate needs about 1.3 h more of clean background.
+
+**DroneRFa archive MD5** after the repair: `50fd4a8ff6975fe88e746b461650f9cc`, matching the
+published value. The file keeps its `.part` name because the view metadata and tests refer to it.

@@ -35,6 +35,7 @@ inline Clock::time_point row_observed(const Detection& row, Clock::time_point no
     if (row.timing) seen = row.timing->observed;
     if (row.packet) seen = std::max(seen, row.packet->observed);
     for (const auto& rid : row.remote_id) seen = std::max(seen, rid.observed);
+    if (row.universal && row.universal->classifier_only) seen = std::max(seen, row.universal->last_observed);
     return seen == Clock::time_point{} ? now : std::min(seen, now);
 }
 
@@ -43,6 +44,8 @@ inline Clock::time_point row_first_observed(const Detection& row, Clock::time_po
     if (row.packet && row.packet->observed != Clock::time_point{}) now = std::min(now, row.packet->observed);
     for (const auto& rid : row.remote_id)
         if (rid.observed != Clock::time_point{}) now = std::min(now, rid.observed);
+    if (row.universal && row.universal->classifier_only && row.universal->first_observed != Clock::time_point{})
+        now = std::min(now, row.universal->first_observed);
     return now;
 }
 

@@ -311,7 +311,7 @@ int main() {
         if(model_inference.snapshot().enabled)return false;
         ml::Options options;
         // Universal classifier package (plan stage D): type, and models inside the measured family.
-        options.model=std::string(PROJECT_ROOT_DIR)+"/data/drone_ml/2026-11-14/universal_package/universal_v2.pt";
+        options.model=std::string(PROJECT_ROOT_DIR)+"/data/drone_ml/2026-11-14/universal_package/universal_v3.pt";
         options.python=std::string(PROJECT_ROOT_DIR)+"/data/drone_ml/runtime-2026-10-14/bin/python";
         options.script=std::string(PROJECT_ROOT_DIR)+"/tools/drone_ml/universal_worker.py";
         return model_inference.start(options);

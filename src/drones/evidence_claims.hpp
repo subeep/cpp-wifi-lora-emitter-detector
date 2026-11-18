@@ -441,6 +441,7 @@ struct UniversalClaim {
     std::size_t captures{}, typed{}, named{}, disagreements{};
     bool accepted{};                          // a model list is shown: enough captures named one
     bool classifier_only{};                   // the row exists only because of the classifier
+    Clock::time_point first_observed{}, last_observed{};  // classifier-only rows: first and last capture of the row
     std::string accuracy;                     // measured accuracy of the top model, in words
 };
 

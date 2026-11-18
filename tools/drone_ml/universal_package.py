@@ -13,22 +13,14 @@ Development only: the background false-row gate is not yet established.
 """
 import argparse
 from datetime import datetime
-import hashlib
 import json
 from pathlib import Path
 import numpy as np
 import torch
+from tools.drone_ml.common import sha256
 
 FORMAT = 'rfmon.drone_ml.universal_package.v1'
 ARCHITECTURE = 'universal_two_level_v1'
-
-
-def sha256(path):
-    h = hashlib.sha256()
-    with open(path, 'rb') as f:
-        for block in iter(lambda: f.read(1 << 20), b''):
-            h.update(block)
-    return h.hexdigest()
 
 
 def accuracy(seed_report, models):

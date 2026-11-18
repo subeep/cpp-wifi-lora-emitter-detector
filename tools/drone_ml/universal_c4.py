@@ -53,8 +53,9 @@ DRONE_TYPES = [t for t in range(len(TYPES)) if t != NAD]
 class Views:
     """Per-view network outputs for one partition."""
 
-    def __init__(self, run, d, model_type):
-        _, self.gt, self.ml, self.am, self.z = run.predict(d, return_z=True)
+    def __init__(self, run, d, model_type, outputs=None):
+        # outputs: (gt, ml, allowed_m, z) already computed per view (the live worker), else run here.
+        _, self.gt, self.ml, self.am, self.z = (None, *outputs) if outputs is not None else run.predict(d, return_z=True)
         self.model_type, self.meta = model_type, d['meta']
         self.allowed = self.gt > 0
         self.mp = {t: model_probs(self.ml, t, model_type, self.am) for t in DRONE_TYPES}

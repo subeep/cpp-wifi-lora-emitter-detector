@@ -8,9 +8,9 @@ import unittest
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-PACKAGE = ROOT / 'data/drone_ml/2026-11-14/universal_package/universal_v2.pt'
-STORE = Path('/media/sudeep/Storage/drone_universal_classifier/2026-11-12/views-v1')
-CACHE = Path('/media/sudeep/Storage/drone_universal_classifier/2026-11-14/cache-v2')
+PACKAGE = ROOT / 'data/drone_ml/2026-11-14/universal_package/universal_v3.pt'
+STORE = Path('/media/sudeep/Storage/drone_universal_classifier/2026-11-16/store-e4')
+CACHE = Path('/media/sudeep/Storage/drone_universal_classifier/2026-11-16/cache-v3')
 
 
 def frame(sock, request, iq):
@@ -74,6 +74,22 @@ class WorkerProtocolTests(unittest.TestCase):
         self.assertIsNone(r['universal']['capture']['type'])
         self.assertFalse(r['universal']['capture']['named'])
 
+    def test_refused_last_interval_still_ends_the_capture(self):
+        rng = np.random.default_rng(2)
+        for i in range(3):
+            iq = ((rng.normal(size=160000) + 1j * rng.normal(size=160000)) * .01).astype(np.complex64)
+            if i == 2:
+                iq = np.zeros(160000, np.complex64)                     # constant: refused
+            frame(self.app, request(i, seq=8), iq)
+            r = json.loads(reply(self.app))
+        self.assertEqual(r['status'], 'insufficient_evidence')
+        capture = r['universal']['capture']
+        self.assertEqual(capture['schema'], 'rfmon.ml.universal.v1.capture')
+        self.assertIsNone(capture['type'])
+        self.assertFalse(capture['named'])
+        self.assertIn('refused', capture['reason'])
+        self.assertEqual(r['universal']['interval']['types'], {})
+
     def test_other_rates_are_refused(self):
         frame(self.app, request(0, rate=50e6), np.zeros(400000, np.complex64))
         r = json.loads(reply(self.app))
@@ -110,6 +126,20 @@ class WorkerParityTests(unittest.TestCase):
         self.assertEqual((got['type'], got['named'], [m['name'] for m in got['models']]),
                          (expected['type'], expected['named'], [m['name'] for m in expected['models']]))
         self.assertEqual(got['type'], 'dji_ofdm')
+        np.testing.assert_allclose([m['score'] for m in got['models']], [m['score'] for m in expected['models']], atol=1e-4)
+
+    def test_network_runs_once_per_interval(self):
+        from tools.drone_ml.universal_worker import Captures, handle, load_package
+        pkg, run, namer = load_package(PACKAGE)
+        calls = []
+        predict = run.predict
+        run.predict = lambda d, **k: (calls.append(len(d['spec'])), predict(d, **k))[1]
+        rng = np.random.default_rng(3); caps = Captures()
+        for i in range(3):
+            iq = ((rng.normal(size=160000) + 1j * rng.normal(size=160000)) * .01).astype(np.complex64)
+            result, _ = handle(pkg, run, namer, caps, request(i), iq)
+        self.assertIn('capture', result['universal'])
+        self.assertEqual(calls, [1, 1, 1])
 
 
 if __name__ == '__main__':

@@ -158,7 +158,7 @@ int main(int argc, char** argv) {
         drones.remote_id.enable(true);
         if (with_ml) {
             ml::Options o;
-            o.model = std::string(PROJECT_ROOT_DIR) + "/data/drone_ml/2026-11-14/universal_package/universal_v2.pt";
+            o.model = std::string(PROJECT_ROOT_DIR) + "/data/drone_ml/2026-11-14/universal_package/universal_v3.pt";
             o.python = std::string(PROJECT_ROOT_DIR) + "/data/drone_ml/runtime-2026-10-14/bin/python";
             o.script = std::string(PROJECT_ROOT_DIR) + "/tools/drone_ml/universal_worker.py";
             model.start(o);
@@ -205,7 +205,7 @@ int main(int argc, char** argv) {
                 classifier_sightings.add_rows(drone_rows, classifier, now, classifier_rows);
                 for (const auto& r : classifier.history) {
                     if (!r.universal || !r.capture_decision.present) continue;
-                    if (!classifier_counted.insert(r.run + "/" + std::to_string(r.capture) + "/" + std::to_string(std::llround(r.center))).second) continue;
+                    if (!classifier_counted.insert(drone_claims::capture_id(r)).second) continue;
                     const auto& d = r.capture_decision;
                     ++classifier_types[d.type.empty() ? "none" : d.type];
                     if (!d.type.empty()) { if (d.named) ++classifier_named; else ++classifier_reasons[d.reason]; }

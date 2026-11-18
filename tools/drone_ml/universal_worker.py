@@ -79,9 +79,12 @@ def capture_decision(pkg, run, namer, items, expected):
     if [i for i, _ in items] != list(range(expected)):
         return dict(schema=SCHEMA + '.capture', intervals=len(items), type=None, models=[], named=False,
                     reason='incomplete capture (an interval was skipped)')
-    d = dict(spec=np.stack([it['spec'] for _, it in items]), facts=np.stack([it['facts'] for _, it in items]),
-             available=np.stack([it['available'] for _, it in items]), meta=[{} for _ in items])
-    v = Views(run, d, pkg['model_type'])
+    if any(it is None for _, it in items):
+        return dict(schema=SCHEMA + '.capture', intervals=len(items), type=None, models=[], named=False,
+                    reason='incomplete capture (an interval was refused: nonfinite or constant IQ)')
+    # The network already ran once per interval (handle); its outputs are reused, not recomputed.
+    outputs = tuple(np.concatenate([it['out'][k] for _, it in items]) for k in range(4))
+    v = Views(run, dict(meta=[{} for _ in items]), pkg['model_type'], outputs=outputs)
     out = explain(v.capture(range(len(items))), pkg['decision']['type_thresholds'], pkg['decision']['naming'], namer)
     out.update(schema=SCHEMA + '.capture', intervals=len(items))
     return out
@@ -96,12 +99,18 @@ def handle(pkg, run, namer, captures, request, iq):
     x = np.asarray(iq, np.complex64)
     if not np.isfinite(x).all() or float(np.mean(np.abs(x - x.mean()) ** 2)) < 1e-24:
         base['reason'] = ['nonfinite or constant IQ']
+        # A 20 MSps capture still ends with a decision when its last interval is refused.
+        if captures.add(request, None):
+            base['universal'] = dict(schema=SCHEMA, interval=dict(types={}, allowed=[]),
+                                     capture=capture_decision(pkg, run, namer, captures.items,
+                                                              int(request.get('interval_count', 1))))
         return base, None
     image = spectrogram(x, RATE, CONFIG)
     f = extract(x)
     item = dict(spec=pooled(image), facts=np.asarray(f['values'], np.float32), available=np.asarray(f['available'], bool))
-    _, gt, _, _ = run.predict(dict(spec=item['spec'][None], facts=item['facts'][None], available=item['available'][None],
-                                   meta=[{}]))
+    _, gt, ml, am, z = run.predict(dict(spec=item['spec'][None], facts=item['facts'][None],
+                                        available=item['available'][None], meta=[{}]), return_z=True)
+    item['out'] = (gt, ml, am, z)
     types = pkg['types']
     order = np.argsort(-gt[0])
     result = dict(status='ok', candidate=types[order[0]], selected_offset_hz=0.0,

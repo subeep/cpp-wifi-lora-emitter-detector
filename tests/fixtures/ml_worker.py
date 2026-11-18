@@ -36,6 +36,12 @@ try:
                     type='dji_ofdm',best_type='dji_ofdm',type_score=.95,named=True,reason='named',distance=4.5,distance_limit=20.,score_limit=.6,
                     models=[dict(name='Mini 4 Pro',score=.8),dict(name='Air 3S',score=.15),dict(name='Avata 2',score=.05)])
             if a.model.endswith('baduniversal'):result['universal']['interval']['types']['dji_ofdm']=1.5
+            if a.model.endswith('refuseduniversal'):     # the worker's form for a refused interval
+                result.update(status='insufficient_evidence',candidate='',top_candidates=[],reason=['nonfinite or constant IQ'])
+                result['universal']=dict(schema='rfmon.ml.universal.v1',interval=dict(types={},allowed=[]))
+                if int(r.get('interval_index',0))==int(r.get('interval_count',1))-1:
+                    result['universal']['capture']=dict(schema='rfmon.ml.universal.v1.capture',intervals=int(r.get('interval_count',1)),
+                        type=None,models=[],named=False,reason='incomplete capture (an interval was refused: nonfinite or constant IQ)')
         if r.get('dsp_triage') in (True,'true','1'):
             result['dsp_triage']=dict(schema='rfmon.ml.dsp_triage.v1',mode='observe',route='model',
                 assessment='unresolved_activity',review_flag='noise_like_review_only',reason='fixture',

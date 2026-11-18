@@ -1,5 +1,15 @@
 # Universal drone classifier: C5 scorecard
 
+> **Update 18 Nov (E4, package v3):** DroneRFa added (28 models). Never-seen models typed right
+> in 0.97–1.00 of captures (v2 0.79–0.86, on a different and larger never-seen set); unknown
+> models named as known in 1.2–3.0% of captures and 0–1.5% of recordings (v2: 0; gate ≤ 5%);
+> known units named 0.63 of captures, right 0.99; site background unchanged (0 rows).
+> Held-out background B (16 Nov): drone-link timing in its first 18 minutes and the user is not
+> sure what was on, so only minutes 18.5–101 count: v3 typed 1 of 834 captures, 0 rows, 0 named
+> (v2: 2 typed, 0 rows). With the 13 Nov held-out minutes that is 0 rows in 1.71 h, which bounds
+> false rows below about 1.8 / h (95%); the ≤ 1 / h gate needs about 1.3 h more of clean
+> background. Details: changelog 2026-11-18.
+
 > **Update 14 Nov (later):** the 13 Nov "no-drone" hour had a Phantom (Lightbridge) at 2.4 GHz
 > from minute 18. Those captures are now excluded and the model retrained (C2d, package v2):
 > never-seen-model type 0.89 (was 0.64–0.70), site background views falsely typed 0.5–0.6%

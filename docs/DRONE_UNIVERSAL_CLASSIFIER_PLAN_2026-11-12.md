@@ -302,8 +302,8 @@ stop the work until the user decides.
 - [ ] **E2. Live run** with the user's drones and a no-drone hour. Done when: results are
       written up with what was and was not seen.
 - [ ] **E3. Sealed DRFF-R2 test (gate).** Run once, only on the user's instruction, after E2.
-- [ ] **E4. DroneRFa added** when its download completes: inventory, views, retrain, scorecard
-      compared with C2.
+- [x] **E4. DroneRFa added** when its download completes: inventory, views, retrain, scorecard
+      compared with C2. Done 18 Nov: package v3 (28 models), changelog 2026-11-18.
 
 ### Running alongside, not blocking
 

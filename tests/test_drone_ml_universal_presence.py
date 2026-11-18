@@ -27,4 +27,9 @@ class PresenceTests(unittest.TestCase):
         self.assertEqual(label(row,{'lag_ratios':{K30:7}})['expected_timing'],K30)
         self.assertEqual(label(row,{'lag_ratios':{K15:7,K30:2}})['expected_timing'],K15)
         self.assertEqual(label(row,{'lag_ratios':{KLB:9}})['state'],'unknown')
+    def test_measured_dronerfa_models_need_15khz(self):
+        for model in ('Phantom 4 RTK','DJI link module (self-built)'):
+            row=self.row(model,'dji_ofdm','DroneRFa')
+            self.assertEqual(label(row,{'lag_ratios':{K15:7}})['expected_timing'],K15)
+            self.assertEqual(label(row,{'lag_ratios':{K30:9}})['state'],'unknown')
 if __name__=='__main__':unittest.main()

@@ -16,11 +16,13 @@ from .universal_inventory import read_json
 
 K15='lte_like_15kHz'; K30='lte_like_30kHz'; KLB='measured_32.8kHz'
 MODELS_15={'Air 2','Air 2S','Mavic Pro','Mini 2','Mini 3','Mini 3 Pro','Mini 5 Pro',
-           'Mavic 3','Mavic 3 Pro','FPV','Matrice 300','Mavic 2 Enterprise Advanced'}
+           'Mavic 3','Mavic 3 Pro','FPV','Matrice 300','Mavic 2 Enterprise Advanced',
+           'Phantom 4 RTK','DJI link module (self-built)'}   # last two: measured on DroneRFa (E4), 15 kHz only
 MODELS_30={'Mini 4 Pro','Avata 2','Air 3S'}
-# E4 (DroneRFa): DJI OFDM models whose link family is not yet measured in this corpus: present when
-# either OFDM timing stands out (the classifier's family gate allows dji_ofdm on either).
-MODELS_EITHER={'Phantom 4 RTK','Matrice 30T','Avata','DJI link module (self-built)'}
+# E4 (DroneRFa): DJI OFDM models whose link family is not settled by measurement (Matrice 30T fires
+# 15 and 30 kHz about equally, Avata weakly on both): present when either OFDM timing stands out
+# (the classifier's family gate allows dji_ofdm on either). data/drone_ml/2026-11-16/e4/family_measure.txt
+MODELS_EITHER={'Matrice 30T','Avata'}
 
 
 def label(row,facts):

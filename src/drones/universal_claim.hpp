@@ -81,6 +81,12 @@ inline bool matches(const ml::Result& r, const Key& key, const std::string& hash
            std::abs(r.center - key.center) <= 1e3;
 }
 
+// One capture decision: run, session, capture and centre (kHz). Used to count each decision once.
+inline std::string capture_id(const ml::Result& r) {
+    return r.run + "/" + std::to_string(r.session) + "/" + std::to_string(r.capture) + "/" +
+           std::to_string(std::llround(r.center / 1e3));
+}
+
 // Fold capture decisions into a claim. `group` empty = classifier-only (no family check).
 inline UniversalClaim claim_from(const std::vector<const ml::UniversalCapture*>& decisions,
                                  const std::string& group, const ml::Snapshot& s) {
@@ -143,12 +149,15 @@ public:
         if (s.model_hash != hash_) { sightings_.clear(); seen_.clear(); hash_ = s.model_hash; }
         for (const auto& r : s.history) {
             if (!r.universal || !r.capture_decision.present || r.model_hash != hash_ || !std::isfinite(r.center)) continue;
-            const auto id = r.run + "/" + std::to_string(r.session) + "/" + std::to_string(r.capture) + "/" +
-                            std::to_string(std::llround(r.center / 1e3));
+            const auto id = capture_id(r);
             if (!seen_.insert(id).second) continue;
             seen_order_.push_back(id);
             if (r.capture_decision.type.empty()) continue;
-            sightings_.push_back({{r.run, r.session, r.capture, r.center}, std::min(r.completed, now), r.capture_decision});
+            // History is newest first: insert in time order (expiry and the row rule rely on it).
+            Sighting x{{r.run, r.session, r.capture, r.center}, std::min(r.completed, now), r.capture_decision};
+            const auto at = std::upper_bound(sightings_.begin(), sightings_.end(), x.observed,
+                                             [](Clock::time_point t, const Sighting& y) { return t < y.observed; });
+            sightings_.insert(at, std::move(x));
         }
         while (!sightings_.empty() && now - sightings_.front().observed > classifier_row_merge) sightings_.pop_front();
         while (seen_order_.size() > 4096) { seen_.erase(seen_order_.front()); seen_order_.pop_front(); }
@@ -163,19 +172,27 @@ public:
         for (const auto& [slot, list] : slots) {
             const auto centre = double(slot.first) * 1e6;
             if (covered(rows, centre)) continue;
-            // C4 row rule: open on a second typed capture within the window; merge gaps up to the merge time.
+            // C4 row rule (universal_c4.background_rows): a row starts at a capture whose next capture
+            // follows within the window; captures within the merge time extend it. A capture that
+            // starts no row is not part of a later one. The latest row is the one shown.
             std::vector<const Sighting*> run;
             bool open = false;
             for (std::size_t i = 0; i < list.size(); ++i) {
-                if (!run.empty() && list[i]->observed - run.back()->observed > classifier_row_merge) { run.clear(); open = false; }
-                run.push_back(list[i]);
-                if (!open && run.size() >= 2 && run.back()->observed - run[run.size() - 2]->observed <= classifier_row_window) open = true;
+                if (open && list[i]->observed - run.back()->observed <= classifier_row_merge) { run.push_back(list[i]); continue; }
+                open = false;
+                run.clear();
+                if (i + 1 < list.size() && list[i + 1]->observed - list[i]->observed <= classifier_row_window) {
+                    open = true;
+                    run.push_back(list[i]);
+                }
             }
             if (!open || now - run.back()->observed > classifier_row_lifetime) continue;
             std::vector<const ml::UniversalCapture*> decisions;
             for (const auto* x : run) decisions.push_back(&x->decision);
             auto claim = claim_from(decisions, "", s);
             claim.classifier_only = true;
+            claim.first_observed = run.front()->observed;
+            claim.last_observed = run.back()->observed;
             const auto id = "classifier:" + slot.second + "@" + std::to_string(slot.first) + "MHz";
             auto& row = rows[id];
             row.id = id;
@@ -191,6 +208,12 @@ private:
         for (const auto& [id, row] : rows) {
             if (row.universal && row.universal->classifier_only) continue;
             if (row.timing && centre >= row.link_low_hz - link_join_hz && centre <= row.link_high_hz + link_join_hz) return true;
+            // DroneID without a measured link: the packet was heard on the drone's own link.
+            // (Remote ID rows are not used: their frequency is the broadcast channel.)
+            if (row.packet) {
+                const double at = row.packet->frequency > 0 ? row.packet->frequency : row.packet_key.center;
+                if (std::abs(centre - at) <= link_join_hz) return true;
+            }
         }
         return false;
     }

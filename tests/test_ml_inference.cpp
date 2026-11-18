@@ -83,6 +83,18 @@ int main(int argc,char** argv) {
         require(first.interval_types.at("dji_ofdm")==.9,"interval type scores lost");
     }
     worker.stop();
+    options.model="/refuseduniversal";require(worker.start(options),"refused universal fixture start failed");
+    until([&]{return worker.snapshot().ready;});
+    {const auto before=worker.snapshot().processed;          // counters and history carry over from the last run
+    worker.observe(spread,spread_capture);
+    until([&]{return worker.snapshot().processed>=before+3;});}
+    {
+        auto u=worker.snapshot();const auto& last=u.history[0];
+        require(u.error.empty()&&u.state!="Failed","refused interval with a capture decision rejected");
+        require(last.universal&&last.interval_types.empty()&&last.capture_decision.present&&last.capture_decision.type.empty()&&
+                !last.capture_decision.named&&last.capture_decision.reason.find("refused")!=std::string::npos,"refused capture decision lost");
+    }
+    worker.stop();
     options.model="/baduniversal";require(worker.start(options),"bad universal fixture start failed");
     until([&]{return worker.snapshot().ready;});worker.observe(iq,c);
     until([&]{return worker.snapshot().state=="Failed";});
