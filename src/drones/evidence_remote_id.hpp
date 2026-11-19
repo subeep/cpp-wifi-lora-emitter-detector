@@ -88,6 +88,7 @@ inline std::string evidence_sources(const Detection& row) {
     if (row.packet) add("DroneID");
     if (!row.remote_id.empty()) add("Remote ID");
     if (row.classifier_hint) add("Classifier hint");
+    if (row.universal && (row.universal->accepted || row.universal->classifier_only)) add("Classifier");
     return sources;
 }
 }

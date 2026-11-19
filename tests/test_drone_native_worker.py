@@ -1,5 +1,6 @@
 """Offline worker protocol tests; synthetic silence is not a no-drone corpus."""
 import json
+import math
 import struct
 import subprocess
 import sys
@@ -15,6 +16,29 @@ def frame(data, rate=10e6, time=0., epoch=1, centre=2444.5e6):
 
 
 class NativeWorkerTests(unittest.TestCase):
+    def check_positions(self, packet):
+        raw = bytes.fromhex(packet['payload_hex'])
+        for role, lat_offset, lon_offset in (('drone', 27, 23), ('pilot', 51, 55), ('home', 63, 59)):
+            lat, lon = (struct.unpack_from('<i', raw, offset)[0] / 1e7 * 180 / math.pi
+                        for offset in (lat_offset, lon_offset))
+            keys = (f'reported_{role}_lat', f'reported_{role}_lon')
+            if (lat or lon) and abs(lat) <= 90 and abs(lon) <= 180:
+                self.assertAlmostEqual(packet[keys[0]], lat)
+                self.assertAlmostEqual(packet[keys[1]], lon)
+            else:
+                for key in keys:
+                    self.assertNotIn(key, packet)
+        north, east = struct.unpack_from('<hh', raw, 35)
+        for key, expected in (
+                ('reported_height_m', struct.unpack_from('<h', raw, 33)[0]),
+                ('reported_altitude_m', struct.unpack_from('<h', raw, 31)[0]),
+                ('reported_speed_m_s', math.hypot(north, east) / 100)):
+            if expected:
+                self.assertAlmostEqual(packet[key], expected)
+            else:
+                self.assertNotIn(key, packet)
+        self.assertFalse(packet['motion_altitude_units_verified'])
+
     def run_frames(self, data, *args):
         run = subprocess.run([WORKER, *args], input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
         self.assertEqual(run.returncode, 0, run.stderr.decode())
@@ -39,12 +63,16 @@ class NativeWorkerTests(unittest.TestCase):
         self.assertEqual((p['contract'], p['payload_version'], p['identity_readable']), ('droneid-packet-v1', 2, True))
         self.assertEqual((p['product_code'], p['model'], p['model_source']), (58, 'Mavic Air 2', 'table'))
         self.assertEqual(p['reported_model'], 'Mavic Air 2')
+        self.check_positions(p)
+        self.assertAlmostEqual(p['reported_pilot_lat'], 51.44622992905165)
+        self.assertAlmostEqual(p['reported_pilot_lon'], 7.267104464963845)
 
     def test_second_recorded_model_and_channel_selection(self):
         data = (ROOT/'tests/fixtures/drones/dji_mini2.fc32').read_bytes()
         packets = self.run_frames(frame(data, 50e6))[0]['native_packets']
         self.assertGreaterEqual(len(packets), 1)
         for p in packets:
+            self.check_positions(p)
             self.assertEqual((p['product_code'], p['model'], p['identity_readable']), (63, 'Mini 2', True))
             # The fixture's centre metadata is inherited, so the automatic pass finds it; a payload
             # is never reported twice even though documented channels are tried as well.

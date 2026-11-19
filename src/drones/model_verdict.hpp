@@ -9,10 +9,15 @@
 //                models measured in it; a classifier hint, if any, is named as a hint.
 //   Reported   - only a Remote ID broadcast: it carries an ID and an aircraft type, no model.
 //   Unknown    - DroneID was read but its product code is not in the table.
+//   Classifier - only the universal classifier saw it (no link, DroneID or Remote ID); weakest.
+// A Family row may carry the classifier's ranked models inside the measured family.
 // Nothing here creates or removes a row; it only words what the row's evidence supports.
 #include "evidence_claims.hpp"
 
 namespace rfmon::drone_claims {
+
+// Captures of a row that must name models before the classifier's list is shown (C4 row rule).
+inline constexpr std::size_t minimum_named_classifier_captures = 2;
 
 // How each model's DroneID was found in recordings: 'r' readable, 'e' encrypted (INFP/CRYP),
 // 'b' both (depends on firmware or region). Models not listed are unknown. Sources: DRFF-R2
@@ -40,13 +45,14 @@ inline const char* link_family(const std::string& group) {
     return "Drone-type link";
 }
 
-enum class Tier { Confirmed, Likely, Family, Reported, Unknown };
+enum class Tier { Confirmed, Likely, Family, Reported, Unknown, Classifier };
 inline const char* tier_name(Tier t) {
     switch (t) {
         case Tier::Confirmed: return "Confirmed";
         case Tier::Likely: return "Likely";
         case Tier::Family: return "Family";
         case Tier::Reported: return "Reported";
+        case Tier::Classifier: return "Classifier";
         default: return "Unknown";
     }
 }
@@ -57,6 +63,19 @@ struct Verdict {
     std::string basis;   // one line: what the answer rests on
     std::string detail;  // optional second line: what is not ruled out, hints, disagreements
 };
+
+inline const char* type_words(const std::string& type) {
+    if (type == "dji_ofdm") return "DJI OFDM link";
+    if (type == "lightbridge") return "DJI Lightbridge link";
+    if (type == "hopping_controller") return "Hopping remote controller";
+    return "Drone-type signal";
+}
+
+inline std::vector<std::string> names_of(const UniversalClaim& c) {
+    std::vector<std::string> out;
+    for (const auto& m : c.models) out.push_back(m.name);
+    return out;
+}
 
 inline std::string join(const std::vector<std::string>& names, const char* last = " or ") {
     std::string out;
@@ -100,6 +119,10 @@ inline Verdict verdict(const Detection& row) {
         if (!row.group.empty()) v.detail = std::string(link_family(row.group)) + " (" + link + ")";
         return v;
     }
+    const auto* u = row.universal ? &*row.universal : nullptr;
+    const auto classifier_counts = [&] {
+        return std::to_string(u->named) + " of " + std::to_string(u->captures) + " captures";
+    };
     if (row.packet && row.packet->encrypted) {
         v.tier = Tier::Likely;
         v.model = in_group.encrypting.empty() ? "DJI, recent model" : join(in_group.encrypting);
@@ -107,6 +130,9 @@ inline Verdict verdict(const Detection& row) {
                                     : "Encrypted DJI DroneID with a " + link;
         if (!in_group.not_ruled_out.empty() && !row.group.empty())
             v.detail = "Not ruled out (DroneID behaviour unknown): " + join(in_group.not_ruled_out, ", ");
+        if (u && u->accepted && !u->models.empty())
+            v.detail += (v.detail.empty() ? "" : ". ") + std::string("Classifier ranks: ") + join(names_of(*u), ", ") +
+                        " (" + classifier_counts() + ")";
         return v;
     }
     if (row.packet) {   // checksum-valid DroneID that is neither readable nor a known encrypted form
@@ -120,10 +146,31 @@ inline Verdict verdict(const Detection& row) {
         v.tier = Tier::Family;
         v.model = link_family(row.group);
         v.basis = "Video link only (" + link + "); no DroneID decoded";
+        if (u && u->accepted && !u->models.empty()) {
+            v.model += ": likely " + join(names_of(*u));
+            v.basis += "; the classifier names the model inside this family (" + classifier_counts() + ")";
+            if (!u->accuracy.empty()) v.detail = "Classifier measured on unseen data: " + u->accuracy + ". ";
+        } else if (u && u->typed) {
+            v.detail = "Classifier: " + std::string(type_words(u->type)) + " agrees, model unknown (named in " +
+                       classifier_counts() + "; needs " + std::to_string(minimum_named_classifier_captures) + "). ";
+        }
+        if (u && u->disagreements)
+            v.detail += "Classifier type disagrees with the link in " + std::to_string(u->disagreements) + " of " +
+                        std::to_string(u->captures) + " captures; no model taken from those. ";
         if (row.classifier_hint)
-            v.detail = "Classifier hint: " + row.classifier_hint->model + " (" + std::to_string(row.classifier_hint->votes) +
+            v.detail += "Classifier hint: " + row.classifier_hint->model + " (" + std::to_string(row.classifier_hint->votes) +
                        " of " + std::to_string(row.classifier_hint->voting_captures) + " link captures). ";
         v.detail += "Measured in this group: " + join(in_group.measured, ", ");
+        return v;
+    }
+    if (u && u->classifier_only && row.remote_id.empty()) {
+        v.tier = Tier::Classifier;
+        v.model = u->accepted && !u->models.empty() ? std::string(type_words(u->type)) + ": likely " + join(names_of(*u))
+                                                   : type_words(u->type);
+        v.basis = "Classifier only: no link timing, DroneID or Remote ID (development model; "
+                  "background false-row rate not yet established)";
+        v.detail = std::to_string(u->typed) + " typed captures, models named in " + classifier_counts();
+        if (!u->accuracy.empty()) v.detail += ". Measured on unseen data: " + u->accuracy;
         return v;
     }
     if (!row.remote_id.empty()) {

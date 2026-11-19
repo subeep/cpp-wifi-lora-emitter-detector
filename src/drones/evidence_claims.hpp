@@ -431,6 +431,20 @@ struct ClassifierHint {
     std::size_t votes{}, voting_captures{};
 };
 
+// What the universal classifier says about a row (universal_claim.hpp). For a row with a
+// measured link it only names a model inside that link's family; a classifier-only row
+// (no link, DroneID or Remote ID) carries the classifier's type alone.
+struct UniversalModelScore { std::string name; double score{}; };
+struct UniversalClaim {
+    std::string type;                         // signal type the classifier agrees on ("" = none)
+    std::vector<UniversalModelScore> models;  // ranked, at most 3, mean score over named captures
+    std::size_t captures{}, typed{}, named{}, disagreements{};
+    bool accepted{};                          // a model list is shown: enough captures named one
+    bool classifier_only{};                   // the row exists only because of the classifier
+    Clock::time_point first_observed{}, last_observed{};  // classifier-only rows: first and last capture of the row
+    std::string accuracy;                     // measured accuracy of the top model, in words
+};
+
 struct RemoteIdSighting {
     std::string track, reported_id, ua_type, transport;
     bool serial_id{};
@@ -451,6 +465,7 @@ struct Detection {
     std::vector<Key> link_captures;
     std::optional<ClassifierHint> classifier_hint;
     std::string only_classifier_class;
+    std::optional<UniversalClaim> universal;
     std::vector<RemoteIdSighting> remote_id;
 };
 
@@ -545,6 +560,7 @@ inline std::map<std::string, Detection> detections(
 inline std::string display_identity(const Detection& row) {
     if (!row.packet) {
         if (!row.remote_id.empty()) return "Remote ID broadcast";
+        if (row.universal && row.universal->classifier_only) return "Classifier only (" + row.universal->type + ")";
         return "Link only (" + row.group + ")";
     }
     const auto& packet = *row.packet;

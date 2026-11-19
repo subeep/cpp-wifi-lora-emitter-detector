@@ -35,6 +35,7 @@ inline Clock::time_point row_observed(const Detection& row, Clock::time_point no
     if (row.timing) seen = row.timing->observed;
     if (row.packet) seen = std::max(seen, row.packet->observed);
     for (const auto& rid : row.remote_id) seen = std::max(seen, rid.observed);
+    if (row.universal && row.universal->classifier_only) seen = std::max(seen, row.universal->last_observed);
     return seen == Clock::time_point{} ? now : std::min(seen, now);
 }
 
@@ -43,6 +44,8 @@ inline Clock::time_point row_first_observed(const Detection& row, Clock::time_po
     if (row.packet && row.packet->observed != Clock::time_point{}) now = std::min(now, row.packet->observed);
     for (const auto& rid : row.remote_id)
         if (rid.observed != Clock::time_point{}) now = std::min(now, rid.observed);
+    if (row.universal && row.universal->classifier_only && row.universal->first_observed != Clock::time_point{})
+        now = std::min(now, row.universal->first_observed);
     return now;
 }
 
@@ -79,7 +82,8 @@ public:
         last_refresh_ = now;
         std::map<std::string, const Detection*> rows;
         for (const auto& [id, row] : detections) {
-            if (row.group.empty() && !row.packet && row.remote_id.empty()) continue;
+            const bool classifier_only = row.universal && row.universal->classifier_only;
+            if (row.group.empty() && !row.packet && row.remote_id.empty() && !classifier_only) continue;
             // Readable serials outrank an attached link. For an anonymous DroneID/link
             // combination, the link remains the stable identity across decoder expiry.
             std::string key = id;
@@ -230,6 +234,7 @@ private:
             track.pending_update |= copy_positions(track.positions, rid.positions);
         }
         if (row.classifier_hint) track.evidence.insert("Classifier hint");
+        if (row.universal && (row.universal->accepted || row.universal->classifier_only)) track.evidence.insert("Classifier");
         track.conflict |= row.conflict;
         auto identity = track.serial.empty() ? display_identity(row) : track.serial + " (self-reported)";
         if (track.serial.empty() && !track.remote_ids.empty())

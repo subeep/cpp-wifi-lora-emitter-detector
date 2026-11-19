@@ -6,6 +6,8 @@
 #include <chrono>
 #include <complex>
 #include <condition_variable>
+#include <map>
+#include <optional>
 #include <mutex>
 #include <memory>
 #include <string>
@@ -25,6 +27,23 @@ struct StftPreview {
     int nfft=256, hop=256;
     std::vector<unsigned char> pixels; // Frequency ascending, then time.
 };
+// Universal classifier (tools/drone_ml/universal_worker.py). One capture decision per capture,
+// sent with the capture's last interval: the type (empty = none), the ranked models of that type
+// and whether they pass the package's naming limits. Rows and agreement are the app's job.
+struct UniversalModel { std::string name; double score=0; };
+struct UniversalCapture {
+    bool present=false, named=false;
+    std::string type, best_type, reason;
+    double type_score=0;
+    std::optional<double> distance, distance_limit, score_limit;
+    std::vector<UniversalModel> models;
+    size_t intervals=0;
+};
+// Measured on data never trained on (C4 report of the packaged seed), in captures.
+struct ModelAccuracy {
+    size_t same_unit_captures=0, same_unit_named=0, same_unit_right=0;
+    size_t unseen_captures=0, unseen_named=0, unseen_right=0;
+};
 struct Result {
     std::string status, candidate, accepted, reason, raw, source, band, device;
     std::string model_hash, architecture, run;
@@ -39,6 +58,9 @@ struct Result {
     std::shared_ptr<const StftPreview> stft;
     std::chrono::steady_clock::time_point completed{};
     bool current=false;
+    bool universal=false;
+    std::map<std::string,double> interval_types;   // gated type scores of this interval
+    UniversalCapture capture_decision;              // present on a capture's last interval
 };
 struct Snapshot {
     std::string state="Disabled", error, model_hash, architecture, classes;
@@ -52,6 +74,11 @@ struct Snapshot {
     double max_observer_ms=0;
     size_t queued=0;
     std::vector<Result> history;
+    bool universal=false;                          // the loaded model is a universal package
+    std::string universal_decision;
+    std::vector<std::string> universal_types;
+    std::map<std::string,std::string> model_types; // model -> signal type
+    std::map<std::string,ModelAccuracy> accuracy;
 };
 struct Options {
     std::string python, script, model; int deadline_ms=15000;

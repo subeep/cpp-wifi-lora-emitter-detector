@@ -53,6 +53,14 @@ private:
         }
         if (!row.only_classifier_class.empty())
             result["only_classifier_class"] = row.only_classifier_class;
+        if (row.universal) {
+            const auto& u = *row.universal;
+            auto models = Json::array();
+            for (const auto& m : u.models) models.push_back({{"model", m.name}, {"score", m.score}});
+            result["universal_classifier"] = {{"type", u.type}, {"models", models}, {"accepted", u.accepted},
+                {"classifier_only", u.classifier_only}, {"captures", u.captures}, {"typed", u.typed},
+                {"named", u.named}, {"disagreements", u.disagreements}, {"accuracy", u.accuracy}};
+        }
         if (!row.remote_id.empty()) {
             auto& list = result["remote_id"] = Json::array();
             for (const auto& rid : row.remote_id)

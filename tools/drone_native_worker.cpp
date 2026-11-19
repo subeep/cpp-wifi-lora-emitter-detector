@@ -197,8 +197,28 @@ int main(int argc,char** argv) {
                     p["payload_shift"]=info.payload_shift;
                     if(parsed){p["reported_serial"]=telemetry.serial;
                         p["reported_model"]=info.model.empty()?telemetry.type_name:info.model;
-                        p["sequence"]=telemetry.sequence;p["reported_drone_lat"]=telemetry.drone_lat;
-                        p["reported_drone_lon"]=telemetry.drone_lon;}
+                        p["sequence"]=telemetry.sequence;
+                        const auto position=[&](const char* lat_key,const char* lon_key,double lat,double lon){
+                            if(std::isfinite(lat)&&std::isfinite(lon)&&std::abs(lat)<=90&&
+                               std::abs(lon)<=180&&(lat!=0||lon!=0)){
+                                p[lat_key]=lat;p[lon_key]=lon;
+                            }
+                        };
+                        position("reported_drone_lat","reported_drone_lon",telemetry.drone_lat,telemetry.drone_lon);
+                        if(telemetry.pilot_valid)
+                            position("reported_pilot_lat","reported_pilot_lon",telemetry.pilot_lat,telemetry.pilot_lon);
+                        if(telemetry.home_valid)
+                            position("reported_home_lat","reported_home_lon",telemetry.home_lat,telemetry.home_lon);
+                        const auto nonzero=[&](const char* key,double value){
+                            if(std::isfinite(value)&&value!=0)p[key]=value;
+                        };
+                        nonzero("reported_height_m",telemetry.height_m);
+                        nonzero("reported_altitude_m",telemetry.altitude_m);
+                        // Horizontal ground speed; units follow the decoder and remain provisional
+                        // until a local flight checks the motion/altitude scaling.
+                        nonzero("reported_speed_m_s",std::hypot(telemetry.v_north,telemetry.v_east));
+                        p["motion_altitude_units_verified"]=false;
+                    }
                     // Version 3 and padded records: the vendored parser declines them, but the
                     // serial and product code are plain text at the version-2 offsets.
                     else if(info.identity_readable){p["reported_serial"]=info.serial;p["reported_model"]=info.model;}
