@@ -16,6 +16,18 @@ int main(){char tmp[]="/tmp/rfmon-capture-provenance-XXXXXX";if(!mkdtemp(tmp))re
     timing.requested_samples=8;timing.gain_db=20;timing.actual_rf_hz=2412e6;timing.retuned=false;
     timing.overflows={{3,true,6000000000},{6,false,0}};
     auto restored=capture_timing_from_json(nlohmann::json::parse(capture_timing_json(timing).dump()),8);
+    // Tune check (UHD RX: samples centred at actual_rf - actual_dsp). Values measured on the X310.
+    check(tuned_to(2450e6,2450e6,0)&&tuned_to(2437.3e6,2437301587.302,1587.302)&&tuned_to(4410e6,4400e6,-10e6),
+          "Tunes the DSP stage completes are accepted");
+    check(!tuned_to(5735e6,4400e6,-20e6)&&!tuned_to(2450e6,2450.1e6,0)&&!tuned_to(2450e6,NAN,0),
+          "Tunes outside the front end's range are refused");
+    {
+        auto off=timing;off.off_frequency=true;
+        auto j=capture_timing_json(off);
+        check(capture_timing_from_json(nlohmann::json::parse(j.dump()),8).off_frequency,"Off-frequency flag round-trips");
+        j.erase("off_frequency");
+        check(!capture_timing_from_json(j,8).off_frequency,"Older timing without the flag still loads");
+    }
     check(capture_sample_time(restored,1e6,8,2)==5000002000,"Pre-overflow hardware anchor");
     check(capture_sample_time(restored,1e6,8,3)==6000000000,"Overflow boundary uses resume anchor");
     check(!capture_sample_time(restored,1e6,8,6)&&!capture_sample_time(restored,1e6,8,8),"Unknown gap/out-of-range sample has no time");

@@ -57,6 +57,9 @@ struct Shared {
     std::vector<Call> calls;
     std::vector<cf> subghz;  // sub-GHz visit content (5 MSps), padded with noise
     std::atomic<int> overflow_on_call{-1};
+    // 1: centres above 4.4 GHz come back off frequency (an SBX front end); 2: every capture is empty.
+    std::atomic<int> radio_mode{0};
+    std::atomic<int> connects{0};
     std::vector<Call> snapshot() { std::lock_guard<std::mutex> l(mu); return calls; }
 };
 
@@ -70,6 +73,16 @@ public:
     CaptureResult capture_detailed(double center, double rate, double duration, double settle, bool retune) override {
         const double t0 = now_s();
         std::this_thread::sleep_for(std::chrono::duration<double>(settle + duration));  // real-time pacing
+        if (const int mode = s_->radio_mode.load(); mode == 2 || (mode == 1 && center > 4.4e9)) {
+            CaptureResult r;
+            r.sample_rate_hz = rate;
+            r.timing.off_frequency = mode == 1;
+            r.timing.actual_rf_hz = mode == 1 ? 4400e6 : center;
+            r.timing.actual_dsp_hz = mode == 1 ? -20e6 : 0;
+            std::lock_guard<std::mutex> l(s_->mu);
+            s_->calls.push_back({center, rate, duration, settle, t0, now_s(), retune});
+            return r;
+        }
         const size_t n = size_t(std::llround(rate * duration));
         CaptureResult r;
         r.sample_rate_hz = rate;
@@ -173,6 +186,7 @@ int main() {
             if (int ms = observer_sleep_ms.load()) std::this_thread::sleep_for(std::chrono::milliseconds(ms));
         });
         ScannerTestAccess::set_device_factory(scanner, [shared](const DeviceProfile&, std::optional<double>) {
+            ++shared->connects;
             return std::unique_ptr<CaptureDevice>(new FakeRadio(shared));
         });
         const auto schedule = test_schedule();
@@ -359,6 +373,24 @@ int main() {
         // The first call after the mark may belong to the abandoned cycle.
         for (size_t i = mark + 1; i < after_change.size(); ++i) only5_ok = only5_ok && after_change[i].center > 5e9;
         check(only5_ok, "After the change only the enabled 5 GHz slot is visited");
+
+        // --- A front end that cannot reach 5 GHz (SBX) drops those captures without reconnecting ---
+        {
+            const int connects = shared->connects.load();
+            const uint64_t empty = scanner.coordinated_status().empty_captures;
+            shared->radio_mode = 1;
+            const size_t off_mark = shared->snapshot().size();
+            check(wait_for([&] { return shared->snapshot().size() >= off_mark + 8; }, 20), "Off-frequency visits continue");
+            check(shared->connects.load() == connects && !scanner.status().rx_stalled,
+                  "Off-frequency drops are not a stalled receiver (no reconnect)");
+            check(scanner.coordinated_status().empty_captures >= empty + 6, "Off-frequency visits count as empty captures");
+            // Control: the same run of empty captures without the off-frequency mark is a stall.
+            shared->radio_mode = 2;
+            check(wait_for([&] { return shared->connects.load() > connects; }, 20), "Plain empty captures still trigger the reconnect");
+            shared->radio_mode = 0;
+            const size_t back = shared->snapshot().size();
+            check(wait_for([&] { return shared->snapshot().size() >= back + 4; }, 20), "Acquisition resumes after the reconnect");
+        }
 
         // --- Leaving coordinated mode returns to the ordinary band mode ---
         scanner.set_active_band(BAND_WIFI_5G);

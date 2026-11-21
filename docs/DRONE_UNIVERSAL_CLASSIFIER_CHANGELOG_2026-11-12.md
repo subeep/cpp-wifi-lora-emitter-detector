@@ -939,3 +939,54 @@ the ≤ 1 / h gate needs about 1.3 h more of clean background.
 
 **DroneRFa archive MD5** after the repair: `50fd4a8ff6975fe88e746b461650f9cc`, matching the
 published value. The file keeps its `.part` name because the view metadata and tests refer to it.
+
+## 2026-11-18 — Second X310 flashed; SBX boards; tuning guard
+
+X310 326CEFE was flashed (with the user's go-ahead) with the UHD 4.1 HG image
+(`/usr/share/uhd/images/usrp_x310_fpga_HG.bit`, inventory `uhd-26793b8`) and power-cycled: FPGA
+version 38.0, UHD accepts it, 0.5 s at 2450 MHz streams with no overflow, 0 CRC errors. Its two
+daughterboards are **SBX v5 (400–4400 MHz)**; the first unit, 326CF02, has UBX-160 (10–6000
+MHz). A 5735 MHz request on this unit tunes to 4420 MHz (RF LO clamped at 4400 MHz, DSP shift
+−20 MHz), so it cannot receive 5.2/5.8 GHz and cannot extend the held-out background (recording
+postponed until a UBX unit is back).
+
+**Bug found and fixed:** the app recorded the tune result but never compared it with the
+request, so on this unit every 5 GHz visit would have been analysed (drone chain, classifier,
+Wi-Fi) as 5.8 GHz while holding 4.4 GHz samples. Now `UsrpCapture::capture_detailed` checks
+`tuned_to(requested, actual_rf, actual_dsp)` (centre `actual_rf − actual_dsp`, measured on the
+X310: 0 Hz error at 2450, 2437.3 and 4410 MHz; tolerance 10 kHz) and returns an empty capture
+marked `off_frequency` (in the timing JSON; older recordings load as false), with one stderr line
+per centre. The scanner does not count these drops as a receiver stall: three empty captures
+in a row would otherwise reconnect the radio every coordinated cycle.
+Files: `src/capture_timing.hpp`, `src/capture_timing_json.hpp`, `src/sdr_capture.{hpp,cpp}`,
+`src/scanner.cpp`. Tests: `test_capture_provenance` (tune check, flag round trip, older JSON),
+`test_scanner_coordinated` (fake SBX: 5 GHz drops, no reconnect, counted as empty; control:
+plain empty captures still reconnect). Live, 60 s coordinated on the SBX unit: 66 of 66 5 GHz
+visits dropped with one message per centre, radio stayed connected, sub-GHz 24/24 and 2.4 GHz
+42/47 captured, 0 CRC errors.
+
+## 2026-11-18 — E1: held-out sessions replayed through the app path
+
+`tools/drone_session_replay.cpp` (`build/drone_session_replay`) feeds each clean capture of a
+recorded session through the app's own path: `ml::Inference::observe` (three dispersed 8 ms
+intervals) → production `universal_worker.py` → `drone_claims::ClassifierSightings` (row rule),
+one capture at a time, each decision stamped with the capture's recorded time. No radio, no
+link rows, so every classifier row counts as false on no-drone background.
+`data/drone_ml/2026-11-16/e4/e1_compare.py` cuts the app's exact offsets in Python
+(0, 4.92 M, 9.84 M samples; `bg_b_eval.py` used the view grid 0, 4.96 M, 9.76 M), decides every
+capture with `universal_c4` and compares capture by capture (`e1_compare.json`).
+
+| Session (package) | Captures | App path: typed / rows / named rows | Python, same samples | Identical decisions |
+|---|---|---|---|---|
+| 13 Nov min 40–60, 2.4 GHz from min 18 excluded (v3) | 127 | 1 / 0 / 0 | 1 / 0 / 0 | 127 of 127 |
+| Background B, whole session (v3) | 1,027 | 1 / 0 / 0 | 1 / 0 / 0 | 1,027 of 1,027 |
+| Background B, whole session (v2) | 1,027 | 12 / 2 / 0 | 12 / 2 / 0 | 1,027 of 1,027 |
+
+v2's two rows are the same in both (DJI OFDM at 5835 MHz, minutes 0.86–2.97, and 5855 MHz,
+2.02–3.06). On the view grid v2 typed 11 instead of 12; the interval positions move single
+decisions but not the rows. Without the minute-18 exclusion the app path opens one Lightbridge
+row at 2430 MHz over minutes 44.8–59.7 of 13 Nov, ranking Phantom 4 Pro first (not named): the
+Phantom that was present, so a true detection, not a false row.
+The replay counts a row once while its run overlaps the row shown before (the app forgets
+sightings after 300 s, so a long row's first capture moves forward). E1 done: false rows per
+hour through the app match the scorecard.

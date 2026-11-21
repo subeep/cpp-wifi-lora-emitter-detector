@@ -133,6 +133,17 @@ CaptureResult UsrpCapture::capture_detailed(double center_hz, double sample_rate
         }
         timing.actual_rf_hz = last_rf_hz_;
         timing.actual_dsp_hz = last_dsp_hz_;
+        if (!tuned_to(center_hz, last_rf_hz_, last_dsp_hz_)) {
+            // Out of the front end's range: the samples would be from another band under this
+            // capture's label. Drop the capture (nothing is streamed) and say so once per centre.
+            timing.off_frequency = true;
+            if (off_frequency_warned_.insert(std::llround(center_hz)).second)
+                std::fprintf(stderr, "UsrpCapture: %.3f MHz requested but the receiver tuned to %.3f MHz "
+                             "(outside this front end's range); these captures are dropped\n",
+                             center_hz / 1e6, (last_rf_hz_ - last_dsp_hz_) / 1e6);
+            timing.host_before_ns = timing.host_after_ns = host_now_ns();
+            return {std::vector<std::complex<float>>{}, actual_rate, false, std::move(timing)};
+        }
 
         size_t num_samps = static_cast<size_t>(actual_rate * duration_s);
         std::vector<std::complex<float>> buf(num_samps);

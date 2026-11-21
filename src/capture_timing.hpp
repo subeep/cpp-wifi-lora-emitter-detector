@@ -37,12 +37,23 @@ struct CaptureTiming {
     double actual_rf_hz = 0.0;    // tune result: RF LO actually set
     double actual_dsp_hz = 0.0;   // tune result: residual DSP shift
     bool retuned = true;          // false: already on this frequency, tune and settle skipped
+    // The tune landed away from the requested centre (the front end cannot reach it, e.g. an SBX
+    // asked for 5.8 GHz stops near 4.4 GHz). No samples are returned for such a capture.
+    bool off_frequency = false;
     // Configured gain read back after a fixed-gain change (nullopt: AGC).
     // Older recordings used requested gain; they cannot be retroactively calibrated.
     std::optional<double> gain_db;
 };
 
 
+// Largest accepted distance between the requested centre and the centre of the delivered samples
+// (actual_rf - actual_dsp, as UHD reports it for RX). UHD's DSP stage removes the LO's fractional
+// error exactly, so any real miss is the front end's range limit, megahertz or more.
+inline constexpr double tune_tolerance_hz = 10e3;
+inline bool tuned_to(double requested_hz, double actual_rf_hz, double actual_dsp_hz) {
+    const double centre = actual_rf_hz - actual_dsp_hz;
+    return std::isfinite(centre) && std::abs(centre - requested_hz) <= tune_tolerance_hz;
+}
 inline void validate_capture_timing(const CaptureTiming& t, size_t received, double rate = 0) {
     if (t.requested_samples < received || t.overflows.size() > 4096 ||
         t.host_before_ns < 0 || t.host_after_ns < 0 ||
