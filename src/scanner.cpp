@@ -826,7 +826,7 @@ Scanner::LoraCaptured Scanner::capture_lora(const lora_plan::Capture& plan, cons
     }
     c.steady_captured = now_steady_s();
     c.radio_session = radio_session_;  // a reconnect before processing starts a new session
-    note_capture_health(!c.received.samples.empty());
+    note_capture_health(!c.received.samples.empty() || c.received.timing.off_frequency);
     {
         std::lock_guard<std::mutex> lock(status_mutex_);
         status_.last_overflow = c.received.overflow;
@@ -2106,7 +2106,8 @@ void Scanner::run_coordinated(const DeviceProfile& profile, std::optional<double
             }
             rec.valid = !cr.samples.empty() && !cr.overflow && !cr.timing.timed_out && !cr.timing.exception;
             any_overflow = any_overflow || cr.overflow;
-            note_capture_health(!cr.samples.empty());
+            // An off-frequency drop is the front end's range, not a stalled receiver: no reconnect.
+            note_capture_health(!cr.samples.empty() || cr.timing.off_frequency);
             const ScanStep step{v.band, v.center_hz, v.sample_rate_hz, v.label};
             bool admitted = false;
             if (v.kind == coord::VisitKind::SubGhz) {
@@ -2432,6 +2433,7 @@ void Scanner::run() {
             CycloCaptureInputs cyclo_inputs{};
 #endif
             double actual_rate = request_rate;
+            bool off_frequency = false;  // out of the front end's range: dropped, not a stall
             for (int i = 0; i < SUB_CAPTURES_PER_STEP; ++i) {
 #ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
                 const auto cyclo_capture_epoch = cyclo_shadow_.enabled() ? cyclo_shadow_.epoch() : 0;
@@ -2464,6 +2466,7 @@ void Scanner::run() {
                         ? std::optional<double>(actual_rate) : std::nullopt;
                 }
                 any_overflow = any_overflow || cr.overflow;
+                off_frequency = off_frequency || cr.timing.off_frequency;
                 if (wifi_step) {
                     auto rec = new_capture_record(step, profile, request_rate, SUB_CAPTURE_DURATION_S, cr);
 #ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
@@ -2495,7 +2498,7 @@ void Scanner::run() {
                 }
                 if (!cr.samples.empty()) captures.push_back(std::move(cr.samples));
             }
-            note_capture_health(!captures.empty());
+            note_capture_health(!captures.empty() || off_frequency);
             if (lane_step) {
                 // Hand the whole step to the lane and go straight on to the
                 // next capture. push() waits (holding no lock) only if the

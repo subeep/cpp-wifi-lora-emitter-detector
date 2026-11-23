@@ -952,6 +952,10 @@ add_executable(test_drone_universal_claim tests/test_drone_universal_claim.cpp)
 target_link_libraries(test_drone_universal_claim PRIVATE rfmon_symbol_timing)
 target_include_directories(test_drone_universal_claim PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
 add_test(NAME drone_universal_claim COMMAND test_drone_universal_claim)
+# E1: replay a recorded X310 session through the app's classifier path (not a ctest; needs a package).
+add_executable(drone_session_replay tools/drone_session_replay.cpp src/ml_inference.cpp)
+target_link_libraries(drone_session_replay PRIVATE rfmon_symbol_timing Threads::Threads)
+target_include_directories(drone_session_replay PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
 
 # DroneID packet contract (pure byte/JSON handling; no decoder or radio).
 add_executable(test_droneid_packet tests/test_droneid_packet.cpp src/drones/droneid_packet.cpp)

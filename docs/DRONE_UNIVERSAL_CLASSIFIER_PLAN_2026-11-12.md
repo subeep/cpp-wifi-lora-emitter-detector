@@ -297,8 +297,10 @@ stop the work until the user decides.
 
 ### Stage E: proof
 
-- [ ] **E1. Offline replay** of the held-out X310 sessions through the app path. Done when:
-      false rows per hour match the scorecard within its range.
+- [x] **E1. Offline replay** of the held-out X310 sessions through the app path. Done when:
+      false rows per hour match the scorecard within its range. *(18 Nov: `drone_session_replay`;
+      2,181 of 2,181 capture decisions identical to Python on the same samples, rows identical;
+      changelog 2026-11-18.)*
 - [ ] **E2. Live run** with the user's drones and a no-drone hour. Done when: results are
       written up with what was and was not seen.
 - [ ] **E3. Sealed DRFF-R2 test (gate).** Run once, only on the user's instruction, after E2.

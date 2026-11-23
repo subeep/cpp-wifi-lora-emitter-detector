@@ -9,7 +9,7 @@ inline nlohmann::json capture_timing_json(const CaptureTiming& t) {
     return {{"device_time_valid",t.device_time_valid},{"device_time_ns",t.device_time_ns},
         {"host_before_ns",t.host_before_ns},{"host_after_ns",t.host_after_ns},
         {"requested_samples",t.requested_samples},{"overflows",gaps},
-        {"timed_out",t.timed_out},{"exception",t.exception},{"retuned",t.retuned},
+        {"timed_out",t.timed_out},{"exception",t.exception},{"retuned",t.retuned},{"off_frequency",t.off_frequency},
         {"actual_rf_hz",t.actual_rf_hz},{"actual_dsp_hz",t.actual_dsp_hz},
         {"gain_db",t.gain_db ? nlohmann::json(*t.gain_db) : nlohmann::json(nullptr)}};
 }
@@ -26,6 +26,7 @@ inline CaptureTiming capture_timing_from_json(const nlohmann::json& j, size_t re
     t.host_before_ns=j.at("host_before_ns");t.host_after_ns=j.at("host_after_ns");
     t.requested_samples=capture_sample_count(j.at("requested_samples"));
     t.timed_out=j.at("timed_out");t.exception=j.at("exception");t.retuned=j.at("retuned");
+    t.off_frequency=j.value("off_frequency",false);   // absent in older recordings
     t.actual_rf_hz=j.at("actual_rf_hz");t.actual_dsp_hz=j.at("actual_dsp_hz");
     if (!j.at("gain_db").is_null()) t.gain_db=j.at("gain_db").get<double>();
     const auto& gaps=j.at("overflows");

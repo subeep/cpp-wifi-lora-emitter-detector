@@ -9,6 +9,11 @@
 > (v2: 2 typed, 0 rows). With the 13 Nov held-out minutes that is 0 rows in 1.71 h, which bounds
 > false rows below about 1.8 / h (95%); the ≤ 1 / h gate needs about 1.3 h more of clean
 > background. Details: changelog 2026-11-18.
+>
+> **E1 (18 Nov):** the held-out sessions replayed through the app's own path (C++ engine, worker,
+> row rule) give the same numbers: 2,181 of 2,181 capture decisions identical to Python on the
+> same samples, same rows. The X310 now connected (326CEFE) has SBX boards (≤ 4.4 GHz), so the
+> remaining background waits for a UBX unit.
 
 > **Update 14 Nov (later):** the 13 Nov "no-drone" hour had a Phantom (Lightbridge) at 2.4 GHz
 > from minute 18. Those captures are now excluded and the model retrained (C2d, package v2):

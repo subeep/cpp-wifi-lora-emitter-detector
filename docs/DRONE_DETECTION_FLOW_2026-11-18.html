@@ -1,0 +1,615 @@
+<title>Drone Detection Chain</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: one wide instrument-style flow graph (live lane above, offline lane below), a control strip,
+   then narration + stage detail side by side, evidence order and open items. */
+:root {
+  --bg: #eef1f4; --panel: #ffffff; --ink: #15212b; --muted: #586675; --line: #cfd7df;
+  --node: #fbfcfd; --node-line: #9cadbd; --edge: #a3b1be; --lane: #e3e8ee;
+  --flow: #0b6e99; --flow-soft: rgba(11,110,153,.13);
+  --pending: #a35a00; --pending-soft: #fbe9d0; --off: #5f6b78; --off-soft: #e2e7ec;
+  --done: #2c7a4b; --done-soft: #dbeee2; --drop: #b3261e; --drop-soft: #f8dcd9;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0d1419; --panel: #141d24; --ink: #dce5ed; --muted: #93a2b0; --line: #26333e;
+  --node: #16212a; --node-line: #3e5161; --edge: #415465; --lane: #111a21;
+  --flow: #52c1ea; --flow-soft: rgba(82,193,234,.16);
+  --pending: #f0a54a; --pending-soft: #3a2a13; --off: #9ba6b2; --off-soft: #232d36;
+  --done: #6cc590; --done-soft: #16301f; --drop: #ff7b6f; --drop-soft: #3d1a17; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0d1419; --panel: #141d24; --ink: #dce5ed; --muted: #93a2b0; --line: #26333e;
+  --node: #16212a; --node-line: #3e5161; --edge: #415465; --lane: #111a21;
+  --flow: #52c1ea; --flow-soft: rgba(82,193,234,.16);
+  --pending: #f0a54a; --pending-soft: #3a2a13; --off: #9ba6b2; --off-soft: #232d36;
+  --done: #6cc590; --done-soft: #16301f; --drop: #ff7b6f; --drop-soft: #3d1a17; color-scheme: dark; }
+
+body { background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 1280px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+header.wrap { padding-block: 28px 8px; }
+h1 { font-size: 30px; line-height: 1.15; margin: 0 0 6px; letter-spacing: -.01em; text-wrap: balance; }
+h2 { font-size: 18px; margin: 0 0 10px; text-wrap: balance; }
+.lede { margin: 0; max-width: 68ch; color: var(--muted); }
+.meta { margin: 10px 0 0; font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+
+.controls { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding-block: 14px; }
+.scen { display: flex; flex-wrap: wrap; gap: 6px; }
+button, select { font: inherit; font-size: 13.5px; color: var(--ink); }
+.scen button { background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; cursor: pointer; }
+.scen button:hover { border-color: var(--flow); }
+.scen button[aria-pressed="true"] { background: var(--flow); border-color: var(--flow); color: var(--bg); font-weight: 600; }
+.play { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.play button { background: var(--panel); border: 1px solid var(--node-line); border-radius: 6px; padding: 5px 12px; cursor: pointer; min-width: 74px; }
+.play button.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.play select { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.play label { font-size: 13.5px; color: var(--muted); display: flex; gap: 5px; align-items: center; }
+:focus-visible { outline: 2px solid var(--flow); outline-offset: 2px; }
+
+.graph { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; }
+.graph svg { display: block; width: 100%; min-width: 980px; height: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 10px 2px 0; font-size: 12.5px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 22px; height: 0; border-top: 2px solid var(--edge); display: inline-block; }
+.sw.flow { border-color: var(--flow); }
+.sw.pend { border-top: 2px dashed var(--pending); }
+.sw.offl { border-top: 2px solid var(--off); opacity: .7; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--flow); display: inline-block; }
+
+/* SVG */
+.colhead { font: 600 11px var(--sans); letter-spacing: .09em; fill: var(--muted); text-transform: uppercase; }
+.lanebg { fill: var(--lane); }
+.lanehead { font: 600 11px var(--sans); letter-spacing: .09em; fill: var(--muted); text-transform: uppercase; }
+.edge { fill: none; stroke: var(--edge); stroke-width: 1.6; marker-end: url(#arr); transition: stroke .3s; }
+.edge.offline { stroke: var(--off); opacity: .55; marker-end: url(#arr-off); }
+.edge.pending { stroke: var(--pending); stroke-dasharray: 5 4; opacity: .9; marker-end: url(#arr-pend); }
+.edge.lit { stroke: var(--flow); opacity: 1; stroke-width: 2.2; marker-end: url(#arr-lit); }
+.edge.hot { stroke-width: 3; }
+.node { cursor: pointer; }
+.node .box { fill: var(--node); stroke: var(--node-line); stroke-width: 1.2; transition: stroke .3s, fill .3s; }
+.node.pending .box { stroke: var(--pending); stroke-dasharray: 5 3; }
+.node .t { font: 600 13px var(--sans); fill: var(--ink); }
+.node .s { font: 400 11px var(--mono); fill: var(--muted); }
+.node .chipbg { stroke: none; }
+.node .chip { font: 500 10px var(--sans); }
+.chip-pending .chipbg { fill: var(--pending-soft); } .chip-pending .chip { fill: var(--pending); }
+.chip-off .chipbg { fill: var(--off-soft); } .chip-off .chip { fill: var(--off); }
+.chip-new .chipbg { fill: var(--done-soft); } .chip-new .chip { fill: var(--done); }
+.node:hover .box { stroke: var(--flow); }
+.node.visited .box { stroke: var(--flow); stroke-width: 1.8; }
+.node.pulse .box { fill: var(--flow-soft); stroke: var(--flow); stroke-width: 2.6; }
+.node.drop .box { fill: var(--drop-soft); stroke: var(--drop); stroke-width: 2.6; stroke-dasharray: none; }
+.node.sel .box { stroke: var(--ink); stroke-width: 2.2; stroke-dasharray: none; }
+.node:focus { outline: none; }
+.node:focus-visible .box { stroke: var(--flow); stroke-width: 3; }
+.tok { fill: var(--flow); filter: drop-shadow(0 0 4px var(--flow)); }
+.tok.drop { fill: var(--drop); filter: drop-shadow(0 0 4px var(--drop)); }
+
+.two { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; padding-block: 18px 6px; }
+@media (max-width: 860px) { .two { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; min-width: 0; }
+.panel h2 { margin-bottom: 4px; }
+.sub { color: var(--muted); font-size: 13.5px; margin: 0 0 12px; }
+.outcome { display: flex; gap: 10px; align-items: baseline; padding: 10px 12px; border-radius: 8px; background: var(--flow-soft); margin: 0 0 12px; flex-wrap: wrap; }
+.tier { font: 600 12px var(--mono); padding: 2px 8px; border-radius: 4px; background: var(--flow); color: var(--bg); white-space: nowrap; }
+.outcome p { margin: 0; flex: 1 1 240px; min-width: 0; }
+ol.steps { margin: 0; padding-left: 22px; display: grid; gap: 5px; font-size: 14px; }
+ol.steps li { color: var(--muted); transition: color .2s; }
+ol.steps li.done { color: var(--ink); }
+ol.steps li.cur { color: var(--ink); font-weight: 600; }
+ol.steps li.cur::marker { color: var(--flow); }
+.detail-status { display: inline-block; font: 500 12px var(--sans); padding: 1px 8px; border-radius: 4px; margin-bottom: 8px; }
+.st-done { background: var(--done-soft); color: var(--done); }
+.st-pending { background: var(--pending-soft); color: var(--pending); }
+.st-off { background: var(--off-soft); color: var(--off); }
+#dText { margin: 0 0 10px; max-width: 65ch; }
+.files { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; margin: 0; }
+.files code { font-family: inherit; }
+
+section.block { padding-block: 18px 6px; }
+ol.tiers { list-style: none; counter-reset: t; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
+ol.tiers li { counter-increment: t; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 13.5px; color: var(--muted); min-width: 0; }
+ol.tiers li b { display: block; color: var(--ink); font-size: 14.5px; }
+ol.tiers li b::before { content: counter(t) "  "; font-family: var(--mono); color: var(--flow); font-weight: 500; }
+.open { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.open .panel h3 { margin: 0 0 8px; font-size: 15px; }
+.open ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 14px; }
+.open .tag { font: 500 11px var(--sans); padding: 1px 7px; border-radius: 4px; margin-left: 6px; vertical-align: 1px; }
+footer.wrap { padding-block: 22px 32px; color: var(--muted); font-size: 12.5px; }
+.mono { font-family: var(--mono); font-size: .92em; }
+@media (prefers-reduced-motion: reduce) { .edge, .node .box, ol.steps li { transition: none; } }
+</style>
+
+<header class="wrap">
+  <h1>Drone Detection Chain</h1>
+  <p class="lede">How one capture on the X310 becomes a drone row in the app, which evidence wins, and what is still open. Pick a case to watch it move through the chain, or select any stage for its details.</p>
+  <p class="meta">Status 18 Nov 2026 · branch codex/symbol-timing-cpp · package v3 (28 models) · nothing committed</p>
+</header>
+
+<section class="wrap controls" aria-label="Animation controls">
+  <div class="scen" id="scen" role="group" aria-label="Case to play"></div>
+  <div class="play">
+    <button class="primary" id="btnPlay" type="button">Pause</button>
+    <button id="btnStep" type="button">Step</button>
+    <button id="btnReset" type="button">Restart</button>
+    <label for="speed">Speed
+      <select id="speed"><option value="0.6">0.6×</option><option value="1" selected>1×</option><option value="1.6">1.6×</option><option value="2.5">2.5×</option></select>
+    </label>
+    <label for="loop"><input type="checkbox" id="loop" checked> Play all cases</label>
+  </div>
+</section>
+
+<section class="wrap">
+  <div class="graph"><svg id="g" viewBox="0 0 1240 790" role="img" aria-labelledby="gTitle">
+    <title id="gTitle">Flow graph of the drone detection chain, from the radio schedule to the Drones view, with the offline training and proof lane</title>
+  </svg></div>
+  <div class="legend" aria-hidden="true">
+    <span><i class="dot"></i> capture moving through the chain</span>
+    <span><i class="sw"></i> live path</span>
+    <span><i class="sw flow"></i> path taken in this case</span>
+    <span><i class="sw offl"></i> offline training and proof</span>
+    <span><i class="sw pend"></i> open, waits on hardware or a decision</span>
+  </div>
+</section>
+
+<section class="wrap two">
+  <div class="panel" aria-live="polite">
+    <h2 id="scTitle">Case</h2>
+    <p class="sub" id="scSub"></p>
+    <div class="outcome"><span class="tier" id="scTier"></span><p id="scOutcome"></p></div>
+    <ol class="steps" id="steps"></ol>
+  </div>
+  <div class="panel" id="detail">
+    <h2 id="dTitle">Stage</h2>
+    <span class="detail-status" id="dStatus"></span>
+    <p id="dText"></p>
+    <p class="files" id="dFiles"></p>
+  </div>
+</section>
+
+<section class="wrap block">
+  <h2>Evidence order</h2>
+  <p class="sub">Each row gets one answer to "which model is it?". The strongest evidence present decides the tier.</p>
+  <ol class="tiers">
+    <li><b>Confirmed</b>A readable DJI DroneID packet names the model. Self-reported, not authenticated.</li>
+    <li><b>Likely</b>DroneID is present but encrypted. Only models seen to encrypt it, whose link shows the row's timing group, remain.</li>
+    <li><b>Family</b>Only the video link was seen. Its timing group gives the family and the models measured in it; the classifier's models may be listed inside it.</li>
+    <li><b>Reported</b>Only a Remote ID broadcast: an ID and aircraft type, no model.</li>
+    <li><b>Unknown</b>DroneID was read, but its product code is not in the table.</li>
+    <li><b>Classifier</b>Only the universal classifier saw it. Weakest tier, lowest alert severity, off by default.</li>
+  </ol>
+</section>
+
+<section class="wrap block">
+  <h2>Still open</h2>
+  <div class="open">
+    <div class="panel">
+      <h3>Needs the UBX X310 back</h3>
+      <ul>
+        <li>Check the unit: <span class="mono">uhd_usrp_probe</span> should show UBX-160 boards, FPGA 38 and no CRC errors, then a 2-minute coordinated live check with the classifier on.</li>
+        <li>Record about 1.3 h more no-drone background (plan 1.5 h). It sets the false-row rate (gate: at most 1 per hour; 0 rows in 1.71 h so far) and decides whether classifier-only rows can be switched on.</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h3>Needs drones or your decision</h3>
+      <ul>
+        <li>Live run with your drones plus a no-drone hour (E2). Only the Air 3S is proven on the X310 so far.</li>
+        <li>Lightbridge 10.9375 kHz check, so the app can see your Phantom. Adding it means a retrain.</li>
+        <li>Naming point: strict today. A looser top-3 setting names more drones, and sometimes names never-seen DJI models wrongly.</li>
+        <li>What was on during background B's first 18 minutes. If nothing was flying, about 1 h of recording is enough.</li>
+        <li>A second never-seen hobby controller, for a clean unknown-model test.</li>
+        <li>Sealed DRFF-R2 test (E3): once, only on your instruction, after E2.</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h3>Software that can be done now</h3>
+      <ul>
+        <li>In-app "record this session" switch for coordinated mode.</li>
+        <li>Type-only baseline (C1): its false typed rows per hour, now possible with the replay tool.</li>
+        <li>Check whether v3 misses a real DJI signal in background B's first 18 minutes.</li>
+        <li>Fix the out-of-date stand-in in <span class="mono">test_drone_ml_presence_audit</span>.</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h3>Housekeeping</h3>
+      <ul>
+        <li>The B210 has not been run with the new tune guard.</li>
+        <li>The home disk is about 98% full.</li>
+        <li>Nothing is committed.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<footer class="wrap">Built from the code and docs on branch codex/symbol-timing-cpp: coordinated schedule, scanner, capture, symbol timing, DroneID decoder and follow-up, Remote ID, ml_inference, universal worker, evidence claims, universal claim, model verdict, tracks; plan, scorecard and change log of 12–18 Nov 2026.</footer>
+
+<script>
+(function () {
+  const NS = 'http://www.w3.org/2000/svg';
+  const COLS = [40, 300, 540, 780, 1020], W = 190, H = 72;
+  const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // status: done | pending | off ; chip: [text, kind]
+  const NODES = [
+    { id: 'sched', c: 0, y: 60, t: 'Coordinated schedule', s: '3 band slots · 0.512 s', st: 'done',
+      d: 'Runs every enabled band slot once per cycle: sub-GHz 863–868 MHz (2 visits), 2.4 GHz (4 visits over DroneID 2399.5 MHz and the Wi-Fi channels) and 5 GHz (6 visits over the Wi-Fi channels). Each visit is 0.512 s of valid samples plus 8 ms of pre-roll. A rotating cursor covers every centre over several cycles, so a centre comes back about every 26 s. DroneID follow-up visits are added on request.',
+      f: ['src/coordinated_schedule.hpp', 'src/scanner.cpp'] },
+    { id: 'ant', c: 0, y: 185, t: 'X310 receiver', s: 'UBX-160 · 10–6000 MHz', st: 'pending', chip: ['UBX unit due back', 'pending'],
+      d: 'Receive-only USRP X310 at 192.168.10.2 with FPGA image 38. The UBX unit (326CF02) covers every band the app uses and is due back. The unit connected now (326CEFE) has SBX boards (400–4400 MHz), so it cannot receive 5 GHz.',
+      f: ['src/sdr_capture.cpp'] },
+    { id: 'cap', c: 0, y: 310, t: 'Capture + tune guard', s: 'drops off-frequency tunes', st: 'done', chip: ['new 18 Nov', 'new'],
+      d: 'Reads the stream and records timing provenance for each capture. A capture whose real centre (RF minus DSP) is more than 10 kHz from the request is dropped and marked off_frequency, with one warning per centre. Three plain empty captures in a row still reconnect the radio; off-frequency drops do not count as a stall.',
+      f: ['src/sdr_capture.cpp', 'src/capture_timing.hpp', 'src/scanner.cpp'] },
+    { id: 'follow', c: 0, y: 435, t: 'DroneID follow-up', s: 'extra DroneID visits', st: 'done',
+      d: 'DroneID bursts come about every 0.6 s, so an ordinary 0.5 s Wi-Fi visit often misses them. When a video link is seen in a band, this queue asks the scanner for longer visits to that band\'s DroneID channels until a packet decodes or the request times out.',
+      f: ['src/drones/droneid_followup.hpp', 'src/drones/droneid_followup_wiring.hpp'] },
+
+    { id: 'wifi', c: 1, y: 60, t: 'Wi-Fi decoder', s: '802.11 frames, FCS checked', st: 'done',
+      d: 'Decodes Wi-Fi frames in the 2.4 and 5 GHz channel captures. Only complete frames with a valid FCS go on to parsing.',
+      f: ['src/wifi_ofdm_rx.cpp', 'src/wifi_dsss_rx.cpp', 'src/wifi_frame.cpp'] },
+    { id: 'timing', c: 1, y: 165, t: 'Symbol-timing detector', s: 'OFDM lag test', st: 'done',
+      d: 'Tests each capture for the cyclic-prefix lag of several symbol rates: Wi-Fi 312.5 kHz and 78.125 kHz, LTE-like 7.5, 15 and 30 kHz, and the measured 32.8 kHz. A drone video link shows up as its timing group.',
+      f: ['src/drones/symbol_timing.cpp', 'src/drones/symbol_timing_monitor.cpp'] },
+    { id: 'droneid', c: 1, y: 270, t: 'DroneID decoder', s: 'turbo decode + CRC', st: 'done',
+      d: 'Demodulates DJI DroneID bursts on the documented 2.4 GHz channels and on the 5.8 GHz channels decoded here (5756.5 and 5776.5 MHz). Only CRC-valid packets are kept, timed on the receiver\'s sample clock.',
+      f: ['src/drones/python/backend.py', 'src/drones/turbo_bridge.c', 'src/drones/droneid_packet.cpp'] },
+    { id: 'mlsel', c: 1, y: 375, t: 'Interval picker', s: '3 × 8 ms views', st: 'done',
+      d: 'Takes three 160,000-sample views spread across the capture: start, middle and end. One job runs at a time, at least 500 ms apart; a capture that arrives while one is queued is skipped.',
+      f: ['src/ml_inference.cpp', 'src/ml_inference.hpp'] },
+
+    { id: 'rid', c: 2, y: 60, t: 'Remote ID parser', s: 'ASTM F3411 messages', st: 'done',
+      d: 'Parses 25-byte ASTM F3411 messages from verified frames: an ID, aircraft type and position, but no model. A fresh serial-number Basic ID can join a DroneID row.',
+      f: ['src/drones/remote_id.cpp', 'src/drones/evidence_remote_id.hpp'] },
+    { id: 'family', c: 2, y: 165, t: 'Link family', s: 'DJI OFDM or Lightbridge', st: 'done', chip: ['10.9375 kHz: undecided', 'pending'],
+      d: 'The timing group names the link family: 15 or 30 kHz is DJI OFDM, 32.8 kHz is Lightbridge. It also gives the models measured in that group. A sighting lasts 45 s, or less if a later capture of the same centre shows no link. Open: your Phantom\'s link needs a 10.9375 kHz check, and adding it means a retrain.',
+      f: ['src/drones/evidence_claims.hpp', 'src/drones/model_verdict.hpp'] },
+    { id: 'packet', c: 2, y: 270, t: 'DroneID packet', s: 'readable or encrypted', st: 'done',
+      d: 'Readable when the record has message family 0x10, version 2 or 3 and a passing checksum. It then carries the product type, serial number, aircraft, pilot and home positions, height and speed. Otherwise the packet is treated as encrypted. All of it is self-reported and unauthenticated.',
+      f: ['src/drones/droneid_packet.cpp', 'src/drones/evidence_packet.hpp'] },
+    { id: 'worker', c: 2, y: 375, t: 'Universal classifier', s: 'package v3 · 28 models', st: 'done',
+      d: 'universal_worker.py returns one decision per capture: a signal type (or none), the ranked models of that type, and whether they pass the package\'s strict naming limits. On held-out data, never-seen models are typed right in 0.97–1.00 of captures, and unknown models are named as known in 1.2–3.0%.',
+      f: ['tools/drone_ml/universal_worker.py', 'tools/drone_ml/universal_c4.py'] },
+
+    { id: 'claims', c: 3, y: 110, t: 'Evidence claims', s: 'link · packet · Remote ID', st: 'done',
+      d: 'Joins link sightings, DroneID packets and Remote ID into rows. Links last 45 s and packets 60 s; a decoded identity is held up to 300 s while a link that can be the same aircraft is still seen. Rows are observations, not a count of aircraft.',
+      f: ['src/drones/evidence_claims.hpp', 'src/drone_evidence.hpp'] },
+    { id: 'verdict', c: 3, y: 250, t: 'Model verdict', s: 'one answer per row', st: 'done',
+      d: 'Words what each row\'s evidence supports, strongest first: Confirmed, Likely, Family, Reported, Unknown, Classifier. It never creates or removes a row.',
+      f: ['src/drones/model_verdict.hpp'] },
+    { id: 'sight', c: 3, y: 375, t: 'Classifier sightings', s: 'agreement + row rule', st: 'done', chip: ['classifier-only rows off', 'off'],
+      d: 'Shows a model list only when enough captures of a row named models, ranked by mean score. A classifier type that differs from the row\'s measured link family counts as a disagreement and gives no model. Classifier-only rows open when two typed captures of one type fall on one band slot within 200 s, and later captures within 300 s extend them. These rows are off by default until the background gate passes.',
+      f: ['src/drones/universal_claim.hpp'] },
+
+    { id: 'view', c: 4, y: 110, t: 'Drones view', s: 'rows, tier, reasons', st: 'done',
+      d: 'Each row shows its tier, link family, models and the evidence behind them. The switch for classifier-only rows lives here and is off by default.',
+      f: ['src/drones/panel.cpp'] },
+    { id: 'tracks', c: 4, y: 250, t: 'Tracks + alerts', s: 'appearances, alert list', st: 'done',
+      d: 'Groups a row\'s sightings into appearances; a gap shorter than a coordinated revisit counts as the same appearance. Keeps the 16 latest alert events. Classifier-only rows alert at the lowest severity.',
+      f: ['src/drones/drone_tracks.hpp', 'src/drones/drone_tracks_panel.hpp'] },
+    { id: 'log', c: 4, y: 375, t: 'Evidence log', s: 'bounded export', st: 'done',
+      d: 'Writes the evidence behind each row and track to a bounded log for review and export.',
+      f: ['src/drones/evidence_log.hpp', 'src/drones/drone_track_log.hpp'] },
+
+    { id: 'corpora', c: 0, y: 578, t: 'Training corpora', s: '5 sources, 1 manifest', st: 'done',
+      d: 'DRFF-R2, DroneRFa, DroneRFb, RFUAV and own X310 recordings, listed in one manifest with source, receiver, rate, centre, aircraft and model. The locked DRFF-R2 test units are listed as unreadable, and every script refuses their paths.',
+      f: ['tools/drone_ml/'] },
+    { id: 'prep', c: 1, y: 578, t: 'Views + labels', s: '20 MSps views, facts', st: 'done',
+      d: 'Each recording is cut into deployment-like 20 MSps views. Each view is marked signal-present or not and gets measured facts: lag profile, bandwidth, burst timing, duty cycle and flatness. Splits keep each aircraft and session on one side only.',
+      f: ['tools/drone_ml/universal_features.py', 'tools/drone_ml/universal_cache.py'] },
+    { id: 'train', c: 2, y: 578, t: 'Open-set model', s: 'two-level, 3 seeds', st: 'done',
+      d: 'A spectrogram-plus-facts network that predicts the signal type, then the model within that type. Background mixing and open-set training teach it to refuse models it has not seen.',
+      f: ['tools/drone_ml/'] },
+    { id: 'pkg', c: 3, y: 578, t: 'Package v3', s: 'weights + decision file', st: 'done',
+      d: 'Model weights, type thresholds and naming limits in one file (universal_v3.pt). Thresholds were set on held-out background only. The worker loads the package at start.',
+      f: ['tools/drone_ml/universal_package.py'] },
+    { id: 'sessions', c: 0, y: 688, t: 'Recorded X310 sessions', s: 'session.json + sc16', st: 'done',
+      d: 'No-drone background recorded with background_rotate.py: 0.5 s every 5 s over 11 slots at 2410–2470 and 5735–5855 MHz, 20 MSps.',
+      f: ['~/Documents/air3s_iq_recording/background_rotate.py'] },
+    { id: 'replay', c: 1, y: 688, t: 'Session replay (E1)', s: 'the app path, offline', st: 'done', chip: ['2,181 / 2,181 match', 'new'],
+      d: 'Feeds each recorded capture through the app\'s interval picker, the worker and the classifier-only row rule, using the recorded times. 2,181 of 2,181 capture decisions matched the Python evaluation on the same samples, with the same rows.',
+      f: ['tools/drone_session_replay.cpp', 'data/drone_ml/2026-11-16/e4/e1_compare.py'] },
+    { id: 'gate', c: 2, y: 688, t: 'Background gate', s: '≤ 1 false row per hour', st: 'pending', chip: ['~1.3 h more needed', 'pending'],
+      d: '0 rows in 1.71 h of held-out background so far, which bounds the rate below about 1.8 per hour (95%). About 1.3 h more of clean no-drone background on the UBX unit is needed, or about 1 h if B\'s first 18 minutes are confirmed drone-free. Passing it lets classifier-only rows be switched on.',
+      f: ['docs/DRONE_UNIVERSAL_CLASSIFIER_SCORECARD_2026-11-14.md'] },
+    { id: 'e2', c: 3, y: 688, t: 'Live run (E2)', s: 'your drones + no-drone hour', st: 'pending', chip: ['needs drones', 'pending'],
+      d: 'Fly the drones you have near the antenna, record a no-drone hour, and write up what was and was not seen. Only the Air 3S is proven on the X310 so far; the Phantom 4 Pro recording is called not-a-drone.',
+      f: ['docs/DRONE_UNIVERSAL_CLASSIFIER_PLAN_2026-11-12.md'] },
+    { id: 'e3', c: 4, y: 688, t: 'Sealed test (E3)', s: 'locked units, run once', st: 'pending', chip: ['on your instruction', 'pending'],
+      d: 'Runs once, only on your instruction, after E2. The locked DRFF-R2 units stay unopened until then.',
+      f: ['docs/DRONE_UNIVERSAL_CLASSIFIER_PLAN_2026-11-12.md'] }
+  ];
+  const N = Object.fromEntries(NODES.map(n => [n.id, n]));
+
+  // [from, side, to, side, opts]  opts: fo/to = offset along the side, k = curve strength, kind
+  const EDGES = [
+    ['sched', 'b', 'ant', 't'], ['ant', 'b', 'cap', 't'],
+    ['cap', 'r', 'wifi', 'l'], ['cap', 'r', 'timing', 'l', { to: -10 }], ['cap', 'r', 'droneid', 'l'], ['cap', 'r', 'mlsel', 'l', { to: -8 }],
+    ['timing', 'l', 'follow', 'r', { fo: 18, k: 32 }], ['follow', 'l', 'sched', 'l', { k: 30 }],
+    ['wifi', 'r', 'rid', 'l'], ['timing', 'r', 'family', 'l'], ['droneid', 'r', 'packet', 'l'], ['mlsel', 'r', 'worker', 'l'],
+    ['rid', 'r', 'claims', 'l', { to: -18 }], ['family', 'r', 'claims', 'l'], ['packet', 'r', 'claims', 'l', { to: 18 }],
+    ['worker', 'r', 'sight', 'l', { to: -10 }],
+    ['claims', 'b', 'verdict', 't'], ['sight', 't', 'verdict', 'b'],
+    ['verdict', 'r', 'view', 'l'], ['verdict', 'r', 'tracks', 'l'], ['verdict', 'r', 'log', 'l'],
+    ['corpora', 'r', 'prep', 'l', { kind: 'offline' }], ['prep', 'r', 'train', 'l', { kind: 'offline' }],
+    ['train', 'r', 'pkg', 'l', { kind: 'offline' }], ['pkg', 't', 'worker', 'b', { kind: 'offline' }],
+    ['sessions', 'r', 'replay', 'l', { kind: 'offline' }], ['replay', 'l', 'mlsel', 'l', { kind: 'offline', k: 34, to: 12, fo: 0 }],
+    ['replay', 'r', 'gate', 'l', { kind: 'offline' }],
+    ['gate', 'r', 'sight', 'l', { kind: 'pending', to: 14, k: 24 }],
+    ['e2', 'r', 'e3', 'l', { kind: 'pending' }]
+  ];
+  const DIR = { r: [1, 0], l: [-1, 0], t: [0, -1], b: [0, 1] };
+  function port(n, side, off) {
+    const x = COLS[n.c], y = n.y; off = off || 0;
+    if (side === 'r') return [x + W, y + H / 2 + off];
+    if (side === 'l') return [x, y + H / 2 + off];
+    if (side === 't') return [x + W / 2 + off, y];
+    return [x + W / 2 + off, y + H];
+  }
+  function pathD(a, as, b, bs, k) {
+    const d1 = DIR[as], d2 = DIR[bs];
+    if (k == null) {
+      const span = (as === 'r' || as === 'l') ? Math.abs(b[0] - a[0]) : Math.abs(b[1] - a[1]);
+      k = Math.max(20, Math.min(90, span * 0.5));
+    }
+    return 'M' + a[0] + ',' + a[1] + ' C' + (a[0] + d1[0] * k) + ',' + (a[1] + d1[1] * k) + ' ' +
+      (b[0] + d2[0] * k) + ',' + (b[1] + d2[1] * k) + ' ' + b[0] + ',' + b[1];
+  }
+  function el(tag, attrs, parent) {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+
+  const svg = document.getElementById('g');
+  const defs = el('defs', {}, svg);
+  [['arr', 'var(--edge)'], ['arr-lit', 'var(--flow)'], ['arr-off', 'var(--off)'], ['arr-pend', 'var(--pending)']].forEach(([id, c]) => {
+    const m = el('marker', { id, viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '9', markerHeight: '9', markerUnits: 'userSpaceOnUse', orient: 'auto-start-reverse' }, defs);
+    const p = el('path', { d: 'M0,0 L10,5 L0,10 z' }, m);
+    p.style.fill = c;
+  });
+
+  el('rect', { class: 'lanebg', x: 20, y: 542, width: 1210, height: 236, rx: 10 }, svg);
+  el('text', { class: 'lanehead', x: 40, y: 566 }, svg).textContent = 'Offline: training and proof';
+  ['Radio', 'Signal analysis', 'Interpretation', 'Evidence', 'What you see'].forEach((h, i) => {
+    el('text', { class: 'colhead', x: COLS[i], y: 40 }, svg).textContent = h;
+  });
+
+  const edgeLayer = el('g', {}, svg), nodeLayer = el('g', {}, svg), tokLayer = el('g', {}, svg);
+  const EDGE = {};
+  EDGES.forEach(([f, fs, t, ts, o]) => {
+    o = o || {};
+    const id = f + '-' + t;
+    const a = port(N[f], fs, o.fo), b = port(N[t], ts, o.to);
+    const p = el('path', { class: 'edge ' + (o.kind || ''), d: pathD(a, fs, b, ts, o.k) }, edgeLayer);
+    EDGE[id] = { from: f, to: t, path: p };
+  });
+
+  const NODE_EL = {};
+  NODES.forEach(n => {
+    const g = el('g', { class: 'node ' + (n.st === 'pending' ? 'pending' : ''), transform: 'translate(' + COLS[n.c] + ',' + n.y + ')', tabindex: '0', role: 'button', 'aria-label': n.t + ': ' + n.s }, nodeLayer);
+    el('rect', { class: 'box', width: W, height: H, rx: 8 }, g);
+    el('text', { class: 't', x: 12, y: n.chip ? 22 : 30 }, g).textContent = n.t;
+    el('text', { class: 's', x: 12, y: n.chip ? 39 : 49 }, g).textContent = n.s;
+    if (n.chip) {
+      const cg = el('g', { class: 'chip-' + n.chip[1] }, g);
+      const bg = el('rect', { class: 'chipbg', x: 10, y: 48, height: 16, rx: 4, width: 100 }, cg);
+      const tx = el('text', { class: 'chip', x: 16, y: 60 }, cg);
+      tx.textContent = n.chip[0];
+      requestAnimationFrame(() => { try { bg.setAttribute('width', Math.min(W - 20, tx.getComputedTextLength() + 12)); } catch (e) {} });
+    }
+    g.addEventListener('click', () => showDetail(n.id));
+    g.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); showDetail(n.id); } });
+    NODE_EL[n.id] = g;
+  });
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => {
+    document.querySelectorAll('.node .chip').forEach(tx => { try { tx.previousSibling.setAttribute('width', Math.min(W - 20, tx.getComputedTextLength() + 12)); } catch (e) {} });
+  });
+
+  // ---- detail panel
+  const STATUS = { done: ['Built and tested', 'st-done'], pending: ['Open', 'st-pending'], off: ['Off by default', 'st-off'] };
+  function showDetail(id) {
+    const n = N[id];
+    Object.values(NODE_EL).forEach(g => g.classList.remove('sel'));
+    NODE_EL[id].classList.add('sel');
+    document.getElementById('dTitle').textContent = n.t;
+    const st = (n.chip && n.chip[1] === 'off') ? STATUS.off : STATUS[n.st];
+    const s = document.getElementById('dStatus');
+    s.textContent = n.chip && n.chip[1] !== 'new' ? st[0] + ' · ' + n.chip[0] : st[0];
+    s.className = 'detail-status ' + (n.chip && n.chip[1] === 'pending' && n.st === 'done' ? 'st-pending' : st[1]);
+    document.getElementById('dText').textContent = n.d;
+    document.getElementById('dFiles').textContent = n.f.join('  ·  ');
+  }
+
+  // ---- cases
+  const tune = (where) => [
+    { e: ['sched-ant'], t: 'The schedule tunes the X310 to ' + where + ' for a 0.512 s visit.' },
+    { e: ['ant-cap'], t: 'The receiver lands on the requested centre, so the tune guard passes the capture on.' }
+  ];
+  const linkStart = [
+    { e: ['cap-timing', 'cap-mlsel'], t: 'The capture goes to the symbol-timing detector and to the classifier\'s interval picker.' },
+    { e: ['timing-family', 'mlsel-worker'], t: 'Timing finds the 15 kHz lag of a DJI OFDM video link. The worker gets three 8 ms views.' },
+    { e: ['timing-follow', 'family-claims', 'worker-sight'], t: 'The link opens a row and asks for DroneID follow-up visits. The worker types the capture as DJI OFDM.' },
+    { e: ['follow-sched'], t: 'The follow-up queue adds longer visits to that band\'s DroneID channels.' },
+    { e: ['sched-ant'], t: 'On the next cycle the X310 visits a DroneID channel.' },
+    { e: ['ant-cap'], t: 'That capture passes the tune guard too.' },
+    { e: ['cap-droneid'], t: 'The DroneID decoder finds a burst in it.' }
+  ];
+  const outputs = { e: ['verdict-view', 'verdict-tracks', 'verdict-log'], t: 'The row appears in the Drones view, its track and alert list, and the evidence log.' };
+
+  const CASES = [
+    { id: 'readable', name: 'DJI, readable DroneID', sub: 'A DJI drone with an OFDM video link and a DroneID packet the app can read.',
+      tier: 'Confirmed', out: 'The packet names the model and gives the serial number and the aircraft, pilot and home positions. It is self-reported and not authenticated.',
+      steps: [...tune('a 5 GHz Wi-Fi channel'), ...linkStart,
+        { e: ['droneid-packet'], t: 'Turbo decoding and the CRC pass. The record is version 2 with a good checksum, so it is readable.' },
+        { e: ['packet-claims'], t: 'The packet joins the link\'s row. Its identity is held up to 300 s while a matching link is still seen.' },
+        { e: ['claims-verdict', 'sight-verdict'], t: 'The verdict takes the strongest evidence: the readable packet.' }, outputs] },
+    { id: 'encrypted', name: 'DJI, encrypted DroneID', sub: 'A DJI drone whose DroneID packets decode but cannot be read.',
+      tier: 'Likely', out: 'A short list: only models seen to encrypt DroneID whose link shows this timing group. Not one confirmed name.',
+      steps: [...tune('a 5 GHz Wi-Fi channel'), ...linkStart,
+        { e: ['droneid-packet'], t: 'A CRC-valid burst decodes, but the record does not read: DroneID is encrypted.' },
+        { e: ['packet-claims'], t: 'The encrypted packet joins the link\'s row.' },
+        { e: ['claims-verdict', 'sight-verdict'], t: 'Only models seen to encrypt DroneID, whose link shows this timing group, remain.' }, outputs] },
+    { id: 'link', name: 'Video link only', sub: 'A drone link is measured, but no DroneID packet is heard.',
+      tier: 'Family', out: 'The link family and the models measured in it, with the classifier\'s ranked models inside the family when enough captures agree.',
+      steps: [...tune('a 2.4 GHz Wi-Fi channel'),
+        { e: ['cap-timing', 'cap-mlsel'], t: 'The capture goes to the symbol-timing detector and to the interval picker.' },
+        { e: ['timing-family', 'mlsel-worker'], t: 'Timing finds the 30 kHz group of a DJI OFDM link. The worker gets three 8 ms views.' },
+        { e: ['family-claims', 'worker-sight'], t: 'The link opens a row. The worker types the capture and ranks the models of that type.' },
+        { e: ['claims-verdict', 'sight-verdict'], t: 'Family check: the classifier\'s type must match the link family, and models whose link group does not fit are dropped. A model list needs agreement across captures.' }, outputs] },
+    { id: 'rid', name: 'Remote ID broadcast', sub: 'A drone that broadcasts ASTM F3411 Remote ID over Wi-Fi.',
+      tier: 'Reported', out: 'The broadcast gives an ID, an aircraft type and a position, but no model.',
+      steps: [...tune('a 2.4 GHz Wi-Fi channel'),
+        { e: ['cap-wifi'], t: 'The Wi-Fi decoder reads the frames and checks each FCS.' },
+        { e: ['wifi-rid'], t: 'A frame carries ASTM F3411 Remote ID messages.' },
+        { e: ['rid-claims'], t: 'The broadcast opens a row. A fresh serial-number Basic ID could also join a DroneID row.' },
+        { e: ['claims-verdict'], t: 'With only Remote ID, the verdict reports what the broadcast says.' }, outputs] },
+    { id: 'clf', name: 'Classifier only', sub: 'No link timing, DroneID or Remote ID; only the universal classifier sees a drone type.',
+      tier: 'Classifier', out: 'The weakest tier, at the lowest alert severity. These rows are off by default until the background gate passes.',
+      steps: [...tune('a 5 GHz Wi-Fi channel'),
+        { e: ['cap-mlsel'], t: 'The interval picker takes 8 ms views at the start, middle and end of the capture.' },
+        { e: ['mlsel-worker'], t: 'The worker types the capture as a drone signal type and ranks models.' },
+        { e: ['worker-sight'], t: 'Two typed captures of one type on one band slot within 200 s can open a classifier-only row.' },
+        { e: ['gate-sight'], t: 'Those rows stay off until the no-drone background shows at most 1 false row per hour.' },
+        { e: ['sight-verdict'], t: 'If switched on, the row gets the Classifier tier.' },
+        { e: ['verdict-view', 'verdict-tracks'], t: 'It shows in the Drones view and alerts at the lowest severity.' }] },
+    { id: 'bg', name: 'No drone', sub: 'Ordinary background: Wi-Fi, other radios, no drone.',
+      tier: 'No row', out: 'Replay of held-out background: 1 typed capture of 1,027 and no rows; 0 rows in 1.71 h overall.',
+      steps: [...tune('a 5 GHz Wi-Fi channel'),
+        { e: ['cap-timing', 'cap-mlsel'], t: 'The capture goes to the symbol-timing detector and the interval picker.' },
+        { e: ['mlsel-worker'], t: 'Timing finds no drone link. The worker gets three 8 ms views.' },
+        { e: ['worker-sight'], t: 'The worker returns no type for nearly every background capture.' },
+        { e: [], n: ['sight'], t: 'With no two typed captures to agree, no row opens.' }] },
+    { id: 'drop', name: 'Out-of-range tune', sub: 'What the tune guard does on the SBX unit, which stops at 4.4 GHz.',
+      tier: 'Dropped', out: 'The capture is dropped and the radio keeps running. With the UBX unit back, every centre is in range and nothing is dropped.',
+      steps: [
+        { e: ['sched-ant'], t: 'The schedule asks for 5735 MHz.' },
+        { e: ['ant-cap'], drop: true, t: 'On the SBX boards (400–4400 MHz) the receiver lands at 4420 MHz instead.' },
+        { e: [], n: ['cap'], drop: true, t: 'The tune guard drops the capture and marks it off frequency, with one warning per centre. It is not a stall, so the radio is not reconnected.' }] },
+    { id: 'offline', name: 'Training and proof', sub: 'How the model package is made, and how the app path is checked offline.',
+      tier: 'Proof', out: '2,181 of 2,181 replayed capture decisions matched Python. The background gate still needs about 1.3 h more recording.',
+      steps: [
+        { e: ['corpora-prep'], t: 'Recordings from five sources become 20 MSps views with presence labels and measured facts.' },
+        { e: ['prep-train'], t: 'The open-set model trains on them, over three seeds.' },
+        { e: ['train-pkg'], t: 'Thresholds and naming limits are set on held-out background and packed with the weights.' },
+        { e: ['pkg-worker'], t: 'The worker loads package v3 when the app starts.' },
+        { e: ['sessions-replay'], t: 'Recorded no-drone sessions go into the replay tool.' },
+        { e: ['replay-mlsel'], t: 'Replay feeds each capture through the app\'s own interval picker.' },
+        { e: ['mlsel-worker'], t: 'The worker decides each capture as it would live.' },
+        { e: ['worker-sight'], t: 'The classifier-only row rule runs on the recorded times.' },
+        { e: ['replay-gate'], t: 'Result so far: 0 false rows in 1.71 h. The gate needs about 1.3 h more.' },
+        { e: ['e2-e3'], n: ['e2', 'e3'], t: 'Then the live run with your drones, and the sealed test on your instruction.' }] }
+  ];
+
+  // ---- runner
+  const scenBox = document.getElementById('scen');
+  CASES.forEach((c, i) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = c.name; b.setAttribute('aria-pressed', 'false');
+    b.addEventListener('click', () => { select(i); play(); });
+    scenBox.appendChild(b);
+  });
+  const btnPlay = document.getElementById('btnPlay'), btnStep = document.getElementById('btnStep');
+  const speedSel = document.getElementById('speed'), loopBox = document.getElementById('loop');
+  const stepsOl = document.getElementById('steps');
+  const state = { sc: 0, i: 0, playing: false, busy: false };
+  let run = 0;
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  const speed = () => parseFloat(speedSel.value) || 1;
+
+  function clearTrail() {
+    Object.values(EDGE).forEach(e => e.path.classList.remove('lit', 'hot'));
+    Object.values(NODE_EL).forEach(g => g.classList.remove('visited', 'pulse', 'drop'));
+    tokLayer.textContent = '';
+  }
+  function select(i) {
+    run++; state.busy = false;
+    state.sc = i; state.i = 0;
+    clearTrail();
+    const c = CASES[i];
+    [...scenBox.children].forEach((b, j) => b.setAttribute('aria-pressed', j === i ? 'true' : 'false'));
+    document.getElementById('scTitle').textContent = c.name;
+    document.getElementById('scSub').textContent = c.sub;
+    document.getElementById('scTier').textContent = c.tier;
+    document.getElementById('scOutcome').textContent = c.out;
+    stepsOl.textContent = '';
+    c.steps.forEach(s => { const li = document.createElement('li'); li.textContent = s.t; stepsOl.appendChild(li); });
+  }
+  function markStep(i) {
+    [...stepsOl.children].forEach((li, j) => { li.classList.toggle('done', j < i); li.classList.toggle('cur', j === i); });
+  }
+  function moveToken(path, ms, drop) {
+    return new Promise(res => {
+      if (reduced) { setTimeout(res, Math.min(ms, 350)); return; }
+      const L = path.getTotalLength();
+      const c = el('circle', { r: 5, class: 'tok' + (drop ? ' drop' : '') }, tokLayer);
+      const t0 = performance.now();
+      function f(now) {
+        const p = Math.min(1, (now - t0) / ms);
+        const e = p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+        const pt = path.getPointAtLength(e * L);
+        c.setAttribute('cx', pt.x); c.setAttribute('cy', pt.y);
+        if (p < 1) requestAnimationFrame(f); else { c.remove(); res(); }
+      }
+      requestAnimationFrame(f);
+    });
+  }
+  async function doStep(my) {
+    const c = CASES[state.sc], st = c.steps[state.i];
+    if (!st) return;
+    state.busy = true;
+    markStep(state.i);
+    const dur = 950 / speed();
+    Object.values(EDGE).forEach(e => e.path.classList.remove('hot'));
+    st.e.forEach(id => EDGE[id].path.classList.add('lit', 'hot'));
+    await Promise.all(st.e.map(id => moveToken(EDGE[id].path, dur, st.drop)));
+    if (my !== run) return;
+    const targets = st.n || st.e.map(id => EDGE[id].to);
+    targets.forEach(id => {
+      const g = NODE_EL[id];
+      g.classList.add('visited', st.drop ? 'drop' : 'pulse');
+      if (!st.drop) setTimeout(() => g.classList.remove('pulse'), 650 / speed());
+    });
+    state.i++;
+    if (state.i >= c.steps.length) markStep(c.steps.length);
+    await wait(650 / speed());
+    if (my === run) state.busy = false;
+  }
+  async function loop(my) {
+    while (state.playing && my === run) {
+      const c = CASES[state.sc];
+      if (state.i >= c.steps.length) {
+        if (!loopBox.checked) { state.playing = false; updateBtn(); return; }
+        await wait(1800 / speed());
+        if (my !== run || !state.playing) return;
+        select((state.sc + 1) % CASES.length);
+        my = run;
+        continue;
+      }
+      await doStep(my);
+    }
+  }
+  function updateBtn() { btnPlay.textContent = state.playing ? 'Pause' : 'Play'; }
+  function play() {
+    if (state.i >= CASES[state.sc].steps.length) select(state.sc);
+    run++; state.playing = true; state.busy = false; updateBtn();
+    loop(run);
+  }
+  function pause() { run++; state.playing = false; state.busy = false; tokLayer.textContent = ''; updateBtn(); }
+  btnPlay.addEventListener('click', () => state.playing ? pause() : play());
+  btnStep.addEventListener('click', () => {
+    if (state.playing) pause();
+    if (state.busy) return;
+    if (state.i >= CASES[state.sc].steps.length) select(state.sc);
+    doStep(++run);
+  });
+  document.getElementById('btnReset').addEventListener('click', () => { select(state.sc); play(); });
+
+  select(0);
+  showDetail('worker');
+  if (reduced) { state.playing = false; updateBtn(); } else play();
+})();
+</script>

@@ -18,6 +18,7 @@
 #include <complex>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -87,6 +88,7 @@ private:
     std::optional<double> gain_db_;
     std::optional<double> tuned_center_hz_;  // last successful tune; cleared on streamer rebuild/error
     double last_rf_hz_ = 0.0, last_dsp_hz_ = 0.0;
+    std::set<long long> off_frequency_warned_;  // centres already reported as out of range
 };
 
 }  // namespace rfmon
