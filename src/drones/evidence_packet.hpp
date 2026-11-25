@@ -7,9 +7,10 @@
 #include <string_view>
 
 namespace rfmon::drone_claims {
-inline void ingest_native_packet(Store& store, const std::string& text, Clock::time_point now) {
+// Returns the packet when it is new to the store (for the offset log), otherwise nothing.
+inline std::optional<std::pair<Key, Packet>> ingest_native_packet(Store& store, const std::string& text, Clock::time_point now) {
     const auto j = nlohmann::json::parse(text, nullptr, false);
-    if (!j.is_object()) return;
+    if (!j.is_object()) return std::nullopt;
     const auto value = [&](const char* key) -> std::string {
         const auto it = j.find(key);
         if (it == j.end() || it->is_null()) return {};
@@ -21,11 +22,11 @@ inline void ingest_native_packet(Store& store, const std::string& text, Clock::t
         const double v = std::strtod(raw.c_str(), &end);
         return end == raw.c_str() + raw.size() && std::isfinite(v) ? v : 0.;
     };
-    if (value("protocol") != "DJI DroneID" || value("outer_crc24") != "true") return;
+    if (value("protocol") != "DJI DroneID" || value("outer_crc24") != "true") return std::nullopt;
     const auto origin = value("receiver_source");
     std::string_view source(origin);
     constexpr std::string_view prefix = "LIVE / run ";
-    if (source.substr(0, prefix.size()) != prefix) return;
+    if (source.substr(0, prefix.size()) != prefix) return std::nullopt;
     source.remove_prefix(prefix.size());
     const auto read_field = [&](std::string_view delimiter) {
         const auto split = source.find(delimiter);
@@ -44,10 +45,10 @@ inline void ingest_native_packet(Store& store, const std::string& text, Clock::t
         const auto parsed = std::from_chars(token.data(), end, result);
         return parsed.ec == std::errc{} && parsed.ptr == end;
     };
-    if (!integer(session, key.session) || !integer(capture, key.capture)) return;
+    if (!integer(session, key.session) || !integer(capture, key.capture)) return std::nullopt;
     const double observed = number("acquired_steady_s");
     const double current = std::chrono::duration<double>(now.time_since_epoch()).count();
-    if (observed <= 0 || observed > current || current - observed > packet_lifetime.count()) return;
+    if (observed <= 0 || observed > current || current - observed > packet_lifetime.count()) return std::nullopt;
     const auto when = Clock::time_point(std::chrono::duration_cast<Clock::duration>(
         std::chrono::duration<double>(observed)));
     const auto readable = value("identity_readable");
@@ -87,6 +88,15 @@ inline void ingest_native_packet(Store& store, const std::string& text, Clock::t
         aircraft->altitude_m = optional_number("reported_altitude_m");
         aircraft->speed_m_s = optional_number("reported_speed_m_s");
     }
-    store.decoded(std::move(key), std::move(packet));
+    // The decoder's offset is measured from where it centred the packet: a documented DroneID
+    // channel gives a nominal carrier, its own automatic centring does not.
+    packet.offset_hz = optional_number("cfo_hz");
+    if (value("channel_selection") == "documented_droneid_channel") {
+        packet.channel_hz = number("channel_hz");
+        if (packet.offset_hz) packet.offset_ppm = offset_ppm(*packet.offset_hz, packet.channel_hz);
+    }
+    auto stored = std::make_pair(key, packet);
+    if (!store.decoded(std::move(key), std::move(packet))) return std::nullopt;
+    return stored;
 }
 }

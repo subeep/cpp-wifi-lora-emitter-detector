@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <string_view>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -9,6 +11,76 @@
 
 namespace rfmon::symbol_timing {
 using Clock = std::chrono::steady_clock;
+
+
+bool measure_blocks(Probe& probe, const std::complex<float>* samples, Result& result) {
+    result.fractions.fill(0);
+    result.grid.fill(std::nullopt);
+    result.timing_group = nullptr;
+    result.link_clock.reset();
+    if (!result.blocks) return false;
+    Phases phase_sum{};
+    std::array<double, hypotheses.size()> magnitude_sum{};
+    std::array<std::size_t, hypotheses.size()> flagged{};
+    std::array<bool, max_blocks> lightbridge_block{};
+    for (std::size_t block = 0; block < result.blocks; ++block) {
+        Ratios ratios;
+        Phases phases;
+        if (!probe.measure(samples + block * block_size, result.rate, ratios, &phases)) return false;
+        if (block < max_blocks)
+            lightbridge_block[block] = ratios[lightbridge] > flag_ratio || ratios[lightbridge_third] > flag_ratio;
+        for (std::size_t i = 0; i < ratios.size(); ++i) {
+            if (!(ratios[i] > flag_ratio)) continue;
+            result.fractions[i] += 1;
+            phase_sum[i] += phases[i];
+            magnitude_sum[i] += std::abs(phases[i]);
+            ++flagged[i];
+        }
+    }
+    for (auto& fraction : result.fractions) fraction /= result.blocks;
+    for (std::size_t i = 0; i < hypotheses.size(); ++i)
+        result.grid[i] = grid_offset(phase_sum[i], magnitude_sum[i], flagged[i], 1 / hypotheses[i].seconds, result.center);
+    result.timing_group = group(result.fractions);
+    // A 30 kHz group needs its blocks to agree on where the 30 kHz grid sits: one transmitter
+    // holds it fixed. Live 21 Nov 2026 (Mini 2 only, nothing at 30 kHz on): 5.8 GHz captures
+    // grouped as 30 kHz had grid coherence 0.07-0.20 over 20-24 blocks; single links (15 kHz
+    // OcuSync, Lightbridge) held 0.8-1.0.
+    if (result.timing_group && std::string_view(result.timing_group).find("30kHz") != std::string_view::npos) {
+        const auto& grid = result.grid[lte_30k];
+        if (!grid || grid->coherence < min_30k_grid_coherence)
+            result.timing_group = std::string_view(result.timing_group) == "15kHz+30kHz" ? "15kHz" : nullptr;
+    }
+    result.link_clock.reset();
+    if (result.timing_group && result.capture_samples >= block_size) {
+        const std::string_view g = result.timing_group;
+        // "15kHz+30kHz" is measured as its 15 kHz link; "30kHz" alone as the 30 kHz link.
+        const auto link = g == "32.8kHz" ? std::optional(link_clock::Link::lightbridge)
+                        : g.find("15kHz") != std::string_view::npos ? std::optional(link_clock::Link::ocusync_15k)
+                        : g == "30kHz"                              ? std::optional(link_clock::Link::ocusync_30k)
+                                                                     : std::nullopt;
+        if (link) {
+            const std::size_t count = std::min(result.blocks, max_blocks);
+            std::array<std::size_t, max_blocks> starts{};
+            std::array<const std::complex<float>*, max_blocks> blocks{};
+            // An OcuSync capture in which some blocks also show Lightbridge timing holds both links
+            // (both share 2.4 GHz), and Lightbridge symbols pull the OcuSync clock towards theirs:
+            // live 21 Nov 2026, 4 of 5 such Mini 2 readings were 0.5-4.5 ppm off its DroneID. Its
+            // clock is measured on the other blocks only, when at least min_clean_ocusync_blocks
+            // remain. (Dropping the whole capture instead, live 23 Nov with both drones on, left 16
+            // of 19 Mini 2 captures at 2.4 GHz without a clock.)
+            std::size_t used = 0;
+            for (std::size_t i = 0; i < count; ++i) {
+                if (*link != link_clock::Link::lightbridge && lightbridge_block[i]) continue;
+                starts[used] = block_start(result.capture_samples, i, count);
+                blocks[used] = samples + i * block_size;
+                ++used;
+            }
+            if (*link == link_clock::Link::lightbridge || used == count || used >= min_clean_ocusync_blocks)
+                result.link_clock = link_clock::measure(*link, blocks.data(), block_size, starts.data(), used, result.rate);
+        }
+    }
+    return true;
+}
 
 struct Monitor::State {
     static constexpr std::size_t pending_limit = 4;
@@ -48,18 +120,7 @@ struct Monitor::State {
                 lock.unlock();
                 const auto start = Clock::now();
                 auto& result = job.result;
-                bool valid = true;
-                for (std::size_t block = 0; block < result.blocks; ++block) {
-                    Ratios ratios;
-                    if (!probe.measure(job.samples.data() + block * block_size, result.rate, ratios)) {
-                        valid = false;
-                        break;
-                    }
-                    for (std::size_t i = 0; i < ratios.size(); ++i)
-                        result.fractions[i] += ratios[i] > flag_ratio;
-                }
-                for (auto& fraction : result.fractions) fraction /= result.blocks;
-                result.timing_group = group(result.fractions);
+                const bool valid = measure_blocks(probe, job.samples.data(), result);
                 result.processing_ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
 
                 lock.lock();
@@ -144,6 +205,7 @@ void Monitor::observe(const std::vector<std::complex<float>>& iq,
     r.host_after_ns = c.host_after_ns;
     r.observed = start;
     r.blocks = std::min(max_blocks, iq.size() / block_size);
+    r.capture_samples = iq.size();
     r.fractions.fill(0);
     for (std::size_t i = 0; i < r.blocks; ++i)
         std::copy_n(iq.data() + block_start(iq.size(), i, r.blocks), block_size,

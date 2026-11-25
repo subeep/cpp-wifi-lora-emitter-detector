@@ -20,6 +20,12 @@ double steady_s(std::chrono::steady_clock::time_point t) {
 const char* slot_name(const std::string& band) {
     return band == BAND_SUB_GHZ ? "Sub-GHz" : band == BAND_WIFI_2G4 ? "2.4 GHz" : band == BAND_WIFI_5G ? "5 GHz" : band.c_str();
 }
+const char* slot_label(const coord::Slot& slot) { return slot.name.empty() ? slot_name(slot.band) : slot.name.c_str(); }
+// The schedule slot a visit record came from (follow-up visits belong to none).
+bool holds_visit(const coord::Slot& slot, const coord::VisitRecord& v) {
+    return std::any_of(slot.visits.begin(), slot.visits.end(),
+                       [&](const coord::Visit& x) { return x.center_hz == v.center_hz && x.label == v.label; });
+}
 std::string band_of(double hz) {
     if (hz > 800e6 && hz < 1e9) return "Sub-GHz";
     if (hz > 2.3e9 && hz < 2.6e9) return "2.4 GHz";
@@ -255,14 +261,13 @@ std::vector<Entry> build_entries(const drone::Snapshot& native, const drone::Sna
 
 namespace {
 void draw_strip(const CoordinatedStatus& st, const coord::Schedule& schedule, double now) {
-    const std::string current_band = st.current ? st.current->band : std::string();
     for (size_t i = 0; i < schedule.slots.size(); ++i) {
         const auto& slot = schedule.slots[i];
         if (i) { ImGui::SameLine(); ImGui::TextUnformatted("->"); ImGui::SameLine(); }
         char label[96];
-        std::snprintf(label, sizeof label, "%s  %d x %.0f ms%s", slot_name(slot.band), slot.visits_per_cycle,
+        std::snprintf(label, sizeof label, "%s  %d x %.0f ms%s", slot_label(slot), slot.visits_per_cycle,
                       slot.dwell_s * 1e3, slot.enabled ? "" : " (off)");
-        const bool now_here = slot.band == current_band;
+        const bool now_here = st.current && holds_visit(slot, *st.current);
         ImGui::PushStyleColor(ImGuiCol_Button, now_here ? ImVec4(.16f, .45f, .28f, 1) : ImVec4(.22f, .24f, .28f, 1));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, now_here ? ImVec4(.16f, .45f, .28f, 1) : ImVec4(.22f, .24f, .28f, 1));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, now_here ? ImVec4(.16f, .45f, .28f, 1) : ImVec4(.22f, .24f, .28f, 1));
@@ -274,7 +279,7 @@ void draw_strip(const CoordinatedStatus& st, const coord::Schedule& schedule, do
     if (st.current) {
         const auto& v = *st.current;
         double dwell = 0;
-        for (const auto& slot : schedule.slots) if (slot.band == v.band) dwell = slot.dwell_s + schedule.preroll_s + schedule.settle_s;
+        for (const auto& slot : schedule.slots) if (holds_visit(slot, v)) dwell = slot.dwell_s + schedule.preroll_s + schedule.settle_s;
         ImGui::Text("Receiving: %s | centre %.3f MHz | %.3f MSps | usable +/-%.1f MHz | visit time left %.2f s",
                     v.label.c_str(), v.center_hz / 1e6, v.rate_hz / 1e6, v.usable_half_span_hz / 1e6,
                     std::max(0.0, dwell - (now - v.start_s)));
@@ -286,7 +291,7 @@ void draw_strip(const CoordinatedStatus& st, const coord::Schedule& schedule, do
                 st.estimate.overhead_s);
 }
 
-void draw_coverage(const CoordinatedStatus& st, double now) {
+void draw_coverage(const CoordinatedStatus& st, const coord::Schedule& schedule, double now) {
     if (!ImGui::BeginTable("Coordinated coverage", 9, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp))
         return;
     for (const char* h : {"Band", "Visits", "Valid", "Analysed", "Lane drops", "Valid time (s)", "Analysed %", "Revisit per centre: configured / measured", "Last visit"})
@@ -296,7 +301,8 @@ void draw_coverage(const CoordinatedStatus& st, double now) {
         const auto& s = st.slots[i];
         const auto est = i < st.estimate.slots.size() ? st.estimate.slots[i] : coord::SlotEstimate{};
         ImGui::TableNextRow();
-        ImGui::TableNextColumn(); ImGui::Text("%s%s", slot_name(s.band), s.enabled ? "" : " (off)");
+        const bool named = i < schedule.slots.size() && schedule.slots[i].band == s.band;
+        ImGui::TableNextColumn(); ImGui::Text("%s%s", named ? slot_label(schedule.slots[i]) : slot_name(s.band), s.enabled ? "" : " (off)");
         ImGui::TableNextColumn(); ImGui::Text("%llu", static_cast<unsigned long long>(s.visits));
         ImGui::TableNextColumn(); ImGui::Text("%llu", static_cast<unsigned long long>(s.valid_visits));
         ImGui::TableNextColumn(); ImGui::Text("%llu", static_cast<unsigned long long>(s.analysed_visits));
@@ -320,10 +326,11 @@ void draw_editor(PanelState& state, Scanner& scanner, double max_rate) {
     if (!state.editor_loaded) { state.editor = scanner.effective_coordinated_schedule(); state.editor_loaded = true; }
     auto& s = state.editor;
     ImGui::PushID("coordinated_editor");
-    for (auto& slot : s.slots) {
-        ImGui::PushID(slot.band.c_str());
-        ImGui::Checkbox(slot_name(slot.band), &slot.enabled);
-        ImGui::SameLine(140);
+    for (size_t i = 0; i < s.slots.size(); ++i) {
+        auto& slot = s.slots[i];
+        ImGui::PushID(int(i));
+        ImGui::Checkbox(slot_label(slot), &slot.enabled);
+        ImGui::SameLine(180);
         ImGui::SetNextItemWidth(110);
         ImGui::InputInt("visits / cycle", &slot.visits_per_cycle);
         ImGui::SameLine();
@@ -343,7 +350,10 @@ void draw_editor(PanelState& state, Scanner& scanner, double max_rate) {
     const auto e = coord::estimate(s);
     const auto error = coord::validate(s, max_rate);
     ImGui::Text("Preview: cycle %.2f s (%.3f s valid). Average revisit per centre:", e.cycle_s, e.valid_s);
-    for (const auto& se : e.slots) { ImGui::SameLine(); ImGui::Text("%s %.1f s", slot_name(se.band), se.sweep_s); }
+    for (size_t i = 0; i < e.slots.size() && i < s.slots.size(); ++i) {
+        ImGui::SameLine();
+        ImGui::Text("%s %.1f s", slot_label(s.slots[i]), e.slots[i].sweep_s);
+    }
     if (!error.empty()) gui::note(error.c_str(), true);
     ImGui::BeginDisabled(!error.empty());
     if (ImGui::Button("Apply schedule")) { scanner.set_coordinated_schedule(s); state.editor_message = "Applied; takes effect at the next cycle."; }
@@ -398,6 +408,7 @@ void draw_entries(PanelState& state, const std::vector<Entry>& entries, double n
     ImGui::TableHeadersRow();
     for (size_t i = 0; i < entries.size(); ++i) {
         const auto& e = entries[i];
+        if (state.hidden_sources.count(e.source)) continue;
         if (!filter.empty()) {
             char f[32];
             std::snprintf(f, sizeof f, "%.3f", e.frequency_hz / 1e6);
@@ -535,43 +546,39 @@ void draw_entry_views(PanelState& state, Scanner& scanner, const std::vector<Ent
 }
 
 
-void draw_section(PanelState& state, Scanner& scanner, drone::Addon& drones, ml::Inference& model, bool connected,
-                  shortrange::Monitor* bluetooth) {
-    ImGui::SeparatorText("Coordinated detection: Sub-GHz -> 2.4 GHz -> 5 GHz -> repeat");
+void start_detection(PanelState& state, Scanner& scanner, drone::Addon& drones) {
     const std::string band = scanner.active_band();
-    const bool coordinated = band == BAND_COORDINATED;
+    if (band == BAND_COORDINATED) return;
+    state.previous_band = band;
+    scanner.set_active_band(BAND_COORDINATED);
+    state.started_unified = !drones.unified;
+    if (state.started_unified) drones.start_unified();
+}
+
+void stop_detection(PanelState& state, Scanner& scanner, drone::Addon& drones) {
+    scanner.set_active_band(state.previous_band == BAND_COORDINATED ? std::string(BAND_WIFI_2G4) : state.previous_band);
+    if (state.started_unified && drones.unified) drones.stop_unified();
+    state.started_unified = false;
+}
+
+void draw_schedule_problems(Scanner& scanner) {
     const auto st = scanner.coordinated_status();
-    const double now = Scanner::now_steady_s();
-    if (!coordinated) {
-        if (ImGui::Button("Start coordinated detection")) {
-            state.previous_band = band;
-            scanner.set_active_band(BAND_COORDINATED);
-            state.started_unified = !drones.unified;
-            if (state.started_unified) drones.start_unified();
-        }
-        ImGui::SameLine();
-        ImGui::TextWrapped("One receiver visits each band in turn; every applicable module analyses each visit. The current mode (%s) resumes on Stop.",
-                           gui::band_label(band).c_str());
-    } else {
-        if (ImGui::Button("Stop coordinated detection")) {
-            scanner.set_active_band(state.previous_band == BAND_COORDINATED ? std::string(BAND_WIFI_2G4) : state.previous_band);
-            if (state.started_unified && drones.unified) drones.stop_unified();
-            state.started_unified = false;
-        }
-        ImGui::SameLine();
-        ImGui::Text("Receiver: %s | schedule %s", connected ? "connected" : "not connected - connect in Settings", st.config_hash.c_str());
-    }
     if (!st.conflict.empty()) {
         gui::note(st.conflict.c_str(), true);
         if (scanner.wifi_fixed_channel() && ImGui::Button("Clear fixed Wi-Fi channel")) scanner.set_wifi_fixed_channel(std::nullopt);
         if (scanner.lora_lock_freq() && ImGui::Button("Clear LoRa frequency lock")) scanner.set_lora_lock_freq(std::nullopt);
     }
     if (!st.config_error.empty()) gui::note(("Schedule not run: " + st.config_error).c_str(), true);
+}
 
+void draw_coverage_view(PanelState& state, Scanner& scanner) {
+    const bool coordinated = scanner.active_band() == BAND_COORDINATED;
+    const auto st = scanner.coordinated_status();
+    const double now = Scanner::now_steady_s();
     const auto schedule = scanner.effective_coordinated_schedule();
     if (coordinated) {
         draw_strip(st, schedule, now);
-        draw_coverage(st, now);
+        draw_coverage(st, schedule, now);
         if (st.overflows || st.empty_captures)
             gui::note(("Receiver overflows in " + std::to_string(st.overflows) + " visit(s), empty captures " +
                        std::to_string(st.empty_captures) + ": those visits are not valid coverage.").c_str(), true);
@@ -580,25 +587,53 @@ void draw_section(PanelState& state, Scanner& scanner, drone::Addon& drones, ml:
         ImGui::Text("Configured: cycle %.2f s (%.3f s valid observation).", e.cycle_s, e.valid_s);
     }
     draw_editor(state, scanner, device_profile(scanner.device_type()).max_sample_rate_hz);
+}
 
+namespace {
+// Every detector's current entries, with coverage-aware freshness.
+std::vector<Entry> current_entries(Scanner& scanner, drone::Addon& drones, shortrange::Monitor* bluetooth, double now) {
     // Coverage-aware freshness needs a retention limit longer than a full
     // sweep; three sweeps (at least a minute) before an entry becomes history.
     double longest_sweep = 0;
-    for (const auto& se : coord::estimate(schedule).slots) longest_sweep = std::max(longest_sweep, se.sweep_s);
+    for (const auto& se : coord::estimate(scanner.effective_coordinated_schedule()).slots)
+        longest_sweep = std::max(longest_sweep, se.sweep_s);
     const double expire_s = std::max(60.0, 3 * longest_sweep);
     static drone::RidJson rid;
     static double rid_time = -1;
     if (rid.is_null() || ImGui::GetTime() - rid_time > .25) { rid = drones.remote_id.snapshot(); rid_time = ImGui::GetTime(); }
     std::optional<shortrange::Snapshot> ble;
     if (bluetooth) ble = bluetooth->snapshot();
-    const auto entries = build_entries(drones.native.snapshot(), drones.live.snapshot(), rid, ml::Snapshot{},
-                                       scanner.coordinated_visits(), now, expire_s, ble ? &*ble : nullptr);
-    if (ImGui::CollapsingHeader("All detection entries (individual evidence)", ImGuiTreeNodeFlags_DefaultOpen)) {
-        const auto visits = scanner.coordinated_visits();
-        draw_entry_views(state, scanner, entries, visits, st.config_hash, now);
-    }
+    return build_entries(drones.native.snapshot(), drones.live.snapshot(), rid, ml::Snapshot{},
+                         scanner.coordinated_visits(), now, expire_s, ble ? &*ble : nullptr);
+}
+}  // namespace
 
-    ImGui::SeparatorText("Module health");
+void draw_evidence_view(PanelState& state, Scanner& scanner, drone::Addon& drones, shortrange::Monitor* bluetooth) {
+    const double now = Scanner::now_steady_s();
+    const auto entries = current_entries(scanner, drones, bluetooth, now);
+    std::map<std::string, size_t> per_source;
+    for (const auto& e : entries) ++per_source[e.source];
+    for (const auto& hidden : state.hidden_sources) per_source.emplace(hidden, 0);
+    ImGui::TextDisabled("Sources");
+    for (const auto& [source, n] : per_source) {
+        char label[160];
+        std::snprintf(label, sizeof label, "%s (%zu)###src %s", source.c_str(), n, source.c_str());
+        const float w = ImGui::CalcTextSize(label, nullptr, true).x + ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x;
+        const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+        if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + w <= right) ImGui::SameLine();
+        bool shown = !state.hidden_sources.count(source);
+        if (ImGui::Checkbox(label, &shown)) {
+            if (shown) state.hidden_sources.erase(source);
+            else state.hidden_sources.insert(source);
+        }
+    }
+    const auto visits = scanner.coordinated_visits();
+    draw_entry_views(state, scanner, entries, visits, scanner.coordinated_status().config_hash, now);
+}
+
+void draw_module_health(drone::Addon& drones, ml::Inference& model, shortrange::Monitor* bluetooth) {
+    std::optional<shortrange::Snapshot> ble;
+    if (bluetooth) ble = bluetooth->snapshot();
     const auto native = drones.native.snapshot();
     const auto ml = model.snapshot();
     ImGui::Text("DJI native: %s | messages %llu | queue %zu | dropped samples %llu | discontinuities %llu",
@@ -612,6 +647,36 @@ void draw_section(PanelState& state, Scanner& scanner, drone::Addon& drones, ml:
                 !ble ? "not connected" : ble->enabled ? "decoding (Bluetooth & Zigbee page)" : "OFF - start it on the Bluetooth & Zigbee page");
     gui::note("Sub-GHz: energy scan + LoRa only. The drone model is not supported there (it needs 20 MSps 2.4/5 GHz views); no sub-GHz drone decision is made.", true);
     gui::note("LoRa is decoded from each sub-GHz visit on derived 500/250/125 kHz channels; packets longer than a visit (slow SF11-12) can be cut.");
+}
+
+void draw_section(PanelState& state, Scanner& scanner, drone::Addon& drones, ml::Inference& model, bool connected,
+                  shortrange::Monitor* bluetooth) {
+    ImGui::SeparatorText("Coordinated detection: Sub-GHz -> 2.4 GHz -> 5 GHz -> repeat");
+    const std::string band = scanner.active_band();
+    const bool coordinated = band == BAND_COORDINATED;
+    const auto st = scanner.coordinated_status();
+    if (!coordinated) {
+        if (ImGui::Button("Start coordinated detection")) start_detection(state, scanner, drones);
+        ImGui::SameLine();
+        ImGui::TextWrapped("One receiver visits each band in turn; every applicable module analyses each visit. The current mode (%s) resumes on Stop.",
+                           gui::band_label(band).c_str());
+    } else {
+        if (ImGui::Button("Stop coordinated detection")) stop_detection(state, scanner, drones);
+        ImGui::SameLine();
+        ImGui::Text("Receiver: %s | schedule %s", connected ? "connected" : "not connected - connect in Settings", st.config_hash.c_str());
+    }
+    draw_schedule_problems(scanner);
+    draw_coverage_view(state, scanner);
+
+    const double now = Scanner::now_steady_s();
+    const auto entries = current_entries(scanner, drones, bluetooth, now);
+    if (ImGui::CollapsingHeader("All detection entries (individual evidence)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const auto visits = scanner.coordinated_visits();
+        draw_entry_views(state, scanner, entries, visits, st.config_hash, now);
+    }
+
+    ImGui::SeparatorText("Module health");
+    draw_module_health(drones, model, bluetooth);
     gui::note("Classifier running is not classifier qualified: no presence model is qualified, so no 'no drone' or confirmed-drone decision is shown.");
 }
 

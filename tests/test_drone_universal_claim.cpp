@@ -18,7 +18,8 @@ static ml::Snapshot snapshot() {
     ml::Snapshot s;
     s.enabled = s.ready = s.universal = true;
     s.model_hash = "pkg";
-    s.accuracy["Mini 4 Pro"] = ml::ModelAccuracy{40, 30, 29, 20, 1, 1};
+    // As in the v3 package: right on its own unit, wrong on every capture of another dataset.
+    s.accuracy["Mini 4 Pro"] = ml::ModelAccuracy{40, 30, 29, 20, 1, 1, 34, 12, 0};
     return s;
 }
 
@@ -66,10 +67,47 @@ int main() try {
         const auto& u = *rows["r"].universal;
         require(u.accepted && u.captures == 3 && u.typed == 3 && u.named == 2, "agreement counts wrong");
         require(u.models.size() == 3 && u.models[0].name == "Mini 4 Pro" && u.models[0].score == .8, "ranking wrong");
-        const auto v = verdict(rows["r"]);
-        require(v.tier == Tier::Family && v.model == "DJI O4 family: likely Mini 4 Pro, Air 3S or Avata 2",
-                "family with classifier model not shown");
-        require(has(v.basis, "2 of 3 captures") && has(v.detail, "right in 29 of 30"), "basis or measured accuracy missing");
+        // Its naming did not hold on another dataset: the answer is the family and its candidates,
+        // the classifier's models a guess in the detail line.
+        require(!u.naming_carries, "naming carried without an other-dataset measurement that passed");
+        auto v = verdict(rows["r"]);
+        require(v.tier == Tier::Family && v.model == "DJI O4" && v.candidates == "3 candidates: Mini 4 Pro, Avata 2, Air 3S" &&
+                    model_and_link(v) == "DJI O4 · 3 candidates: Mini 4 Pro, Avata 2, Air 3S",
+                "family with its candidates not shown");
+        require(has(v.detail, "Classifier guess, not the answer") && has(v.detail, "Mini 4 Pro, Air 3S, Avata 2 (2 of 3 captures)") &&
+                    has(v.detail, "right in 29 of 30") && has(v.detail, "another dataset (receiver): right in 0 of 12 named of 34"),
+                "classifier guess or measured accuracy missing");
+        // Measured to hold on another dataset: the classifier names the model inside the family.
+        s.accuracy["Mini 4 Pro"] = ml::ModelAccuracy{40, 30, 29, 20, 1, 1, 40, 30, 28};
+        add_universal_claims(rows, s);
+        require(!rows["r"].universal->naming_carries, "naming carried without the names given to other drones measured");
+        require(has(verdict(rows["r"]).detail, "names given to other drones not measured"), "unmeasured names-given not stated");
+        // Its name also given to other drones often: right in only 28 of 38 times given.
+        s.accuracy["Mini 4 Pro"].other_dataset_given_to_others = 10;
+        add_universal_claims(rows, s);
+        require(!rows["r"].universal->naming_carries, "a name often given to other drones carried");
+        s.accuracy["Mini 4 Pro"].other_dataset_given_to_others = 2;          // 28 of 30 times given
+        add_universal_claims(rows, s);
+        require(rows["r"].universal->naming_carries, "naming that held on another dataset did not carry");
+        v = verdict(rows["r"]);
+        require(v.model == "DJI O4: likely Mini 4 Pro, Air 3S or Avata 2" && v.candidates.empty(),
+                "family with a carried classifier model not shown");
+        require(has(v.basis, "2 of 3 captures") && has(v.detail, "right in 29 of 30") &&
+                has(v.detail, "its name given to other drones 2 times"), "basis or measured accuracy missing");
+        // Measured leaving one dataset out: counted in views, and said so.
+        s.accuracy["Mini 4 Pro"].other_dataset_unit = "views";
+        add_universal_claims(rows, s);
+        require(has(verdict(rows["r"]).detail, "right in 28 of 30 named of 40 views"), "other-dataset unit not shown");
+        // Too few named captures on the other dataset carry nothing, however many were right.
+        s.accuracy["Mini 4 Pro"] = ml::ModelAccuracy{40, 30, 29, 20, 1, 1, 40, minimum_other_dataset_named - 1,
+                                                     minimum_other_dataset_named - 1};
+        s.accuracy["Mini 4 Pro"].other_dataset_given_to_others = 0;
+        add_universal_claims(rows, s);
+        require(!rows["r"].universal->naming_carries && verdict(rows["r"]).model == "DJI O4", "too few other-dataset captures carried");
+        // Not measured on another dataset at all: says so.
+        s.accuracy["Mini 4 Pro"] = ml::ModelAccuracy{40, 30, 29, 20, 1, 1};
+        add_universal_claims(rows, s);
+        require(has(verdict(rows["r"]).detail, "not measured on another dataset"), "missing other-dataset test not stated");
     }
     // Masked out: models whose measured link group does not fit the row are dropped.
     {
@@ -92,7 +130,7 @@ int main() try {
         const auto& u = *rows["r"].universal;
         require(!u.accepted && u.disagreements == 2 && u.type.empty() && u.models.empty(), "family disagreement accepted");
         const auto v = verdict(rows["r"]);
-        require(v.model == "DJI O4 family" && has(v.detail, "disagrees with the link in 2 of 2"), "disagreement not stated");
+        require(v.model == "DJI O4" && has(v.detail, "disagrees with the link in 2 of 2"), "disagreement not stated");
     }
     // Too few captures: one named capture shows the type, not a model.
     {
@@ -250,6 +288,44 @@ int main() try {
         require(rows.size() == 2, "a Remote ID broadcast channel hid a classifier row");
     }
     std::cout << "Universal classifier claims: family check, agreement, verdicts, classifier-only rows: PASS\n";
+    // Display only: models ranked but not named, with the limit each capture missed. Nothing
+    // about the row's answer changes; a row DroneID names keeps the classifier as a check.
+    {
+        auto s = snapshot();
+        const auto unnamed = [](uint64_t capture, double top, std::optional<double> distance) {
+            auto r = decision(capture, 5785e6, "dji_ofdm", false, {{"Mini 2", top}, {"Mini 3", .3}, {"Air 2S", .1}});
+            r.capture_decision.score_limit = .4957;
+            r.capture_decision.distance_limit = 15.951;
+            r.capture_decision.distance = distance;
+            return r;
+        };
+        s.history = {unnamed(100, .40, 9.0), unnamed(101, .42, 10.0), unnamed(102, .61, 21.5)};
+        std::map<std::string, Detection> rows{{"r", link_row("15kHz", 3)}};
+        add_universal_claims(rows, s);
+        const auto& u = *rows["r"].universal;
+        require(!u.accepted && u.named == 0 && u.typed == 3 && u.models.empty(), "unnamed captures must not name a model");
+        require(u.unnamed == 3 && u.below_score == 2 && u.beyond_distance == 1, "not-named reasons counted wrong");
+        require(u.guesses.size() == 3 && u.guesses[0].name == "Mini 2" && std::abs(u.guesses[0].score - (.40 + .42 + .61) / 3) < 1e-9,
+                "best guesses ranked by mean score over unnamed captures");
+        require(u.last_score && *u.last_score == .61 && u.last_distance && *u.last_distance == 21.5 &&
+                    u.score_limit && *u.score_limit == .4957,
+                "latest not-named numbers kept");
+        const auto v = verdict(rows["r"]);
+        require(v.tier == Tier::Family && !has(v.model, "likely"), "guesses never reach the verdict");
+
+        auto confirmed = link_row("15kHz", 3);
+        Packet p;
+        p.model = "Mini 2";
+        p.readable = true;
+        confirmed.packet = p;
+        std::map<std::string, Detection> named_rows{{"c", confirmed}};
+        add_universal_claims(named_rows, s);
+        const auto& row = named_rows["c"];
+        require(!row.universal && row.classifier_check && row.classifier_check->guesses[0].name == "Mini 2",
+                "a DroneID-named row keeps the classifier only as a check");
+        require(verdict(row).tier == Tier::Confirmed && verdict(row).model == "Mini 2", "DroneID still decides");
+        std::cout << "PASS not-named guesses (display only) and the DroneID classifier check\n";
+    }
     return 0;
 } catch (const std::exception& e) {
     std::cerr << "FAIL: " << e.what() << "\n";

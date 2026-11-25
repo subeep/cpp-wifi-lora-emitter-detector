@@ -1,5 +1,5 @@
 import unittest
-from tools.drone_ml.universal_presence import label,K15,K30,KLB
+from tools.drone_ml.universal_presence import label,K15,K30,KLB,KLB2
 class PresenceTests(unittest.TestCase):
     def row(self,model,signal,dataset='RFUAV',**kwargs):return dict(model=model,signal_type=signal,dataset=dataset,**kwargs)
     def test_wrong_family_cannot_supply_model(self):
@@ -32,4 +32,13 @@ class PresenceTests(unittest.TestCase):
             row=self.row(model,'dji_ofdm','DroneRFa')
             self.assertEqual(label(row,{'lag_ratios':{K15:7}})['expected_timing'],K15)
             self.assertEqual(label(row,{'lag_ratios':{K30:9}})['state'],'unknown')
+    def test_lightbridge_present_on_either_lag(self):
+        row=self.row('Phantom 4','lightbridge','Tampere_DroneRF')
+        self.assertTrue(label(row,{'lag_ratios':{KLB:5,KLB2:1}})['model_positive'])
+        self.assertTrue(label(row,{'lag_ratios':{KLB:1,KLB2:9}})['model_positive'])
+        self.assertEqual(label(row,{'lag_ratios':{KLB:3,KLB2:3}})['state'],'unknown')
+        self.assertTrue(label(row,{'lag_ratios':{KLB:5}})['model_positive'])     # v1 facts: no symbol lag
+    def test_dronerfa_background_not_used_when_lightbridge_symbol_fires(self):
+        r=self.row('not_a_drone','not_a_drone','DroneRFa')
+        self.assertEqual(label(r,{'lag_ratios':{K15:1,K30:1,KLB:1,KLB2:6}})['state'],'unknown')
 if __name__=='__main__':unittest.main()

@@ -26,7 +26,7 @@ const char* page_purpose(Page p) {
     case Page::Wifi24:case Page::Wifi5:return "Sampled RF observations, decoded packets and claimed network identities.";
     case Page::ShortRange:return "Bluetooth LE advertising and Zigbee / 802.15.4 addresses decoded from the 2.4 GHz captures.";
     case Page::Lora:return "RF observations, PHY hypotheses and provisional emitter clusters.";
-    case Page::Drones:return "Reported broadcasts and telemetry. Identity is unauthenticated.";
+    case Page::Drones:return "Drones seen now, the evidence behind each one, and the receiver coverage behind them.";
     case Page::Security:return "Suspected activity and the coverage needed to interpret it.";
     case Page::Captures:return "Existing capture and offline review workflows. Results stay separate from live evidence.";
     case Page::ModelInference:return "Optional experimental model predictions from existing capture workers.";

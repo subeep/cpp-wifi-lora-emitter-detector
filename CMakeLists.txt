@@ -775,7 +775,8 @@ if(TARGET rfmon_drones)
   target_link_libraries(coordinated_live_check PRIVATE rfmon_drones)
   if(WIFI_EGL_INCLUDE_DIR AND WIFI_EGL_LIBRARY)
     add_executable(test_coordinated_panel tests/test_coordinated_panel.cpp ${LORA_SCANNER_TEST_SOURCES}
-      src/coordinated_panel.cpp src/gui/app_shell.cpp src/ml_inference.cpp src/ml_panel.cpp
+      src/coordinated_panel.cpp src/drones_page.cpp src/drones/panel.cpp src/shortrange/panel.cpp src/wifi_vendor.cpp
+      src/gui/app_shell.cpp src/ml_inference.cpp src/ml_panel.cpp
       ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp
       ${IMGUI_DIR}/imgui_widgets.cpp ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
     foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
@@ -789,6 +790,21 @@ if(TARGET rfmon_drones)
     target_link_libraries(test_coordinated_panel PRIVATE rfmon_drones rfmon_shortrange OpenGL::GL ${WIFI_EGL_LIBRARY} dl)
     add_test(NAME coordinated_panel COMMAND test_coordinated_panel)
     set_tests_properties(coordinated_panel PROPERTIES TIMEOUT 120)
+    # Offline replay of a live run's drone offset log through the rows and the page's grouping.
+    add_executable(drone_log_replay tools/drone_log_replay.cpp ${LORA_SCANNER_TEST_SOURCES}
+      src/coordinated_panel.cpp src/drones_page.cpp src/drones/panel.cpp src/shortrange/panel.cpp src/wifi_vendor.cpp
+      src/gui/app_shell.cpp src/ml_inference.cpp src/ml_panel.cpp
+      ${IMGUI_DIR}/imgui.cpp ${IMGUI_DIR}/imgui_draw.cpp ${IMGUI_DIR}/imgui_tables.cpp
+      ${IMGUI_DIR}/imgui_widgets.cpp ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp)
+    foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS LINK_LIBRARIES)
+      get_target_property(value test_scanner_wifi_lane ${property})
+      if(value)
+        set_target_properties(drone_log_replay PROPERTIES ${property} "${value}")
+      endif()
+    endforeach()
+    target_include_directories(drone_log_replay PRIVATE ${IMGUI_DIR} ${WIFI_EGL_INCLUDE_DIR} ${WIFI_JSON_INCLUDE_DIR})
+    target_compile_definitions(drone_log_replay PRIVATE RFMON_ENABLE_DJI_DRONEID=1)
+    target_link_libraries(drone_log_replay PRIVATE rfmon_drones rfmon_shortrange OpenGL::GL ${WIFI_EGL_LIBRARY} dl)
   endif()
 endif()
 add_executable(test_scanner_lora_security tests/test_scanner_lora_security.cpp ${LORA_SCANNER_TEST_SOURCES})
@@ -927,7 +943,7 @@ target_include_directories(wifi_tx_gen PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JS
 target_link_libraries(wifi_tx_gen PRIVATE PkgConfig::KISSFFT Threads::Threads)
 
 add_library(rfmon_symbol_timing STATIC
-  src/drones/symbol_timing.cpp src/drones/symbol_timing_monitor.cpp)
+  src/drones/symbol_timing.cpp src/drones/symbol_timing_monitor.cpp src/drones/link_clock.cpp)
 target_include_directories(rfmon_symbol_timing PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(rfmon_symbol_timing PUBLIC PkgConfig::KISSFFT Threads::Threads)
 target_link_libraries(rf_monitor_gui PRIVATE rfmon_symbol_timing)
@@ -937,11 +953,23 @@ target_include_directories(test_symbol_timing PRIVATE ${WIFI_JSON_INCLUDE_DIR})
 add_test(NAME symbol_timing COMMAND test_symbol_timing)
 add_test(NAME symbol_timing_parity COMMAND test_symbol_timing "${CMAKE_SOURCE_DIR}")
 set_tests_properties(symbol_timing_parity PROPERTIES SKIP_RETURN_CODE 77)
+add_executable(test_link_clock tests/test_link_clock.cpp)
+target_link_libraries(test_link_clock PRIVATE rfmon_symbol_timing)
+add_test(NAME link_clock COMMAND test_link_clock)
 
 add_executable(test_drone_evidence_claims tests/test_drone_evidence_claims.cpp)
 target_link_libraries(test_drone_evidence_claims PRIVATE rfmon_symbol_timing)
 target_include_directories(test_drone_evidence_claims PRIVATE ${WIFI_JSON_INCLUDE_DIR})
 add_test(NAME drone_evidence_claims COMMAND test_drone_evidence_claims)
+add_executable(test_carrier_offset tests/test_carrier_offset.cpp)
+target_link_libraries(test_carrier_offset PRIVATE rfmon_symbol_timing)
+target_include_directories(test_carrier_offset PRIVATE ${WIFI_JSON_INCLUDE_DIR})
+add_test(NAME carrier_offset COMMAND test_carrier_offset)
+# Band bar on the Drones page: segments, coverage spans, row marks, label stacking (header-only).
+add_executable(test_band_bar tests/test_band_bar.cpp)
+target_link_libraries(test_band_bar PRIVATE rfmon_symbol_timing)
+target_include_directories(test_band_bar PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+add_test(NAME band_bar COMMAND test_band_bar)
 add_executable(test_drone_model_verdict tests/test_drone_model_verdict.cpp)
 target_link_libraries(test_drone_model_verdict PRIVATE rfmon_symbol_timing)
 target_include_directories(test_drone_model_verdict PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
@@ -968,6 +996,10 @@ if(TARGET coordinated_live_check)
   target_link_libraries(coordinated_live_check PRIVATE rfmon_symbol_timing)
 endif()
 
+add_executable(test_labelled_recorder tests/test_labelled_recorder.cpp)
+target_link_libraries(test_labelled_recorder PRIVATE rfmon_symbol_timing Threads::Threads)
+target_include_directories(test_labelled_recorder PRIVATE ${CMAKE_SOURCE_DIR}/src ${WIFI_JSON_INCLUDE_DIR})
+add_test(NAME labelled_recorder COMMAND test_labelled_recorder)
 add_executable(test_drone_tracks tests/test_drone_tracks.cpp)
 target_link_libraries(test_drone_tracks PRIVATE rfmon_symbol_timing)
 target_include_directories(test_drone_tracks PRIVATE ${WIFI_JSON_INCLUDE_DIR})
@@ -977,3 +1009,24 @@ add_test(NAME drone_tracks COMMAND test_drone_tracks)
 add_executable(drone_symbol_timing_probe tools/drone_symbol_timing_probe.cpp)
 target_link_libraries(drone_symbol_timing_probe PRIVATE rfmon_symbol_timing)
 target_include_directories(drone_symbol_timing_probe PRIVATE ${WIFI_JSON_INCLUDE_DIR})
+# Offline check of the link clock (crystal ppm from symbol timing) on recorded IQ.
+add_executable(drone_link_clock_check tools/drone_link_clock_check.cpp)
+target_link_libraries(drone_link_clock_check PRIVATE rfmon_symbol_timing)
+target_include_directories(drone_link_clock_check PRIVATE ${WIFI_JSON_INCLUDE_DIR})
+# Offline check of carrier-offset measurements on a recorded session (link grid; DroneID with the DJI decoder).
+add_executable(drone_carrier_offset_check tools/drone_carrier_offset_check.cpp)
+target_link_libraries(drone_carrier_offset_check PRIVATE rfmon_symbol_timing)
+target_include_directories(drone_carrier_offset_check PRIVATE ${WIFI_JSON_INCLUDE_DIR})
+if(TARGET rfmon_drone_native_dsp)
+  target_sources(drone_carrier_offset_check PRIVATE src/drones/droneid_packet.cpp)
+  target_link_libraries(drone_carrier_offset_check PRIVATE rfmon_drone_native_dsp)
+  target_compile_definitions(drone_carrier_offset_check PRIVATE RFMON_CARRIER_CHECK_DRONEID=1)
+endif()
+# Offline check of the link measurements on wideband drone recordings (public datasets, own sessions):
+# 20 MSps views as the scanner captures them, timing group, link clock, DroneID; offset-log lines out.
+if(TARGET rfmon_drone_native_dsp)
+  add_executable(drone_corpus_check tools/drone_corpus_check.cpp src/drones/droneid_packet.cpp)
+  target_link_libraries(drone_corpus_check PRIVATE rfmon_symbol_timing rfmon_drone_native_dsp PkgConfig::DRONE_FFTW)
+  target_include_directories(drone_corpus_check PRIVATE ${WIFI_JSON_INCLUDE_DIR})
+  target_compile_definitions(drone_corpus_check PRIVATE RFMON_CORPUS_CHECK_DRONEID=1)
+endif()

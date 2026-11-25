@@ -4,11 +4,30 @@ import numpy as np
 from .cp_lag_probe import BLOCK, HYPOTHESES, lag_profile
 
 RATE = 20_000_000
+# Facts v2 (24 Nov 2026): Lightbridge's own useful symbol, 4096 points at 44.8 MSps = 91.43 us
+# (10.9375 kHz spacing), as the app's C++ probe has used since 20 Nov (symbol_timing.hpp). The
+# 32.8 kHz lag in HYPOTHESES is a third of it; on the user's X310 Phantom it is weak while this
+# one is strong. Appended after the v1 facts, so the first 29 facts are unchanged and a package
+# trained on v1 reads only those (`universal_c2_train.Runner` cuts to the package's count).
+EXTRA_HYPOTHESES = {'lightbridge_10.9375kHz': 1 / 10937.5}
 NAMES = ([f'lag_ratio:{name}' for name in HYPOTHESES] +
          [f'lag_value:{name}' for name in HYPOTHESES] +
          [name for i in range(6) for name in (f'blind_{i}_useful_us',f'blind_{i}_ratio')] +
-         ['occupied_bandwidth_hz','spectral_flatness','burst_length_s','burst_period_s','duty_cycle'])
-VERSION='universal_measured_facts_v1'
+         ['occupied_bandwidth_hz','spectral_flatness','burst_length_s','burst_period_s','duty_cycle'] +
+         [f'lag_{kind}:{name}' for name in EXTRA_HYPOTHESES for kind in ('ratio','value')])
+NAMES_V1 = NAMES[:29]
+VERSION='universal_measured_facts_v2'
+
+
+def lag_fact(profile, t):
+    """(value, ratio, valid) of the lag profile at useful-symbol duration t against nearby lags."""
+    lag=RATE*t
+    near=[int(np.floor(lag)),int(np.ceil(lag))] if abs(lag-round(lag))>1e-6 else [int(round(lag))]
+    lo,hi=near[0]-50,near[-1]+51
+    mask=np.ones(hi-lo,bool);mask[near[0]-lo-3:near[-1]-lo+4]=False
+    base=float(np.median(profile[lo:hi][mask])) if profile is not None else 0.
+    value=float(profile[near].max()) if profile is not None else 0.
+    return value,(value/base if base>0 else 0.),base>0
 
 
 def extract(iq):
@@ -19,14 +38,8 @@ def extract(iq):
     values=[];ratios={};valid=[]
     # Keep the first 131072 samples exactly aligned with the C++ production probe.
     for name,t in HYPOTHESES.items():
-        lag=RATE*t
-        near=[int(np.floor(lag)),int(np.ceil(lag))] if abs(lag-round(lag))>1e-6 else [int(round(lag))]
-        lo,hi=near[0]-50,near[-1]+51
-        mask=np.ones(hi-lo,bool);mask[near[0]-lo-3:near[-1]-lo+4]=False
-        base=float(np.median(profile[lo:hi][mask])) if profile is not None else 0.
-        value=float(profile[near].max()) if profile is not None else 0.
-        ratio=value/base if base>0 else 0.
-        ratios[name]=ratio;values.append(value);valid.append(base>0)
+        value,ratio,ok=lag_fact(profile,t)
+        ratios[name]=ratio;values.append(value);valid.append(ok)
     features=list(ratios.values())+values
     available=valid+valid
     peaks=[]
@@ -61,6 +74,9 @@ def extract(iq):
     features.extend([bandwidth,flatness,float(np.median(lengths)) if len(lengths) else 0.,
                      float(np.median(intervals)) if len(intervals) else 0.,float(active.mean())])
     available.extend([total>0,total>0,bool(len(lengths)),bool(len(intervals)),total>0])
+    for name,t in EXTRA_HYPOTHESES.items():
+        value,ratio,ok=lag_fact(profile,t)
+        ratios[name]=ratio;features.extend([ratio,value]);available.extend([ok,ok])
     result=np.asarray(features,dtype=np.float32)
     if len(result)!=len(NAMES) or not np.isfinite(result).all():raise ValueError('invalid measured facts')
     return dict(version=VERSION,values=result,available=np.asarray(available,bool),lag_ratios=ratios,

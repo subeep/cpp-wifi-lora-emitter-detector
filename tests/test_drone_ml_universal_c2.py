@@ -2,16 +2,16 @@ import unittest
 
 import numpy as np
 
-from tools.drone_ml.universal_c2_train import DUTY, IX, gate, model_probs, weights
+from tools.drone_ml.universal_c2_train import DUTY, IX, Runner, TwoLevel, gate, model_probs, weights
 from tools.drone_ml.universal_features import NAMES
-from tools.drone_ml.universal_presence import K15, K30, KLB
-from tools.drone_ml.universal_train import TYPES
+from tools.drone_ml.universal_presence import K15, K30, KLB, KLB2
+from tools.drone_ml.universal_train import TYPES, Norm
 
 
 def facts(**fired):
     v = np.zeros(len(NAMES), np.float32)
     for key, value in fired.items():
-        v[DUTY if key == 'duty' else IX[{'k15': K15, 'k30': K30, 'klb': KLB}[key]]] = value
+        v[DUTY if key == 'duty' else IX[{'k15': K15, 'k30': K30, 'klb': KLB, 'klb2': KLB2}[key]]] = value
     return v
 
 
@@ -31,6 +31,29 @@ class GateTests(unittest.TestCase):
         self.assertEqual(self.allowed(klb=5)[0], {'lightbridge', 'not_a_drone'})
         self.assertEqual(self.allowed(duty=.1)[0], {'hopping_controller', 'not_a_drone'})
         self.assertEqual(self.allowed(k30=3.9)[0], {'not_a_drone'})       # threshold is > 4
+
+    def test_either_lightbridge_lag_opens_lightbridge(self):
+        self.assertEqual(self.allowed(klb2=5)[0], {'lightbridge', 'not_a_drone'})
+        self.assertEqual(self.allowed(klb=3, klb2=3.9)[0], {'not_a_drone'})
+
+    def test_v1_facts_gate_on_the_third_lag_only(self):
+        v1 = facts(klb=5)[None, :29]
+        t, _ = gate(v1, self.timing, self.models)
+        self.assertTrue(t[0, TYPES.index('lightbridge')])
+        t, _ = gate(facts(klb2=9)[None, :29], self.timing, self.models)   # the symbol lag is not in v1 facts
+        self.assertFalse(t[0, TYPES.index('lightbridge')])
+
+    def test_v1_network_reads_only_v1_facts(self):
+        import torch
+        torch.manual_seed(0); rng = np.random.default_rng(0)
+        spec = rng.normal(size=(4, 128, 156)).astype(np.float16)
+        f = np.abs(rng.normal(size=(4, len(NAMES)))).astype(np.float32); a = np.ones_like(f, bool)
+        norm = Norm(spec, f[:, :29], a[:, :29])
+        run = Runner(TwoLevel(29, 3), norm, ['a', 'b', 'c'], {})
+        cut = run.predict(dict(spec=spec, facts=f[:, :29], available=a[:, :29], meta=[{}] * 4))
+        full = run.predict(dict(spec=spec, facts=f, available=a, meta=[{}] * 4))
+        for x, y in zip(cut, full):
+            np.testing.assert_array_equal(x, y)
 
     def test_dji_models_limited_to_the_timing_that_fired(self):
         self.assertEqual(self.allowed(k30=6)[1], {'Mini 4 Pro', 'Inspire 2', 'WLtoys'})

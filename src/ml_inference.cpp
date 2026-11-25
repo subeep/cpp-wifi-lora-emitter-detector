@@ -66,6 +66,11 @@ void parse_accuracy(const Tree& t,Snapshot& s) {
         if(auto u=entry.get_child_optional("unseen_aircraft")) {
             a.unseen_captures=u->get<size_t>("captures");a.unseen_named=u->get<size_t>("named");a.unseen_right=u->get<size_t>("top1_right");
         }
+        if(auto u=entry.get_child_optional("other_dataset")) {
+            a.other_dataset_captures=u->get<size_t>("captures");a.other_dataset_named=u->get<size_t>("named");a.other_dataset_right=u->get<size_t>("top1_right");
+            a.other_dataset_unit=u->get<std::string>("unit","captures");
+            if(auto g=u->get_optional<size_t>("given_to_others"))a.other_dataset_given_to_others=*g;
+        }
         s.accuracy[model]=a;
     }
 }

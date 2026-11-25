@@ -1,7 +1,10 @@
 #pragma once
 
+#include "carrier_offset.hpp"
+#include "frame_timing.hpp"
 #include "symbol_timing_monitor.hpp"
 #include <algorithm>
+#include <deque>
 #include <cmath>
 #include <optional>
 #include <map>
@@ -16,6 +19,8 @@ using Clock = std::chrono::steady_clock;
 // centre that shows no link (see detections()). DroneID bursts are sparse, so a missing packet
 // on a later visit says nothing and packets simply age out.
 inline constexpr auto lifetime = std::chrono::seconds(45);
+// How far back a row's frame timing looks (frame_timing.hpp; display only).
+inline constexpr auto frame_lifetime = std::chrono::seconds(150);
 inline constexpr auto packet_lifetime = std::chrono::seconds(60);
 // A decoded identity is kept past packet_lifetime while a link that can be the same aircraft is
 // still being seen (see supports()), so a drone that is still there does not fall back to
@@ -61,6 +66,11 @@ struct Packet {
     int product_code{-1};
     Clock::time_point current_until{};  // set by Store: observed + packet_lifetime, then extended by a supporting link
     ReportedPositions positions;
+    // Display and logging only: carrier offset from the documented DroneID channel the packet was
+    // decoded on (no ppm when the decoder found it by its own automatic centring).
+    std::optional<double> offset_hz;
+    double channel_hz{};
+    std::optional<double> offset_ppm;
 };
 
 struct Region {
@@ -227,13 +237,60 @@ inline Claim assess(const Region& region, Clock::time_point now) {
 // A 20 MHz capture can see the same link at adjacent centres. The observed Phantom 4
 // spanned 18 MHz. Separate clusters describe separate links, with no aircraft count implied.
 inline constexpr double link_join_hz = 20e6;
+// Link-grid positions below this coherence (blocks disagree: mixed transmitters) are not used.
+inline constexpr double min_grid_coherence = 0.8;
+// A "Lightbridge" link whose link clocks disagree with each other far beyond their errors is not
+// one Lightbridge transmitter: its row is dropped. Live 21 Nov 2026: the Phantom 4's 13 usable
+// 2.4 GHz readings scattered 2.7 (chi-square per degree of freedom; worst of any 2-4 of them 10),
+// mean -3.98 ppm; 5.8 GHz Wi-Fi captures grouped as Lightbridge read +16 to -13 ppm, 66.
+inline constexpr double lightbridge_max_clock_scatter = 16;
+// A "Lightbridge" link-only row is shown only once its link has given at least three usable clock
+// readings within +-20 ppm (a drone crystal's range; DJI drones measured so far sit within
+// +-5) that agree (scatter above). Live 21 Nov 2026, Mini 2 only: the probe called 2.4 and
+// 5.8 GHz captures Lightbridge whose readings were unusable (+19.6 +- 2.5, -32.4 +- 2.7 ppm) or
+// scattered -30 to +20 ppm, and a 5.8 GHz row with no usable reading stayed on the page as a
+// second drone. The Phantom 4 gave usable readings on 93% of its captures, within -9.5 to +4.8.
+// Replayed on the day's logs (45 s windows): with the Phantom on its 2.4 GHz row shows at 139 of
+// 141 and 48 of 50 moments; with only the Mini 2 on, Lightbridge rows show at 0 of 30 (2.4 GHz)
+// and 1 of 19 (5.8 GHz) moments. Two readings were not enough: two of a few scattered ones
+// agreed by chance (-9.9 and -15.0; -2.4 and -3.1 ppm).
+inline constexpr double lightbridge_plausible_ppm = 20;
+inline constexpr std::size_t lightbridge_confirm_readings = 3;
+// The scatter is taken over all usable readings once outliers are dropped (without_clock_outliers:
+// one wild reading among a real link's is dropped, readings scattered everywhere all stay).
+inline bool lightbridge_link_confirmed(const std::vector<LinkClockSample>& clocks) {
+    const auto kept = without_clock_outliers(clocks);
+    const auto plausible = std::count_if(kept.begin(), kept.end(), [](const LinkClockSample& c) {
+        return std::abs(c.ppm) <= lightbridge_plausible_ppm;
+    });
+    if (std::size_t(plausible) < lightbridge_confirm_readings) return false;
+    const auto scatter = link_clock_scatter(kept);
+    return scatter && *scatter <= lightbridge_max_clock_scatter;
+}
 
 struct LinkCluster {
     std::string id, group;
     double low{}, high{};
     const symbol_timing::Result* latest{};
     std::vector<Key> captures;
+    std::vector<LinkClockSample> clocks;  // usable link clocks of those captures
 };
+
+// Does a link's own clock rule out a DroneID packet's crystal? The packet's ppm against the mean
+// of the link's readings (outliers dropped), with the "probably not" thresholds of crystal_match
+// (at least 0.5 ppm and 3 sigma apart). The mean's sigma is at least the readings' own scatter
+// over sqrt(n): live, one Lightbridge reading scattered about 2.5x its reported sigma. Live 23 Nov
+// 2026: an unreadable DroneID packet (no model, so any link type could carry it) at -0.53 ppm was
+// folded into a Lightbridge link whose 13 readings averaged -4.52 ppm; that row then counted as the
+// packet's drone and the Lightbridge drone was split.
+inline bool clock_rules_out(double packet_ppm, const std::vector<LinkClockSample>& clocks) {
+    const auto kept = without_clock_outliers(clocks);
+    if (kept.size() < 2) return false;
+    const auto m = link_clock_mean(kept);  // its sigma already allows for the readings' scatter
+    if (!m) return false;
+    const double d = std::abs(m->ppm - packet_ppm);
+    return d >= 0.5 && d >= 3 * m->sigma_ppm;
+}
 
 struct PacketSighting {
     const Key* key;
@@ -255,8 +312,9 @@ inline std::vector<std::optional<std::size_t>> associate(
         std::vector<std::size_t> same_band, other_band;
         for (std::size_t i = 0; i < links.size(); ++i) {
             const bool link_5g = links[i].low >= 3e9;
-            if (supports(*sighting.packet, packet_5g, links[i].group, link_5g))
-                (packet_5g == link_5g ? same_band : other_band).push_back(i);
+            if (!supports(*sighting.packet, packet_5g, links[i].group, link_5g)) continue;
+            if (const auto& ppm = sighting.packet->offset_ppm; ppm && clock_rules_out(*ppm, links[i].clocks)) continue;
+            (packet_5g == link_5g ? same_band : other_band).push_back(i);
         }
         const auto& choices = same_band.empty() ? other_band : same_band;
         for (const auto choice : choices) ++contenders[choice];
@@ -273,10 +331,23 @@ public:
     void timing(const symbol_timing::Result& result) {
         if (auto* row = find({result.run_id, result.radio_session, result.capture_seq, result.center}))
             row->timing = result;
+        remember_frame(result);
     }
-    void decoded(Key key, Packet packet) {
+    // Captures' frame positions (Lightbridge and OcuSync), kept longer than the rows themselves
+    // (frame_lifetime): the frame-timing fit needs 5-8 captures, and live the sweep saw the
+    // Phantom every 1-13 s, 6-8 times per 45 s, the Mini 2 about every 25 s.
+    struct FrameCapture {
+        frame_timing::Sample sample;
+        std::uint64_t capture_seq{};
+        double centre{};
+        std::string group;
+        Clock::time_point observed{};
+    };
+    const std::deque<FrameCapture>& frame_history() const { return frames_; }
+    // True when the packet is new (not already held from an earlier refresh).
+    bool decoded(Key key, Packet packet) {
         auto* row = find(std::move(key));
-        if (!row) return;
+        if (!row) return false;
         auto& packets = row->packets;
         const auto duplicate = std::find_if(packets.begin(), packets.end(), [&](const Packet& p) {
             return p.serial == packet.serial && p.model == packet.model &&
@@ -284,10 +355,11 @@ public:
                    p.observed == packet.observed && p.readable == packet.readable &&
                    p.encrypted == packet.encrypted && p.product_code == packet.product_code;
         });
-        if (duplicate != packets.end()) return;
+        if (duplicate != packets.end()) return false;
         packet.current_until = packet.observed + packet_lifetime;
         if (packets.size() == 16) packets.erase(packets.begin());
         packets.push_back(std::move(packet));
+        return true;
     }
     std::vector<LinkCluster> clusters(Clock::time_point now) const {
         std::map<long long, const symbol_timing::Result*> newest;
@@ -362,8 +434,12 @@ public:
                 cutoff != withdrawn.end() && row.timing->observed <= cutoff->second) continue;
             for (auto& link : links)
                 if (row.key.center >= link.low && row.key.center <= link.high &&
-                    row.timing->timing_group == link.group)
+                    row.timing->timing_group == link.group) {
                     link.captures.push_back(row.key);
+                    if (const auto& c = row.timing->link_clock; c && link_clock::usable(*c))
+                        link.clocks.push_back({c->ppm, c->sigma_ppm, c->link == link_clock::Link::lightbridge,
+                                               row.timing->center, row.timing->observed});
+                }
         }
         anchors_ = std::move(anchors);
         return links;
@@ -421,6 +497,21 @@ private:
         rows_.push_back({std::move(key), {}, {}});
         return &rows_.back();
     }
+    void remember_frame(const symbol_timing::Result& r) {
+        const auto& c = r.link_clock;
+        if (!c || !link_clock::usable(*c) || !c->has_symbol_phase || !r.timing_group ||
+            r.clock != wifi_security::ClockDomain::UsrpDevice)
+            return;
+        for (const auto& f : frames_)  // the monitor offers its history again on every refresh
+            if (f.capture_seq == r.capture_seq && f.sample.radio_session == r.radio_session && f.sample.run == r.run_id)
+                return;
+        frames_.push_back({{r.run_id, r.radio_session, r.device_ns * 1e-9, c->symbol_phase_s, link_clock::symbol_period_s(c->link)},
+                           r.capture_seq, r.center,
+                           r.timing_group, r.observed});
+        while (!frames_.empty() && (frames_.size() > 512 || r.observed - frames_.front().observed > frame_lifetime))
+            frames_.pop_front();
+    }
+    std::deque<FrameCapture> frames_;
     struct Anchor { std::string prefix, id; double low, high; };
     mutable std::vector<Anchor> anchors_;
     std::vector<Region> rows_;
@@ -443,6 +534,13 @@ struct UniversalClaim {
     bool classifier_only{};                   // the row exists only because of the classifier
     Clock::time_point first_observed{}, last_observed{};  // classifier-only rows: first and last capture of the row
     std::string accuracy;                     // measured accuracy of the top model, in words
+    bool naming_carries{};                    // the top model's naming held on a dataset it never trained on
+    // Display only, never used for a decision: the models the classifier ranked in captures it
+    // typed but did not name (ranked, at most 3, mean score over those captures), how many missed
+    // the score limit or were too far from the model's training views, and the latest numbers.
+    std::vector<UniversalModelScore> guesses;
+    std::size_t unnamed{}, below_score{}, beyond_distance{};
+    std::optional<double> last_score, last_distance, score_limit, distance_limit;
 };
 
 struct RemoteIdSighting {
@@ -466,7 +564,20 @@ struct Detection {
     std::optional<ClassifierHint> classifier_hint;
     std::string only_classifier_class;
     std::optional<UniversalClaim> universal;
+    // Display only: the classifier's view of a row whose readable DroneID names the model
+    // (DroneID decides such a row; this lets the page compare the two).
+    std::optional<UniversalClaim> classifier_check;
     std::vector<RemoteIdSighting> remote_id;
+    // Display only: carrier offsets of this row's held DroneID packets (both bands for a serial),
+    // and the link-grid positions of its link's current captures.
+    std::vector<OffsetSample> droneid_offsets;
+    std::vector<LinkGridSample> link_grids;
+    // Display only: the link clock (crystal ppm from symbol timing) of its link's current
+    // captures, usable readings only.
+    std::vector<LinkClockSample> link_clocks;
+    // Display only: where its Lightbridge link's symbol grid sat in each of those captures, on the
+    // receiver's device clock (frame_timing.hpp chains them into a sharper clock).
+    std::vector<frame_timing::Sample> frame_samples;
 };
 
 // Keep Remote ID current across a coordinated sweep (about 26 seconds per revisit).
@@ -494,8 +605,31 @@ inline std::map<std::string, Detection> detections(
     const auto packets = store.packets(now);
     const auto matches = associate(links, packets);
     std::vector<bool> folded(links.size());
-    const auto attach = [](Detection& row, const LinkCluster& link) {
+    const auto attach = [&](Detection& row, const LinkCluster& link) {
         row.timing = *link.latest;
+        row.link_grids.clear();
+        row.link_clocks.clear();
+        row.frame_samples.clear();
+        for (const auto& key : link.captures)
+            for (const auto& region : store.rows())
+                if (region.key == key && region.timing) {
+                    if (const auto grid = symbol_timing::link_grid(*region.timing);
+                        grid && grid->coherence >= min_grid_coherence)
+                        row.link_grids.push_back({grid->hz, grid->spacing_hz, region.timing->center,
+                                                  grid->coherence, region.timing->observed});
+                    if (const auto& clock = region.timing->link_clock; clock && link_clock::usable(*clock))
+                        row.link_clocks.push_back({clock->ppm, clock->sigma_ppm,
+                                                   clock->link == link_clock::Link::lightbridge,
+                                                   region.timing->center, region.timing->observed});
+                }
+        // Frame timing: every capture of this link's group within its range over the last
+        // frame_lifetime, also those withdrawn from the display at a centre the link has since
+        // left (a hopping link leaves centres all the time). Only its own range, so two rows of
+        // one band keep separate captures for the frame-timing check between them.
+        for (const auto& f : store.frame_history())
+            if (f.group == link.group && f.centre >= link.low && f.centre <= link.high && f.observed <= now &&
+                now - f.observed <= frame_lifetime)
+                row.frame_samples.push_back(f.sample);
         row.group = link.group;
         row.candidates = candidates_for(row.group);
         row.link_id = link.id;
@@ -512,6 +646,12 @@ inline std::map<std::string, Detection> detections(
         row.packet = *sighting.packet;
         row.packet_key = *sighting.key;
         row.band = row.packet_key.center < 3e9 ? "2.4 GHz" : "5 GHz";
+        for (const auto& region : store.rows())
+            for (const auto& packet : region.packets)
+                if (packet.offset_ppm && packet.observed <= now && now <= packet.current_until &&
+                    packet_id(region.key, packet) == id)
+                    row.droneid_offsets.push_back({*packet.offset_ppm, packet.offset_hz.value_or(0),
+                                                   packet.channel_hz, packet.observed});
         if (const auto match = matches[i++]) {
             attach(row, links[*match]);
             folded[*match] = true;
@@ -531,6 +671,7 @@ inline std::map<std::string, Detection> detections(
         auto& row = rows[links[link].id];
         row.id = links[link].id;
         attach(row, links[link]);
+        if (row.group == "32.8kHz" && !lightbridge_link_confirmed(row.link_clocks)) rows.erase(links[link].id);
     }
     for (const auto& rid : remote_ids) {
         if (rid.track.empty() || rid.observed > now || now - rid.observed > remote_id_lifetime) continue;
@@ -554,14 +695,22 @@ inline std::map<std::string, Detection> detections(
             row.remote_id.push_back(rid);
         }
     }
+    // A single wild reading that claims a small error would decide a row's clock on its own.
+    for (auto& [id, row] : rows) row.link_clocks = without_clock_outliers(std::move(row.link_clocks));
     return rows;
+}
+
+// How a timing group is named on the page. "32.8kHz" is the Lightbridge group, found by its
+// 10.9375 kHz symbol or its 32.8 kHz third-lag (symbol_timing.hpp).
+inline std::string group_words(const std::string& group) {
+    return group == "32.8kHz" ? "Lightbridge timing" : group;
 }
 
 inline std::string display_identity(const Detection& row) {
     if (!row.packet) {
         if (!row.remote_id.empty()) return "Remote ID broadcast";
         if (row.universal && row.universal->classifier_only) return "Classifier only (" + row.universal->type + ")";
-        return "Link only (" + row.group + ")";
+        return "Link only (" + group_words(row.group) + ")";
     }
     const auto& packet = *row.packet;
     if (packet.encrypted) return "DJI DroneID present, identity encrypted";

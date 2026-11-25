@@ -46,7 +46,7 @@ def load_package(path):
     pkg = torch.load(path, weights_only=False, map_location='cpu')
     if pkg.get('format') != FORMAT or pkg.get('architecture') != ARCHITECTURE:
         raise ValueError('not a universal classifier package')
-    net = TwoLevel(len(NAMES), len(pkg['models']), pkg.get('use_facts', True))
+    net = TwoLevel(len(pkg['norm']['mean']), len(pkg['models']), pkg.get('use_facts', True))
     net.load_state_dict(pkg['state_dict']); net.eval()
     if 'scale_mask' not in pkg['norm']:
         raise ValueError('package norm has no fixed scale mask (single live views would be scaled per batch)')

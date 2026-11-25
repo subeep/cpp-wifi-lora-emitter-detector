@@ -473,6 +473,10 @@ private:
     // thread (run() and its callees), so rx_fail_streak_ itself needs no
     // locking - only the status_ write it produces does.
     void note_capture_health(bool got_data);
+    // Recreates the device handle after a receive stall (connect_sdr() with the current
+    // device type and gain) and clears the stall state. False when every attempt failed:
+    // sdr_ is then null and nothing may capture until a later call succeeds.
+    bool reconnect_after_stall(const char* why);
 
     std::unique_ptr<CaptureDevice> sdr_;
 #ifdef RFMON_ENABLE_WIFI_CYCLO_SHADOW
@@ -548,6 +552,8 @@ private:
 
     int rx_fail_streak_ = 0;
     static constexpr int kRxStallThreshold = 3;
+    // Consecutive captures that threw a UHD exception before coordinated mode reconnects.
+    static constexpr int kControlFailThreshold = 2;
 };
 
 }  // namespace rfmon

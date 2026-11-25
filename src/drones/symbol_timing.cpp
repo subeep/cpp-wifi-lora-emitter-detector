@@ -24,9 +24,11 @@ std::size_t block_start(std::size_t total, std::size_t index, std::size_t count)
 }
 
 const char* group(const Fractions& f) {
-    if (f[5] >= group_threshold) return "32.8kHz";
-    if (f[3] >= group_threshold) return f[2] >= group_threshold ? "15kHz+30kHz" : "30kHz";
-    return f[2] >= group_threshold ? "15kHz" : nullptr;
+    // Lightbridge: either its symbol lag or the third-lag. The group keeps its name "32.8kHz"
+    // (model table, classifier family, logs); the page words it as a Lightbridge link.
+    if (f[lightbridge] >= group_threshold || f[lightbridge_third] >= group_threshold) return "32.8kHz";
+    if (f[lte_30k] >= group_threshold) return f[lte_15k] >= group_threshold ? "15kHz+30kHz" : "30kHz";
+    return f[lte_15k] >= group_threshold ? "15kHz" : nullptr;
 }
 
 struct Probe::State {
@@ -45,8 +47,9 @@ struct Probe::State {
 Probe::Probe() : state_(std::make_unique<State>()) {}
 Probe::~Probe() = default;
 
-bool Probe::measure(const std::complex<float>* samples, double rate, Ratios& ratios) {
+bool Probe::measure(const std::complex<float>* samples, double rate, Ratios& ratios, Phases* phases) {
     ratios.fill(0);
+    if (phases) phases->fill({});
     if (!supported_rate(rate)) return false;
     auto& s = *state_;
     std::complex<double> sum{};
@@ -92,6 +95,13 @@ bool Probe::measure(const std::complex<float>* samples, double rate, Ratios& rat
             if (k < first - 3 || k > last + 3) neighbors[count++] = profile(k);
         const float base = median(neighbors.data(), count);
         if (base > 0) ratios[i] = std::max(profile(first), profile(last)) / base;
+        if (phases) {
+            const auto at = [&](int k) { return std::complex<double>(s.output[k].r, s.output[k].i) / double(zero); };
+            const auto low = at(first), high = at(last);
+            const double step = std::arg(high * std::conj(low));
+            const double phase = std::arg(low) + (lag - first) * step;
+            (*phases)[i] = std::polar(std::max(std::abs(low), std::abs(high)), phase);
+        }
     }
     return true;
 }

@@ -6,7 +6,8 @@
 
 namespace rfmon::drone_claims {
 // Shared by the live history and the recorded-fixture GUI test.
-inline void draw_drone_history(const DroneTracks& drone_tracks, Clock::time_point now) {
+// `height` is the table height in pixels (the Drones page lets the user drag it).
+inline void draw_drone_history(const DroneTracks& drone_tracks, Clock::time_point now, float height = 300) {
     ImGui::SeparatorText("Drone history");
     for (const auto& alert : drone_tracks.alerts()) {
         ImGui::TextWrapped("%s%s", alert.lower_severity ? "Advisory · " : "", alert.alert.c_str());
@@ -27,7 +28,7 @@ inline void draw_drone_history(const DroneTracks& drone_tracks, Clock::time_poin
     };
     if (history.empty()) ImGui::TextUnformatted("No drone tracks yet");
     else if (ImGui::BeginTable("drone_history", 10,
-               ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY, ImVec2(0, 300))) {
+               ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY, ImVec2(0, height))) {
         for (const auto* heading : {"Identity", "Best model verdict", "First seen", "Last seen",
                                     "Time present", "Appearances", "Bands", "Evidence",
                                     "Last reported positions", "State"})

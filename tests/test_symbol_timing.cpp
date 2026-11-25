@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <kiss_fft.h>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <random>
@@ -46,6 +47,7 @@ static int parity(const fs::path& root) {
             require(probe.measure(buffer.data(), ref.at("rate_hz"), actual), "invalid block");
             for (std::size_t i = 0; i < actual.size(); ++i) {
                 const auto name = hypotheses[i].name;
+                if (!block.at("ratios").contains(name)) continue;  // added after the reference (v2)
                 const double expected = block.at("ratios").at(name);
                 require(std::abs(actual[i] - expected) <= std::max(.05, .02 * std::abs(expected)),
                         it.key() + " " + name + " ratio " + std::to_string(actual[i]) +
@@ -70,6 +72,7 @@ static int parity(const fs::path& root) {
         }
         for (std::size_t h = 0; h < fractions.size(); ++h) {
             fractions[h] /= count;
+            if (!capture.at("flagged_fraction").contains(hypotheses[h].name)) continue;
             const double expected = capture.at("flagged_fraction").at(hypotheses[h].name);
             require(std::abs(fractions[h] - expected) < 1e-9, it.key() + " capture fraction mismatch");
         }
@@ -147,6 +150,136 @@ static void synthetic() {
     check(1024, 72, 30.72e6, 3, 120, true);
     check(1024, 72, 30.72e6, -1, 120, false);
     check(1024, 72, 30.72e6, -1, 0, false);
+
+    // Lightbridge: 4096-point symbols at 44.8 MSps with a 512-sample prefix (91.43 + 11.43 us).
+    check(4096, 512, 44.8e6, int(lightbridge), 0, true);
+    check(4096, 512, 44.8e6, int(lightbridge), 120, true);
+    // Hard-clipped, as a close Phantom is at the app's gain: still flagged.
+    auto clipped = waveform(4096, 512, 44.8e6, 0, true);
+    for (auto& x : clipped) x = {x.real() > .3f ? .3f : x.real() < -.3f ? -.3f : x.real(),
+                                 x.imag() > .3f ? .3f : x.imag() < -.3f ? -.3f : x.imag()};
+    Ratios clipped_ratios;
+    require(probe.measure(clipped.data(), 20e6, clipped_ratios), "clipped IQ rejected");
+    require(clipped_ratios[lightbridge] > flag_ratio, "clipped Lightbridge not flagged");
+
+    // Groups: either Lightbridge lag gives the Lightbridge group ("32.8kHz"), ahead of 15/30 kHz.
+    Fractions f{};
+    f[lightbridge] = .5;
+    require(std::string(group(f)) == "32.8kHz", "10.9375 kHz alone is Lightbridge");
+    f[lightbridge] = 0; f[lightbridge_third] = .3;
+    require(std::string(group(f)) == "32.8kHz", "32.8 kHz alone is still Lightbridge");
+    f[lightbridge_third] = .29; f[lightbridge] = .29; f[lte_15k] = .5;
+    require(std::string(group(f)) == "15kHz", "below threshold Lightbridge does not take a 15 kHz capture");
+    require(std::string(hypotheses[lightbridge].name) == "lightbridge_10.9375kHz" &&
+                std::abs(1 / hypotheses[lightbridge].seconds - 10937.5) < 1e-6 && std::string(version) == "symbol-timing-v2",
+            "Lightbridge hypothesis and constants version");
+}
+
+// Band-limited 15 kHz OFDM (600 subcarriers, 2048 FFT at 30.72 MSps, like DroneID / LTE 10 MHz),
+// linearly interpolated to 20 MSps, then shifted by shift_hz at 20 MSps.
+static std::vector<Sample> ofdm15(double shift_hz, std::size_t blocks, unsigned seed) {
+    constexpr int n = 2048, cp = 144;
+    std::mt19937 rng(seed);
+    std::normal_distribution<float> normal;
+    std::unique_ptr<kiss_fft_state, decltype(&std::free)> inverse{kiss_fft_alloc(n, 1, nullptr, nullptr), std::free};
+    std::vector<kiss_fft_cpx> bins(n), time(n);
+    const std::size_t total = blocks * block_size;
+    const double step = 30.72e6 / 20e6;
+    std::vector<Sample> native;
+    while (native.size() <= total * step + 1) {
+        for (int k = 0; k < n; ++k) {
+            const int carrier = k < n / 2 ? k : k - n;
+            const bool used = carrier != 0 && std::abs(carrier) <= 300;
+            bins[k] = used ? kiss_fft_cpx{normal(rng), normal(rng)} : kiss_fft_cpx{0, 0};
+        }
+        kiss_fft(inverse.get(), bins.data(), time.data());
+        for (int k = n - cp; k < n; ++k) native.emplace_back(time[k].r, time[k].i);
+        for (int k = 0; k < n; ++k) native.emplace_back(time[k].r, time[k].i);
+    }
+    std::vector<Sample> result(total);
+    const double pi = std::acos(-1.);
+    for (std::size_t i = 0; i < total; ++i) {
+        const double position = i * step;
+        const auto base = static_cast<std::size_t>(position);
+        const Sample x = native[base] + float(position - base) * (native[base + 1] - native[base]);
+        result[i] = x * Sample(std::polar(1., 2 * pi * shift_hz * i / 20e6)) + .05f * Sample{normal(rng), normal(rng)};
+    }
+    return result;
+}
+
+// The grid offset puts the subcarrier grid at (centre + shift) modulo 15 kHz, wherever the link
+// sits in the capture, including shifts of more than one spacing.
+static void grid() {
+    Probe probe;
+    constexpr double centre = 2414.5e6, spacing = 15e3;
+    for (const double shift : {0., 1234., -4321., 7400., 3000123., -2345678., 1e6 + 14990.}) {
+        const auto iq = ofdm15(shift, 4, 7);
+        std::complex<double> sum{};
+        double magnitude = 0;
+        std::size_t flagged = 0;
+        for (std::size_t b = 0; b < 4; ++b) {
+            Ratios ratios;
+            Phases phases;
+            require(probe.measure(iq.data() + b * block_size, 20e6, ratios, &phases), "OFDM rejected");
+            require(ratios[2] > flag_ratio, "15 kHz OFDM not flagged");
+            sum += phases[2]; magnitude += std::abs(phases[2]); ++flagged;
+        }
+        const auto offset = grid_offset(sum, magnitude, flagged, spacing, centre);
+        require(offset.has_value(), "no grid offset");
+        double expected = std::fmod(centre + shift, spacing);
+        if (expected < 0) expected += spacing;
+        double error = std::abs(offset->hz - expected);
+        error = std::min(error, spacing - error);  // the grid position wraps at one spacing
+        std::cout << "grid shift " << shift << " Hz: measured " << offset->hz << " Hz, expected "
+                  << expected << " Hz, error " << error << " Hz, coherence " << offset->coherence << '\n';
+        require(error < 100, "grid offset error " + std::to_string(error) + " Hz at shift " + std::to_string(shift));
+        require(offset->coherence > .9, "grid coherence");
+    }
+    require(!grid_offset({}, 0, 0, spacing, centre), "grid offset without blocks");
+    require(!grid_offset({1, 0}, 1, 1, spacing, std::numeric_limits<double>::quiet_NaN()), "grid offset with NaN centre");
+
+    // Through the monitor: a 15 kHz result carries its grid, found by link_grid.
+    Monitor worker;
+    worker.start();
+    const auto iq = ofdm15(2500., max_blocks, 9);
+    rfmon::wifi_security::CaptureRecord capture;
+    capture.samples_received = iq.size();
+    capture.capture_center_hz = 5756.5e6;
+    capture.sample_rate_hz = 20e6;
+    capture.run_id = "grid";
+    worker.observe(iq, capture);
+    worker.stop();
+    const auto state = worker.snapshot();
+    require(state.completed == 1 && state.history.size() == 1, "monitor did not finish the OFDM capture");
+    const auto& result = state.history.front();
+    require(result.timing_group && std::string(result.timing_group) == "15kHz", "OFDM capture not grouped 15kHz");
+    const auto link = link_grid(result);
+    require(link.has_value() && link->blocks == max_blocks, "monitor grid missing");
+    double expected = std::fmod(5756.5e6 + 2500., 15e3);
+    double error = std::abs(link->hz - expected);
+    require(std::min(error, 15e3 - error) < 100, "monitor grid offset error " + std::to_string(error));
+    Result empty;
+    require(!link_grid(empty), "grid without a timing group");
+
+    // A Lightbridge capture through the monitor: grouped, its grid on the 10.9375 kHz spacing.
+    Monitor lb;
+    lb.start();
+    auto lb_iq = waveform(4096, 512, 44.8e6, 0, true);
+    const auto lb_block = lb_iq;
+    for (std::size_t i = 1; i < max_blocks; ++i) lb_iq.insert(lb_iq.end(), lb_block.begin(), lb_block.end());
+    capture.run_id = "lightbridge";
+    capture.capture_center_hz = 2437.5e6;
+    capture.samples_received = lb_iq.size();
+    lb.observe(lb_iq, capture);
+    lb.stop();
+    const auto lb_state = lb.snapshot();
+    require(lb_state.history.size() == 1, "monitor did not finish the Lightbridge capture");
+    const auto& lb_result = lb_state.history.front();
+    require(lb_result.timing_group && std::string(lb_result.timing_group) == "32.8kHz" &&
+                lb_result.fractions[lightbridge] == 1,
+            "Lightbridge capture not grouped");
+    const auto lb_grid = link_grid(lb_result);
+    require(lb_grid && std::abs(lb_grid->spacing_hz - 10937.5) < 1e-6, "Lightbridge grid not on 10.9375 kHz");
 }
 
 static void monitor() {
@@ -184,6 +317,7 @@ static void monitor() {
 int main(int argc, char** argv) try {
     if (argc == 2) return parity(argv[1]);
     synthetic();
+    grid();
     monitor();
     return 0;
 } catch (const std::exception& e) {

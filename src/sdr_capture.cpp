@@ -108,6 +108,9 @@ CaptureResult UsrpCapture::capture_detailed(double center_hz, double sample_rate
                                             double settle_s, bool retune_always) {
     CaptureTiming timing;
     timing.gain_db = gain_db_;
+    // Which UHD call was running, for the exception message: on the X310 a lost control ACK
+    // shows up first in whichever call happens to need the control port next.
+    const char* stage = "streamer setup";
     // Ethernet-connected devices (X310) occasionally hit a transient
     // control-channel timeout (uhd::io_error, "Timed out getting recv
     // buff for management transaction") under rapid retuning - this is
@@ -123,6 +126,7 @@ CaptureResult UsrpCapture::capture_detailed(double center_hz, double sample_rate
         double actual_rate = current_rate_;
 
         if (retune_always || !tuned_center_hz_ || *tuned_center_hz_ != center_hz) {
+            stage = "tune";
             uhd::tune_result_t tune = usrp_->set_rx_freq(uhd::tune_request_t(center_hz), channel_);
             last_rf_hz_ = tune.actual_rf_freq;
             last_dsp_hz_ = tune.actual_dsp_freq;
@@ -154,7 +158,9 @@ CaptureResult UsrpCapture::capture_detailed(double center_hz, double sample_rate
         stream_cmd.stream_now = true;
         timing.requested_samples = num_samps;
         timing.host_before_ns = host_now_ns();
+        stage = "stream command";
         streamer_->issue_stream_cmd(stream_cmd);
+        stage = "receive";
 
         size_t recvd = 0;
         size_t max_recv = streamer_->get_max_num_samps();
@@ -193,13 +199,14 @@ CaptureResult UsrpCapture::capture_detailed(double center_hz, double sample_rate
         }
         buf.resize(recvd);
 
+        stage = "stop command";
         streamer_->issue_stream_cmd(
             uhd::stream_cmd_t(uhd::stream_cmd_t::STREAM_MODE_STOP_CONTINUOUS));
         if (recvd == 0) timing.host_after_ns = host_now_ns();
         return {std::move(buf), actual_rate, overflow, std::move(timing)};
     } catch (const uhd::exception& e) {
-        std::fprintf(stderr, "UsrpCapture::capture: %s (treating as a dropped capture)\n",
-                     e.what());
+        std::fprintf(stderr, "UsrpCapture::capture (%s, %.3f MHz): %s (treating as a dropped capture)\n",
+                     stage, center_hz / 1e6, e.what());
         // Don't trust whatever state the streamer was left in - force a
         // full rebuild via ensure_streamer() on the next call rather
         // than risk reusing a half-broken one.

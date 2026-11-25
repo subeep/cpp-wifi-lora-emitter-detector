@@ -8,6 +8,7 @@
 #ifdef RFMON_ENABLE_DJI_DRONEID
 #include <deque>
 #include <future>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -43,7 +44,23 @@ struct PanelState {
     std::string export_message;
     float entries_height = 0;          // 0: default; dragged by the handle under the table
     char entries_filter[128] = "";
+    std::set<std::string> hidden_sources;  // Entry::source values left out of the table (Evidence tab filter)
 };
+
+// Start / Stop coordinated detection: switch the scanner to the coordinated
+// schedule (starting the unified drone service if it is not running), or
+// return to the previous band and stop what Start started.
+void start_detection(PanelState& state, Scanner& scanner, drone::Addon& drones);
+void stop_detection(PanelState& state, Scanner& scanner, drone::Addon& drones);
+
+// Pieces of draw_section, also used by the Drones page (drones_page.hpp):
+// schedule conflicts / errors with their clear buttons; the schedule strip,
+// per-band coverage and schedule editor; the combined entries with a source
+// filter and the inspector; and the module health lines.
+void draw_schedule_problems(Scanner& scanner);
+void draw_coverage_view(PanelState& state, Scanner& scanner);
+void draw_evidence_view(PanelState& state, Scanner& scanner, drone::Addon& drones, shortrange::Monitor* bluetooth);
+void draw_module_health(drone::Addon& drones, ml::Inference& model, shortrange::Monitor* bluetooth);
 
 void draw_section(PanelState& state, Scanner& scanner, drone::Addon& drones, ml::Inference& model, bool connected,
                   shortrange::Monitor* bluetooth = nullptr);

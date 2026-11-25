@@ -193,6 +193,57 @@ void draw_remote_id(const RidJson& s) {
             }
     ImGui::PopID();
 }
+// The four decoder sections of the live Drone Detection tab (native DJI, legacy fallback,
+// Wi-Fi Open Drone ID, coverage and independent controls). Also used by the Drones page.
+void draw_decoder_sections(Addon& a) {
+    const auto native=a.native.snapshot();
+    if(ImGui::CollapsingHeader("Native DJI packets and O4 structure evidence",ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextWrapped("DJI DroneID packet parsing is not full O1/O2/O3/O3+ control/video decoding. Native telemetry covers fewer packet formats than the retained legacy fallback. O4 is experimental; O4+ remains unqualified.");
+        draw_native_results(native,false);
+    }
+    if(ImGui::CollapsingHeader("DJI broadcast telemetry / legacy fallback",ImGuiTreeNodeFlags_DefaultOpen))
+        draw_results(a.live.snapshot(),false);
+    if(ImGui::CollapsingHeader("Wi-Fi Open Drone ID",ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextWrapped("Beacon and NAN message packs, protocol versions 0 / 1 / 2. Uses complete decoded Wi-Fi frames. No Bluetooth or signature verification; unsupported PHYs and scan gaps limit coverage.");
+        static RidJson rid;static double last=-1;static bool last_enabled=false;
+        const bool enabled=a.remote_id.enabled();
+        if(rid.is_null()||ImGui::GetTime()-last>.25||enabled!=last_enabled){rid=a.remote_id.snapshot();last=ImGui::GetTime();last_enabled=enabled;}
+        draw_remote_id(rid);
+    }
+    if(ImGui::CollapsingHeader("Coverage and independent diagnostic controls")) {
+        ImGui::Text("Native offered: %llu | not selected: %llu | unusable captures: %llu | discontinuities: %llu",
+            (unsigned long long)a.native_offered.load(),(unsigned long long)a.native_omitted.load(),
+            (unsigned long long)a.native_unhealthy.load(),(unsigned long long)native.discontinuities);
+        ImGui::Text("Maximum native observer copy: %.3f ms (receiver processing lane)",a.native_max_observer_ns.load()*1e-6);
+        ImGui::Text("Legacy offered: %llu | not selected: %llu | unusable captures: %llu",
+            (unsigned long long)a.offered.load(),(unsigned long long)a.omitted.load(),(unsigned long long)a.unhealthy.load());
+        ImGui::TextWrapped("Legacy fallback samples up to four separate 20 ms windows (2M samples each). Counters are samples/jobs, not a probability of detecting every drone. Independent controls are available when the unified service is stopped.");
+        ImGui::BeginDisabled(a.unified);
+        if(a.live.running()){if(ImGui::Button("Stop legacy DJI diagnostic"))a.live.stop();}
+        else if(ImGui::Button("Start legacy DJI diagnostic"))a.live.start();
+        bool rid_enabled=a.remote_id.enabled();if(ImGui::Checkbox("Independent Wi-Fi Remote ID",&rid_enabled))a.remote_id.enable(rid_enabled);
+        ImGui::EndDisabled();
+    }
+}
+// Offline raw-IQ decode (the Offline IQ review tab).
+void draw_offline_review(Addon& a) {
+    static char path[1024]=""; static double rate=50e6,frequency=2444.5e6,offset=0;
+    static int decoder=0; // 0 legacy, 1 native
+    ImGui::TextWrapped("Raw little-endian complex-float32 IQ only. Enter the recording's actual metadata. Legacy reads at most 40 ms / 2M samples; native reads at most 160 ms / 40M samples. Source files are not modified. Results remain separate from live broadcasts.");
+    ImGui::TextUnformatted("Decoder");ImGui::SameLine();
+    ImGui::RadioButton("Legacy DJI (telemetry)",&decoder,0);ImGui::SameLine();
+    ImGui::RadioButton("Native DJI packets + O4 evidence",&decoder,1);
+    ImGui::TextUnformatted("Raw IQ file path");
+    ImGui::SetNextItemWidth(-1); ImGui::InputText("##IQ path",path,sizeof(path));
+    ImGui::SetNextItemWidth(180); ImGui::InputDouble("Sample rate (Hz)",&rate,0,0,"%.0f");
+    ImGui::SetNextItemWidth(180); ImGui::InputDouble("Centre frequency (Hz)",&frequency,0,0,"%.0f");
+    ImGui::SetNextItemWidth(180); ImGui::InputDouble("Offset (seconds)",&offset,0,0,"%.6f");
+    ImGui::BeginDisabled(a.replay_busy); if(ImGui::Button("Decode interval")) a.load(path,rate,frequency,offset,decoder==1); ImGui::EndDisabled();
+    ImGui::TextWrapped("%s",a.replay_status().c_str());
+    const auto result=a.replay.snapshot();
+    if(a.replay_native){ImGui::TextWrapped("%s",result.status.c_str());draw_native_results(result,true);}
+    else draw_results(result,true);
+}
 void draw_panel(Addon& a,const std::string& band,bool connected, const char* select_tab) {
     ImGui::SeparatorText("Drone Detection");
     ImGui::TextWrapped("Receive-only observers on the existing receiver. Reported broadcast identities are unauthenticated. Model candidates and experimental O4 evidence are not validated drone identities.");
@@ -209,52 +260,11 @@ void draw_panel(Addon& a,const std::string& band,bool connected, const char* sel
             ImGui::TextWrapped("An already running classifier is reused. Otherwise this starts the existing default checkpoint; start a custom checkpoint in Model Inference first.");
             const auto native=a.native.snapshot();
             ImGui::TextWrapped("Native backend: %s | legacy fallback: %s | Wi-Fi Remote ID: %s",native.status.c_str(),a.live.running()?"running":"OFF",a.remote_id.enabled()?"enabled":"OFF");
-            if(ImGui::CollapsingHeader("Native DJI packets and O4 structure evidence",ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::TextWrapped("DJI DroneID packet parsing is not full O1/O2/O3/O3+ control/video decoding. Native telemetry covers fewer packet formats than the retained legacy fallback. O4 is experimental; O4+ remains unqualified.");
-                draw_native_results(native,false);
-            }
-            if(ImGui::CollapsingHeader("DJI broadcast telemetry / legacy fallback",ImGuiTreeNodeFlags_DefaultOpen))
-                draw_results(a.live.snapshot(),false);
-            if(ImGui::CollapsingHeader("Wi-Fi Open Drone ID",ImGuiTreeNodeFlags_DefaultOpen)) {
-                ImGui::TextWrapped("Beacon and NAN message packs, protocol versions 0 / 1 / 2. Uses complete decoded Wi-Fi frames. No Bluetooth or signature verification; unsupported PHYs and scan gaps limit coverage.");
-                static RidJson rid;static double last=-1;static bool last_enabled=false;
-                const bool enabled=a.remote_id.enabled();
-                if(rid.is_null()||ImGui::GetTime()-last>.25||enabled!=last_enabled){rid=a.remote_id.snapshot();last=ImGui::GetTime();last_enabled=enabled;}
-                draw_remote_id(rid);
-            }
-            if(ImGui::CollapsingHeader("Coverage and independent diagnostic controls")) {
-                ImGui::Text("Native offered: %llu | not selected: %llu | unusable captures: %llu | discontinuities: %llu",
-                    (unsigned long long)a.native_offered.load(),(unsigned long long)a.native_omitted.load(),
-                    (unsigned long long)a.native_unhealthy.load(),(unsigned long long)native.discontinuities);
-                ImGui::Text("Maximum native observer copy: %.3f ms (receiver processing lane)",a.native_max_observer_ns.load()*1e-6);
-                ImGui::Text("Legacy offered: %llu | not selected: %llu | unusable captures: %llu",
-                    (unsigned long long)a.offered.load(),(unsigned long long)a.omitted.load(),(unsigned long long)a.unhealthy.load());
-                ImGui::TextWrapped("Legacy fallback samples up to four separate 20 ms windows (2M samples each). Counters are samples/jobs, not a probability of detecting every drone. Independent controls are available when the unified service is stopped.");
-                ImGui::BeginDisabled(a.unified);
-                if(a.live.running()){if(ImGui::Button("Stop legacy DJI diagnostic"))a.live.stop();}
-                else if(ImGui::Button("Start legacy DJI diagnostic"))a.live.start();
-                bool rid_enabled=a.remote_id.enabled();if(ImGui::Checkbox("Independent Wi-Fi Remote ID",&rid_enabled))a.remote_id.enable(rid_enabled);
-                ImGui::EndDisabled();
-            }
+            draw_decoder_sections(a);
             ImGui::EndTabItem();
         }
         if(ImGui::BeginTabItem("Offline IQ review", nullptr, select_tab && std::string(select_tab)=="Offline IQ review" ? ImGuiTabItemFlags_SetSelected : 0)) {
-            static char path[1024]=""; static double rate=50e6,frequency=2444.5e6,offset=0;
-            static int decoder=0; // 0 legacy, 1 native
-            ImGui::TextWrapped("Raw little-endian complex-float32 IQ only. Enter the recording's actual metadata. Legacy reads at most 40 ms / 2M samples; native reads at most 160 ms / 40M samples. Source files are not modified. Results remain separate from live broadcasts.");
-            ImGui::TextUnformatted("Decoder");ImGui::SameLine();
-            ImGui::RadioButton("Legacy DJI (telemetry)",&decoder,0);ImGui::SameLine();
-            ImGui::RadioButton("Native DJI packets + O4 evidence",&decoder,1);
-            ImGui::TextUnformatted("Raw IQ file path");
-            ImGui::SetNextItemWidth(-1); ImGui::InputText("##IQ path",path,sizeof(path));
-            ImGui::SetNextItemWidth(180); ImGui::InputDouble("Sample rate (Hz)",&rate,0,0,"%.0f");
-            ImGui::SetNextItemWidth(180); ImGui::InputDouble("Centre frequency (Hz)",&frequency,0,0,"%.0f");
-            ImGui::SetNextItemWidth(180); ImGui::InputDouble("Offset (seconds)",&offset,0,0,"%.6f");
-            ImGui::BeginDisabled(a.replay_busy); if(ImGui::Button("Decode interval")) a.load(path,rate,frequency,offset,decoder==1); ImGui::EndDisabled();
-            ImGui::TextWrapped("%s",a.replay_status().c_str());
-            const auto result=a.replay.snapshot();
-            if(a.replay_native){ImGui::TextWrapped("%s",result.status.c_str());draw_native_results(result,true);}
-            else draw_results(result,true);
+            draw_offline_review(a);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

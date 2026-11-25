@@ -3,9 +3,11 @@
 #include "drones/evidence_remote_id.hpp"
 #include "drones/classifier_hint.hpp"
 #include "drones/universal_claim.hpp"
+#include "drones/labelled_recorder.hpp"
 #include "drones/model_verdict.hpp"
 #include "drones/evidence_log.hpp"
 #include "drones/evidence_packet.hpp"
+#include "drones/offset_log.hpp"
 #include "drones/symbol_timing_monitor.hpp"
 #ifdef RFMON_ENABLE_DJI_DRONEID
 #include "drones/droneid_followup_wiring.hpp"
@@ -32,6 +34,7 @@
 
 #ifdef RFMON_ENABLE_DJI_DRONEID
 #include "coordinated_panel.hpp"
+#include "drones_page.hpp"
 #include "drones/panel.hpp"
 #endif
 #include "config.hpp"
@@ -290,6 +293,9 @@ int main() {
     rfmon::drone_claims::DetectionLog drone_log(
         std::filesystem::path(PROJECT_ROOT_DIR) / "data" / "drone_detections.jsonl");
     std::map<std::string, rfmon::drone_claims::Detection> drone_rows;
+    // Carrier-offset measurements, one line each (checking them before they are used).
+    rfmon::drone_claims::OffsetLog drone_offset_log(
+        std::filesystem::path(PROJECT_ROOT_DIR) / "data" / "drone_offsets.jsonl");
     rfmon::drone_claims::DroneTracks drone_tracks;
     rfmon::drone_claims::DroneTrackLog drone_track_log(
         std::filesystem::path(PROJECT_ROOT_DIR) / "data" / "drone_tracks.jsonl");
@@ -307,14 +313,21 @@ int main() {
     // before the scanner so it outlives it.
     rfmon::droneid_followup::Followup droneid_followup;
     rfmon::droneid_followup::connect(droneid_followup, symbol_timing, drones);
-    drones.start_classifier=[&] {
-        if(model_inference.snapshot().enabled)return false;
+    // Universal classifier package (plan stage D): type, and models inside the measured family.
+    // Chosen in the Drones page's Diagnostics tab; v6 by default (25 Nov: the first package that
+    // types the user's X310 Phantom 4, via the Lightbridge symbol lag; v3-v5 stay in the picker).
+    const std::string default_classifier_package=std::string(PROJECT_ROOT_DIR)+"/data/drone_ml/2026-11-24/universal_package/universal_v6.pt";
+    std::string classifier_package=default_classifier_package;
+    const auto classifier_options=[&] {
         ml::Options options;
-        // Universal classifier package (plan stage D): type, and models inside the measured family.
-        options.model=std::string(PROJECT_ROOT_DIR)+"/data/drone_ml/2026-11-14/universal_package/universal_v3.pt";
+        options.model=classifier_package;
         options.python=std::string(PROJECT_ROOT_DIR)+"/data/drone_ml/runtime-2026-10-14/bin/python";
         options.script=std::string(PROJECT_ROOT_DIR)+"/tools/drone_ml/universal_worker.py";
-        return model_inference.start(options);
+        return options;
+    };
+    drones.start_classifier=[&] {
+        if(model_inference.snapshot().enabled)return false;
+        return model_inference.start(classifier_options());
     };
     drones.stop_classifier=[&]{model_inference.stop();};
     drones.classifier_state=[&] {
@@ -332,6 +345,16 @@ int main() {
                     [&](const auto& frame) { drones.remote_id.submit(frame); });
     scanner.set_droneid_followup(&droneid_followup);
     coordinated::PanelState coordinated_panel;
+    rfmon::drones_page::State drones_page_state;
+    // Training recorder: captures DroneID names, saved with that model as the label. While it
+    // records it raises the scanner's IQ retention so the captures are still in memory when the
+    // DroneID packet arrives; the previous retention comes back when it stops.
+    rfmon::drone_claims::LabelledRecorder labelled_recorder;
+    size_t retention_before_recording = 0;
+    bool recorder_owns_retention = false;
+    const std::string recorder_default_dir = std::filesystem::exists("/media/sudeep/Storage")
+        ? std::string("/media/sudeep/Storage/drone_universal_classifier/own_x310_labelled")
+        : std::string(PROJECT_ROOT_DIR) + "/data/labelled_captures";
     coordinated_panel.export_dir=std::string(PROJECT_ROOT_DIR)+"/data/drone_evidence";
 #else
     Scanner scanner([&](const auto& iq, const auto& record) { model_inference.observe(iq, record); shortrange_monitor.observe(iq, record); symbol_timing.observe(iq, record); });
@@ -359,6 +382,13 @@ int main() {
     SdrDeviceType selected_device = SdrDeviceType::B210;
     bool lora_laboratory_mode = false;
     int frame_count = 0;
+#ifdef RFMON_ENABLE_DJI_DRONEID
+    // The drone service is on by default: DJI DroneID (native and the older decoder), Wi-Fi
+    // Remote ID and the universal classifier analyse every capture, whichever way the receiver
+    // is started (Start detection, or a mode chosen in Monitoring setup). It can be turned off
+    // in the Drones page's Diagnostics tab.
+    drones.start_unified();
+#endif
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
@@ -869,6 +899,14 @@ int main() {
             },[&]{devices::draw_panel(devices_panel,inventory,int64_t(std::time(nullptr)));});
         };
         const auto now = rfmon::drone_claims::Clock::now();
+#ifdef RFMON_ENABLE_DJI_DRONEID
+        // The recorder stopped (by the user, or at a disk / size limit): give back the retention.
+        if (recorder_owns_retention && !labelled_recorder.recording()) {
+            labelled_recorder.stop();
+            scanner.set_iq_retention(retention_before_recording);
+            recorder_owns_retention = false;
+        }
+#endif
         if (now - last_drone_refresh >= std::chrono::milliseconds(200)) {
             using namespace rfmon::drone_claims;
             last_drone_refresh = now;
@@ -876,10 +914,14 @@ int main() {
                 drone_evidence.expire(now);
                 const auto timing = symbol_timing.snapshot();
                 for (auto it = timing.history.rbegin(); it != timing.history.rend(); ++it)
-                    if (now - it->observed <= lifetime) drone_evidence.timing(*it);
+                    if (now - it->observed <= lifetime) {
+                        drone_evidence.timing(*it);
+                        drone_offset_log.link(*it);
+                    }
 #ifdef RFMON_ENABLE_DJI_DRONEID
                 for (const auto& packet : drones.native.snapshot().native_packets)
-                    ingest_native_packet(drone_evidence, packet, now);
+                    if (const auto added = ingest_native_packet(drone_evidence, packet, now))
+                        drone_offset_log.packet(added->first, added->second);
 #endif
 #ifdef RFMON_ENABLE_DJI_DRONEID
                 drone_rows = detections(drone_evidence, now, remote_id_sightings(drones.remote_id.snapshot(), now));
@@ -891,6 +933,14 @@ int main() {
                 add_universal_claims(drone_rows, classifier_snapshot);
                 classifier_sightings.ingest(classifier_snapshot, now);
                 classifier_sightings.add_rows(drone_rows, classifier_snapshot, now, classifier_only_rows);
+#ifdef RFMON_ENABLE_DJI_DRONEID
+                if (labelled_recorder.recording())
+                    labelled_recorder.offer(drone_rows, [&](uint64_t seq) -> std::optional<rfmon::drone_claims::LabelledRecorder::Retained> {
+                        auto r = scanner.retained_capture(seq);
+                        if (!r) return std::nullopt;
+                        return rfmon::drone_claims::LabelledRecorder::Retained{r->record, r->iq};
+                    });
+#endif
             } else {
                 drone_rows.clear();
                 drone_evidence = Store{};
@@ -999,11 +1049,59 @@ int main() {
             case gui::Page::ModelInference:ml::draw_panel(model_inference,status.connected,active_band);break;
             case gui::Page::Count:break;
             case gui::Page::Drones:
-                draw_symbol_timing();
 #ifdef RFMON_ENABLE_DJI_DRONEID
-                coordinated::draw_section(coordinated_panel,scanner,drones,model_inference,status.connected,&shortrange_monitor);
-                drone::draw_panel(drones,gui::band_label(active_band),status.connected,ui.drones_offline?"Offline IQ review":nullptr);ui.drones_offline=false;
-                if(ImGui::CollapsingHeader("Bluetooth Remote ID",ImGuiTreeNodeFlags_DefaultOpen))shortrange::draw_remote_id_section(shortrange_monitor.snapshot());
+            {
+                // One status strip, one row per drone with details, then tabs (drones_page.hpp).
+                // The previous layout is still drawn in the legacy presentation.
+                rfmon::drones_page::Inputs in;
+                in.rows=&drone_rows; in.tracks=&drone_tracks; in.now=rfmon::drone_claims::Clock::now();
+                in.radio=context.radio; in.started=scanner_started; in.connected=status.connected;
+                in.classifier_only_rows=&classifier_only_rows; in.select_offline=ui.drones_offline;
+                const auto timing=symbol_timing.snapshot();
+                char line[256];
+                std::snprintf(line,sizeof line,"Link timing drops: full %llu | busy %llu | invalid %llu | unavailable %llu",
+                    (unsigned long long)timing.full,(unsigned long long)timing.contention,
+                    (unsigned long long)timing.invalid,(unsigned long long)timing.unavailable);
+                in.diagnostics.push_back(line);
+                if(!unmapped_hint_candidates.empty())
+                    in.diagnostics.push_back("Distinct unmapped classifier classes since start: "+std::to_string(unmapped_hint_candidates.size()));
+                const auto followup=droneid_followup.status();
+                for(size_t i=0;i<followup.bands.size();++i){
+                    const auto& b=followup.bands[i];
+                    if(!b.requests)continue;
+                    const char* band=rfmon::droneid_followup::band_name(rfmon::droneid_followup::Band(i));
+                    if(b.open)std::snprintf(line,sizeof line,"DroneID follow-up, %s: looking for DroneID (%s link), %llu extra visits",
+                        band,b.group.c_str(),(unsigned long long)b.visits);
+                    else std::snprintf(line,sizeof line,"DroneID follow-up, %s: search ended (%s), %llu extra visits, %llu packets",
+                        band,b.last_outcome.c_str(),(unsigned long long)b.visits,(unsigned long long)b.packets);
+                    in.diagnostics.push_back(line);
+                }
+                if(drone_log.failed())in.problems.push_back("Could not write the drone detection log.");
+                if(drone_track_log.failed())in.problems.push_back("Could not write the drone track log.");
+                if(drone_offset_log.failed())in.problems.push_back("Could not write the carrier offset log.");
+                rfmon::drones_page::Actions act;
+                act.open_setup=[&]{ui.setup_open=true;};
+                act.open_model_inference=[&]{ui.page=gui::Page::ModelInference;};
+                act.start_recording=[&](const std::string& dir){
+                    if(!labelled_recorder.start(dir))return;
+                    if(!recorder_owns_retention)retention_before_recording=scanner.iq_retention();
+                    scanner.set_iq_retention(std::max<size_t>(retention_before_recording,24));
+                    recorder_owns_retention=true;
+                };
+                act.stop_recording=[&]{labelled_recorder.stop();};
+                in.recorder=&labelled_recorder; in.recorder_default_dir=recorder_default_dir;
+                act.reload_classifier=[&]{
+                    if(!model_inference.snapshot().enabled)return;   // used when the classifier next starts
+                    model_inference.stop();
+                    model_inference.start(classifier_options());
+                };
+                in.classifier_package=&classifier_package; in.default_package=default_classifier_package;
+                in.packages_root=std::string(PROJECT_ROOT_DIR)+"/data/drone_ml";
+                rfmon::drones_page::draw(drones_page_state,coordinated_panel,scanner,drones,model_inference,&shortrange_monitor,in,act);
+                ui.drones_offline=false;
+            }
+#else
+                draw_symbol_timing();
 #endif
                 break;
             case gui::Page::Settings:

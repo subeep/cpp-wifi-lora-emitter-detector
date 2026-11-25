@@ -24,6 +24,15 @@ C3 ablations (validation, epoch choice and every test partition stay the same):
                    it is a fixed rule, not learned);
   --train-cache    take the training partition from another cache, e.g. one built without
                    presence filtering (`universal_splits --no-presence-filter`).
+
+Receiver-invariance variants (classifier step 2, measured leaving one dataset out in
+`universal_lodo`; all off by default, so the v3 recipe is unchanged):
+  --variant balance    a model's weight is shared equally by the datasets it was recorded in;
+  --variant response   random receiver frequency response (tilt, ripple) on each training view;
+  --variant adversary  a dataset head behind gradient reversal on the drone embedding;
+  --variant cond_adversary
+                       the same head, told the model (one-hot) and trained only on models recorded
+                       by two or more datasets, so it removes what the receiver adds, not the model.
 """
 import argparse
 from collections import Counter, defaultdict
@@ -36,11 +45,11 @@ from torch import nn
 from .model import SpectrogramCNN
 from .universal_features import NAMES
 from .universal_c2_data import expected_timing
-from .universal_presence import K15, K30, KLB
+from .universal_presence import K15, K30, KLB, KLB2
 from .universal_train import TYPES, Norm, balanced
 
 NAD = TYPES.index('not_a_drone')
-IX = {k: NAMES.index('lag_ratio:' + k) for k in (K15, K30, KLB)}
+IX = {k: NAMES.index('lag_ratio:' + k) for k in (K15, K30, KLB, KLB2)}   # KLB2: facts v2 only
 DUTY = NAMES.index('duty_cycle')
 HIDE = .25            # share of a type's models hidden in each batch (open-set rotation)
 EVAL = ['test', 'unit_test', 'cross_test', 'open_test', 'bg_test', 'bg_site_test', 'mix_test']
@@ -75,10 +84,10 @@ def concat(parts):
 def gate(facts, timing_of_model, models):
     """Allowed types (n, 4) and allowed models (n, M) from the measured facts only."""
     f = np.nan_to_num(facts)
-    fired = {k: f[:, i] > 4 for k, i in IX.items()}
+    fired = {k: (f[:, i] > 4) if i < f.shape[1] else np.zeros(len(f), bool) for k, i in IX.items()}
     t = np.zeros((len(f), len(TYPES)), bool)
     t[:, TYPES.index('dji_ofdm')] = fired[K15] | fired[K30]
-    t[:, TYPES.index('lightbridge')] = fired[KLB]
+    t[:, TYPES.index('lightbridge')] = fired[KLB] | fired[KLB2]   # either Lightbridge lag (v1 facts: the first)
     t[:, TYPES.index('hopping_controller')] = f[:, DUTY] > 0
     t[:, NAD] = True
     m = np.ones((len(f), len(models)), bool)
@@ -114,11 +123,59 @@ def augment(s, rng):
     return s
 
 
+def balanced_weights(meta):
+    """As `weights` (each type equal, each weight key equal inside its type), but a model's weight is
+    shared equally by the datasets it was recorded in, so the largest dataset does not define it."""
+    base = weights(meta)
+    per_model = defaultdict(Counter)
+    for m in meta:
+        if m['type'] != 'not_a_drone':
+            per_model[m.get('model_weight_key', m['model'])][m['dataset']] += 1
+    out = base.copy()
+    for i, m in enumerate(meta):
+        if m['type'] != 'not_a_drone':
+            c = per_model[m.get('model_weight_key', m['model'])]
+            out[i] = base[i] * sum(c.values()) / (len(c) * c[m['dataset']])
+    return out
+
+
+def response(s, rng):
+    """Random receiver frequency response, in dB, on views of shape (n, freq, time)."""
+    s = s.copy()
+    f = np.linspace(-1, 1, s.shape[1], dtype=np.float32)
+    for i in range(len(s)):
+        if rng.random() < .8:
+            curve = rng.uniform(-6, 6) * f / 2                       # tilt: up to +-6 dB edge to edge
+            for _ in range(rng.integers(0, 3)):                      # ripple
+                curve += rng.uniform(0, 2) * np.sin(np.pi * rng.uniform(1, 6) * f + rng.uniform(0, 2 * np.pi))
+            s[i] += curve[:, None]
+    return s
+
+
+class Reverse(torch.autograd.Function):
+    """Gradient reversal: identity forward, gradient times -k backward."""
+    @staticmethod
+    def forward(ctx, x, k):
+        ctx.k = k
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, g):
+        return -ctx.k * g, None
+
+
+VARIANTS = ('balance', 'response', 'adversary', 'cond_adversary')
+ADVERSARY_WEIGHT, ADVERSARY_RAMP = .3, 5      # reversal weight, ramped in over the first epochs
+
+
 class Runner:
     def __init__(self, net, norm, models, timing):
         self.net, self.norm, self.models, self.timing = net, norm, models, timing
 
     def predict(self, d, batch=512, return_z=False):
+        # A network trained on v1 facts (29) reads only those; v2 facts append to them.
+        n = len(self.norm.mean)
+        d = dict(d, facts=d['facts'][:, :n], available=d['available'][:, :n])
         self.net.eval(); tp, mp, zs = [], [], []
         with torch.no_grad():
             for i in range(0, len(d['spec']), batch):
@@ -194,36 +251,63 @@ def class_stats(run, d, models):
     return dict(means={k: v.tolist() for k, v in means.items()}, precision=np.linalg.inv(cov).tolist())
 
 
-def train(cache, c2, output, seed, epochs, threads, open_set=True, mix=True, use_facts=True, train_cache=None):
-    torch.manual_seed(seed); rng = np.random.default_rng(seed); torch.set_num_threads(threads)
-    train_cache = train_cache or cache
-    tr = concat([load(train_cache, 'train'), load(c2, 'bg_site_train')] + ([load(c2, 'mix_train')] if mix else []))
-    val = {'val': load(cache, 'val'), 'mix_val': load(c2, 'mix_val'), 'bg_site_val': load(c2, 'bg_site_val')}
+def fit(tr, val, norm_windows, rng, epochs, variants=(), open_set=True, use_facts=True):
+    """The C2 training loop, shared with `universal_lodo`. `tr`: training views (the first
+    `norm_windows` set the input scaling); `val`: {name: views} for the epoch choice; the caller
+    seeds torch and `rng`. Returns the network at the best validation epoch and its context."""
+    variants = set(variants)
+    if variants - set(VARIANTS):
+        raise ValueError('unknown variant: %s' % sorted(variants - set(VARIANTS)))
+    if {'adversary', 'cond_adversary'} <= variants:
+        raise ValueError('adversary and cond_adversary are alternatives')
     models = sorted({m['model'] for m in tr['meta'] if m['type'] != 'not_a_drone'})
     model_type = [TYPES.index(next(m['type'] for m in tr['meta'] if m['model'] == name)) for name in models]
     timing = {}
     for m in tr['meta']:
         if m['type'] != 'not_a_drone':
             timing.setdefault(m['model'], expected_timing(m))
-    norm = Norm(load(train_cache, 'train')['spec'], tr['facts'], tr['available'])
+    norm = Norm(tr['spec'][:norm_windows], tr['facts'], tr['available'])
     y = torch.tensor([TYPES.index(m['type']) for m in tr['meta']])
     ym = torch.tensor([models.index(m['model']) if m['type'] != 'not_a_drone' else -1 for m in tr['meta']])
+    datasets = sorted({m['dataset'] for m in tr['meta'] if m['type'] != 'not_a_drone'})
+    yd = torch.tensor([datasets.index(m['dataset']) if m['type'] != 'not_a_drone' else -1 for m in tr['meta']])
+    # Models recorded by two or more datasets: the only ones where the receiver can be told apart
+    # from the model (the conditional adversary trains on these).
+    per_model = defaultdict(set)
+    for m in tr['meta']:
+        if m['type'] != 'not_a_drone':
+            per_model[m['model']].add(m['dataset'])
+    multi = torch.tensor([len(per_model[name]) >= 2 for name in models])
     type_mask = torch.tensor([[model_type[j] == t for j in range(len(models))] for t in range(len(TYPES))])
     rotatable = [np.flatnonzero(np.array(model_type) == t) for t in range(len(TYPES))]
     rotatable = [g for g in rotatable if len(g) >= 3]
-    net = TwoLevel(len(NAMES), len(models), use_facts); run = Runner(net, norm, models, timing)
-    opt = torch.optim.AdamW(net.parameters(), 2e-3, weight_decay=1e-3)
+    net = TwoLevel(tr['facts'].shape[1], len(models), use_facts); run = Runner(net, norm, models, timing)
+    adversary = 'adversary' in variants         # the head is training-only; the package keeps the network
+    conditional = 'cond_adversary' in variants
+    head = None
+    if adversary:
+        head = nn.Sequential(nn.Linear(96, 64), nn.SiLU(), nn.Linear(64, len(datasets)))
+    elif conditional:                           # told the model, so it can only learn the receiver
+        head = nn.Sequential(nn.Linear(96 + len(models), 64), nn.SiLU(), nn.Linear(64, len(datasets)))
+    opt = torch.optim.AdamW(list(net.parameters()) + (list(head.parameters()) if head else []), 2e-3, weight_decay=1e-3)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, 2e-3, total_steps=epochs * 63)
-    w = torch.from_numpy(weights(tr['meta'])); best, history = (-1, None, None), []
+    w = torch.from_numpy(balanced_weights(tr['meta']) if 'balance' in variants else weights(tr['meta']))
+    best, history = (-1, None, None), []
     for epoch in range(epochs):
-        net.train(); start = time.time(); loss_sum = 0
+        net.train(); start = time.time(); loss_sum = adv_sum = 0
+        if head:
+            head.train()
         idx = torch.multinomial(w, 63 * 128, replacement=True)
+        k_rev = ADVERSARY_WEIGHT * min(1, (epoch + 1) / ADVERSARY_RAMP)
         for b in range(63):
             j = idx[b * 128:(b + 1) * 128].numpy()
-            s, f = norm(augment(tr['spec'][j], rng), tr['facts'][j], tr['available'][j])
+            spec = augment(tr['spec'][j], rng)
+            if 'response' in variants:
+                spec = response(spec, rng)
+            s, f = norm(spec, tr['facts'][j], tr['available'][j])
             s = torch.roll(s, int(rng.integers(0, s.shape[-1])), dims=-1)
             s = torch.roll(s, int(rng.integers(-4, 5)), dims=-2)
-            tl, mlog = net(s, f)
+            tl, mlog, z = net(s, f, return_z=True)
             loss = nn.functional.cross_entropy(tl, y[j], label_smoothing=.05)
             drone = ym[j] >= 0
             if drone.any():
@@ -243,19 +327,42 @@ def train(cache, c2, output, seed, epochs, threads, open_set=True, mix=True, use
                 if unknown.any():                  # hidden: no visible model should win (uniform target)
                     c = cand[unknown].float()
                     loss = loss + .5 * (-(logp[unknown] * c).sum(1) / c.sum(1)).mean()
+                if adversary:                      # the embedding should not tell the datasets apart
+                    adv = nn.functional.cross_entropy(head(Reverse.apply(z[drone], k_rev)), yd[j][drone])
+                    loss = loss + adv; adv_sum += float(adv.detach())
+                if conditional:                    # nor, given the model, the dataset
+                    keep = multi[target]
+                    if keep.any():
+                        zi = Reverse.apply(z[drone][keep], k_rev)
+                        onehot = nn.functional.one_hot(target[keep], len(models)).float()
+                        adv = nn.functional.cross_entropy(head(torch.cat([zi, onehot], 1)), yd[j][drone][keep])
+                        loss = loss + adv; adv_sum += float(adv.detach())
             opt.zero_grad(); loss.backward(); opt.step(); sched.step(); loss_sum += float(loss.detach())
         parts = {}
         for name, d in val.items():
             _, gt, _, _ = run.predict(d); yy = np.array([TYPES.index(m['type']) for m in d['meta']])
             parts[name] = float((gt.argmax(1) == NAD).mean()) if name == 'bg_site_val' else balanced(yy, gt.argmax(1))
         sel = float(np.mean(list(parts.values())))
-        history.append(dict(epoch=epoch, loss=loss_sum / 63, selection=sel, **parts, seconds=round(time.time() - start, 1)))
+        history.append(dict(epoch=epoch, loss=loss_sum / 63, **(dict(adversary=adv_sum / 63) if head else {}), selection=sel, **parts, seconds=round(time.time() - start, 1)))
         print(json.dumps(history[-1]), flush=True)
         if sel > best[0]:
             best = (sel, epoch, {k: v.clone() for k, v in net.state_dict().items()})
     net.load_state_dict(best[2])
+    return dict(net=net, run=run, norm=norm, models=models, model_type=model_type, timing=timing, datasets=datasets,
+                best=best, history=history, multi_dataset_models=[n for n, k in zip(models, multi.tolist()) if k])
+
+
+def train(cache, c2, output, seed, epochs, threads, open_set=True, mix=True, use_facts=True, train_cache=None, variants=()):
+    torch.manual_seed(seed); rng = np.random.default_rng(seed); torch.set_num_threads(threads)
+    train_cache = train_cache or cache; variants = set(variants)
+    first = load(train_cache, 'train')
+    tr = concat([first, load(c2, 'bg_site_train')] + ([load(c2, 'mix_train')] if mix else []))
+    val = {'val': load(cache, 'val'), 'mix_val': load(c2, 'mix_val'), 'bg_site_val': load(c2, 'bg_site_val')}
+    f = fit(tr, val, len(first['meta']), rng, epochs, variants, open_set, use_facts)
+    net, run, norm, models, model_type, timing, best, history = (
+        f[k] for k in ('net', 'run', 'norm', 'models', 'model_type', 'timing', 'best', 'history'))
     output = Path(output); output.mkdir(parents=True, exist_ok=True)
-    ablation = dict(mix=mix, use_facts=use_facts, train_cache=str(train_cache))
+    ablation = dict(mix=mix, use_facts=use_facts, train_cache=str(train_cache), variants=sorted(variants))
     result = dict(seed=seed, best_epoch=best[1], selection=best[0], models=models, ablation=ablation, history=history, partitions={})
     probs = {}
     for part in EVAL:
@@ -281,10 +388,11 @@ def main():
     p.add_argument('--no-mix', action='store_true', help='C3: no drone views mixed onto background in training')
     p.add_argument('--no-facts', action='store_true', help='C3: spectrogram only (gate unchanged)')
     p.add_argument('--train-cache', type=Path, help='C3: training partition from this cache')
+    p.add_argument('--variant', action='append', default=[], choices=VARIANTS, help='receiver-invariance variant (step 2)')
     a = p.parse_args()
     for seed in a.seed or [1, 2, 3]:
         r = train(a.cache, a.c2, a.output, seed, a.epochs, a.threads, not a.closed_set,
-                  not a.no_mix, not a.no_facts, a.train_cache)
+                  not a.no_mix, not a.no_facts, a.train_cache, a.variant)
         summary = {k: (v['gated'].get('false_rate', v['gated']['type_balanced'])) for k, v in r['partitions'].items()}
         print(json.dumps(dict(seed=seed, best_epoch=r['best_epoch'], gated=summary)), flush=True)
 
