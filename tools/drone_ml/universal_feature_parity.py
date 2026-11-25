@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import numpy as np
-from .universal_features import extract,NAMES
+from .universal_features import extract,NAMES,EXTRA_HYPOTHESES
 from .universal_inventory import read_json
 from .cp_lag_probe import BLOCK,HYPOTHESES
 
@@ -27,7 +27,7 @@ def run(store,worker):
     passed=bool(np.all(errors<=tolerance) and not flag_mismatch.any())
     report=dict(schema='rfmon.drone_ml.universal_feature_parity.v1',passed=passed,
                 windows=len(cases),sources=sorted({c['dataset'] for c in cases}),features=NAMES,
-                timing_features_compared=list(HYPOTHESES),tolerance='max(0.05 absolute, 2% relative); flags must agree outside ±0.12 of threshold 4',
+                timing_features_compared=list(HYPOTHESES)+list(EXTRA_HYPOTHESES),tolerance='max(0.05 absolute, 2% relative); flags must agree outside ±0.12 of threshold 4',
                 max_absolute_error=float(errors.max()),max_scaled_error=float((errors/tolerance).max()),
                 nonboundary_flag_mismatches=int(flag_mismatch.sum()),
                 note='C++ parity covers timing facts; bandwidth/envelope/flatness have separate synthetic tests, not C++ equivalents.',cases=cases)

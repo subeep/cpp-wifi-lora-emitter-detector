@@ -91,7 +91,7 @@ class Namer:
 
 def runner(path):
     ck = torch.load(path, weights_only=False)
-    net = TwoLevel(len(NAMES), len(ck['models']), ck.get('use_facts', True)); net.load_state_dict(ck['state_dict'])
+    net = TwoLevel(len(ck['norm']['mean']), len(ck['models']), ck.get('use_facts', True)); net.load_state_dict(ck['state_dict'])
     return Runner(net, Norm.from_state(ck['norm']), ck['models'], ck['timing']), ck
 
 

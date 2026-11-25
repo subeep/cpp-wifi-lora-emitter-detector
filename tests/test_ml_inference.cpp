@@ -71,9 +71,15 @@ int main(int argc,char** argv) {
         auto u=worker.snapshot();
         require(u.universal&&u.universal_types.size()==4&&u.model_types.at("Air 3S")=="dji_ofdm","universal handshake lost");
         require(u.accuracy.at("Mini 4 Pro").same_unit_right==29&&u.accuracy.at("Mini 4 Pro").unseen_named==1,"measured accuracy lost");
+        require(u.accuracy.at("Mini 4 Pro").other_dataset_captures==34&&u.accuracy.at("Mini 4 Pro").other_dataset_named==12&&
+                u.accuracy.at("Mini 4 Pro").other_dataset_right==0&&u.accuracy.at("Mini 4 Pro").other_dataset_unit=="captures"&&
+                u.accuracy.at("Mini 4 Pro").other_dataset_given_to_others==std::optional<size_t>(5),
+                "other-dataset accuracy lost");
     }
+    // processed and history carry over from the runs above: wait for all three new intervals.
+    const auto processed_before=worker.snapshot().processed;
     worker.observe(spread,spread_capture);
-    until([&]{return worker.snapshot().processed>=3&&worker.snapshot().history.size()>=3&&worker.snapshot().history[0].universal;});
+    until([&]{return worker.snapshot().processed>=processed_before+3&&worker.snapshot().history[0].universal;});
     {
         auto u=worker.snapshot();
         const auto& last=u.history[0];const auto& first=u.history[2];

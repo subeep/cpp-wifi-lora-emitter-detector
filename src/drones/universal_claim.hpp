@@ -32,15 +32,7 @@ inline std::string expected_type(const std::string& group) {
     return {};
 }
 
-// Classifier class names that differ from the model table's names.
-inline std::string table_name(const std::string& model) {
-    static const std::map<std::string, std::string> names = {
-        {"Air 2", "Mavic Air 2"}, {"Matrice 300", "M300 RTK"}, {"Matrice 100", "M100"},
-        {"Matrice 200", "M200"}, {"Matrice 210", "M210"}, {"Matrice 600 Pro", "M600 Pro"},
-        {"Matrice 30T", "M30"}, {"Phantom 3", "Phantom 3 Series"}};    // DroneRFa names (E4)
-    const auto it = names.find(model);
-    return it == names.end() ? model : it->second;
-}
+// table_name() (classifier class names to model-table names) is in model_verdict.hpp.
 
 // Can a model the classifier names be on a link with this group? Unknown models (no measured
 // group, or not in the table) are not ruled out.
@@ -63,7 +55,30 @@ inline std::string accuracy_text(const ml::Snapshot& s, const std::string& model
         out += "other units of this model named in " + std::to_string(a.unseen_named) + " of " +
                std::to_string(a.unseen_captures) + " captures";
     }
+    if (!out.empty()) out += "; ";
+    if (a.other_dataset_captures)
+        out += "another dataset (receiver): right in " + std::to_string(a.other_dataset_right) + " of " +
+               std::to_string(a.other_dataset_named) + " named of " + std::to_string(a.other_dataset_captures) + " " +
+               a.other_dataset_unit + (a.other_dataset_given_to_others
+                   ? ", its name given to other drones " + std::to_string(*a.other_dataset_given_to_others) + " times"
+                   : ", names given to other drones not measured");
+    else
+        out += "not measured on another dataset (receiver)";
     return out;
+}
+
+// Does the classifier's naming of `model` hold on a receiver it never trained on? Only then may
+// its model name be the row's answer; otherwise the name is shown as a guess beside the link's
+// candidates. Measured per model from the package's other-dataset test.
+inline bool naming_carries(const ml::Snapshot& s, const std::string& model) {
+    const auto it = s.accuracy.find(model);
+    if (it == s.accuracy.end()) return false;
+    const auto& a = it->second;
+    if (!a.other_dataset_given_to_others) return false;   // a name is judged by every time it is given
+    const double right = double(a.other_dataset_right);
+    return a.other_dataset_named >= minimum_other_dataset_named &&
+           right >= minimum_other_dataset_top1 * double(a.other_dataset_named) &&
+           right >= minimum_other_dataset_top1 * (right + double(*a.other_dataset_given_to_others));
 }
 
 // Mean score over the named captures, ranked, at most three.
@@ -93,14 +108,31 @@ inline UniversalClaim claim_from(const std::vector<const ml::UniversalCapture*>&
     UniversalClaim c;
     const auto family = expected_type(group);
     std::map<std::string, std::size_t> types;
-    std::map<std::string, double> sums;
+    std::map<std::string, double> sums, guess_sums;
     for (const auto* d : decisions) {
         ++c.captures;
         if (d->type.empty()) continue;
         if (!family.empty() && d->type != family) { ++c.disagreements; continue; }
         ++c.typed;
         ++types[d->type];
-        if (!d->named) continue;
+        if (!d->named) {
+            // Display only: what it ranked, and which naming limit the capture missed.
+            bool any = false;
+            for (const auto& m : d->models)
+                if (fits_group(m.name, group)) { guess_sums[m.name] += m.score; any = true; }
+            if (!any) continue;
+            ++c.unnamed;
+            const double top = d->models.front().score;
+            if (d->score_limit) {
+                if (top < *d->score_limit) ++c.below_score;
+                else ++c.beyond_distance;   // the worker names when both limits pass
+            }
+            c.last_score = top;
+            c.last_distance = d->distance;
+            c.score_limit = d->score_limit;
+            c.distance_limit = d->distance_limit;
+            continue;
+        }
         std::vector<ml::UniversalModel> kept;
         for (const auto& m : d->models)
             if (fits_group(m.name, group)) kept.push_back(m);
@@ -111,10 +143,14 @@ inline UniversalClaim claim_from(const std::vector<const ml::UniversalCapture*>&
     if (!family.empty()) c.type = c.typed ? family : "";
     else if (!types.empty()) c.type = std::max_element(types.begin(), types.end(),
         [](const auto& a, const auto& b) { return a.second < b.second; })->first;
+    c.guesses = rank(guess_sums, c.unnamed);
     c.accepted = c.named >= minimum_named_captures;
     if (c.accepted) {
         c.models = rank(sums, c.named);
-        if (!c.models.empty()) c.accuracy = accuracy_text(s, c.models.front().name);
+        if (!c.models.empty()) {
+            c.accuracy = accuracy_text(s, c.models.front().name);
+            c.naming_carries = naming_carries(s, c.models.front().name);
+        }
     }
     return c;
 }
@@ -124,13 +160,17 @@ inline void add_universal_claims(std::map<std::string, Detection>& rows, const m
     const bool ready = s.enabled && s.ready && s.universal;
     for (auto& [id, row] : rows) {
         if (!(row.universal && row.universal->classifier_only)) row.universal.reset();
+        row.classifier_check.reset();
         if (!ready || row.group.empty() || row.link_captures.empty()) continue;
-        if (row.packet && row.packet->readable && !row.packet->model.empty()) continue;   // DroneID decides
         std::vector<const ml::UniversalCapture*> decisions;
         for (const auto& key : row.link_captures)
             for (const auto& r : s.history)
                 if (matches(r, key, s.model_hash)) { decisions.push_back(&r.capture_decision); break; }
-        if (!decisions.empty()) row.universal = claim_from(decisions, row.group, s);
+        if (decisions.empty()) continue;
+        // DroneID decides a row it names; the classifier's view is kept for display only.
+        if (row.packet && row.packet->readable && !row.packet->model.empty())
+            row.classifier_check = claim_from(decisions, row.group, s);
+        else row.universal = claim_from(decisions, row.group, s);
     }
 }
 

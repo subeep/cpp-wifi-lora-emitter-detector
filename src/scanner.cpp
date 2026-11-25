@@ -792,6 +792,22 @@ bool Scanner::connect_sdr(const DeviceProfile& profile, std::optional<double> ga
     return true;
 }
 
+bool Scanner::reconnect_after_stall(const char* why) {
+    SdrDeviceType type;
+    std::optional<double> gain;
+    {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        type = device_type_;
+        gain = gain_db_;
+    }
+    std::fprintf(stderr, "Scanner: %s; reconnecting the radio\n", why);
+    if (!connect_sdr(device_profile(type), gain)) return false;
+    rx_fail_streak_ = 0;
+    std::lock_guard<std::mutex> lock(status_mutex_);
+    status_.rx_stalled = false;
+    return true;
+}
+
 // Only called while BAND_SUB_GHZ is active, once per scan cycle, for a
 // locked frequency or a single-channel entry of the channel plan's rotation
 // (wideband entries use run_lora_wideband_step()).
@@ -1959,6 +1975,7 @@ void Scanner::run_coordinated(const DeviceProfile& profile, std::optional<double
     std::vector<double> first_wrap_s;         // per slot, -1 until the cursor first wraps
     std::vector<uint64_t> first_wrap_visits;  // slot visit count at that wrap
     uint64_t cycle = 0, visit_seq = 0;
+    int exception_streak = 0;  // consecutive visits whose capture threw a UHD exception
     {
         std::lock_guard<std::mutex> lock(status_mutex_);
         coordinated_status_ = CoordinatedStatus{};
@@ -1994,7 +2011,7 @@ void Scanner::run_coordinated(const DeviceProfile& profile, std::optional<double
                 schedule = coordinated_schedule_.value_or(coord::default_schedule(wifi_rate));
                 new_schedule = true;
             }
-            if (gain_dirty_) {
+            if (gain_dirty_ && sdr_) {
                 sdr_->set_gain(gain_db_);
                 gain_dirty_ = false;
             }
@@ -2062,6 +2079,9 @@ void Scanner::run_coordinated(const DeviceProfile& profile, std::optional<double
         bool any_overflow = false;
         for (const auto& p : planned) {
             if (stop_flag_.load() || !still_coordinated()) { abandoned = true; break; }
+            // A failed reconnect leaves no handle: retry it, and replan the cycle if it fails again.
+            if (!sdr_) reconnect_after_stall("Coordinated mode: no radio handle after a failed reconnect");
+            if (!sdr_) { abandoned = true; break; }
             {
                 std::lock_guard<std::mutex> lock(config_mutex_);
                 if (coordinated_schedule_version_ != version || wifi_fixed_channel_ || lora_lock_freq_) { abandoned = true; }
@@ -2096,6 +2116,7 @@ void Scanner::run_coordinated(const DeviceProfile& profile, std::optional<double
             const double capture_s = dwell_s + schedule.preroll_s;
             CaptureResult cr = sdr_->capture_detailed(v.center_hz, v.sample_rate_hz, capture_s, schedule.settle_s,
                                                       /*retune_always=*/true);
+            exception_streak = cr.timing.exception ? exception_streak + 1 : 0;
             rec.end_s = now_seconds();
             rec.in_progress = false;
             const double actual_rate = cr.sample_rate_hz;
@@ -2209,6 +2230,17 @@ void Scanner::run_coordinated(const DeviceProfile& profile, std::optional<double
                     }
                 }
             }
+            // Sustained-RX-stall recovery, checked after every visit rather than once per cycle.
+            // On the X310 a UHD control timeout means the handle's control port has stopped
+            // getting ACKs, and UHD 4.1 never frees that port's command credits on a timeout,
+            // so every later control call on the same handle times out too (about 1 s each).
+            // Waiting for the cycle to end cost ~10 failed visits (~16 s) per incident.
+            if (!stop_flag_.load() && (exception_streak >= kControlFailThreshold || rx_fail_streak_ >= kRxStallThreshold)) {
+                const bool control = exception_streak >= kControlFailThreshold;
+                exception_streak = 0;
+                reconnect_after_stall(control ? "Coordinated mode: consecutive UHD control failures"
+                                              : "Coordinated mode: receive stalled (consecutive empty captures)");
+            }
         }
         if (abandoned) continue;  // restarts with the new schedule / exits on mode change
         ++cycle;
@@ -2218,21 +2250,6 @@ void Scanner::run_coordinated(const DeviceProfile& profile, std::optional<double
             coordinated_status_.last_cycle_s = now_seconds() - cycle_start;
             status_.cycle_count = int(cycle);
             status_.last_overflow = any_overflow;
-        }
-        // Same sustained-RX-stall recovery as the band modes.
-        if (rx_fail_streak_ >= kRxStallThreshold && !stop_flag_.load()) {
-            SdrDeviceType reconnect_type;
-            std::optional<double> reconnect_gain;
-            {
-                std::lock_guard<std::mutex> lock(config_mutex_);
-                reconnect_type = device_type_;
-                reconnect_gain = gain_db_;
-            }
-            if (connect_sdr(device_profile(reconnect_type), reconnect_gain)) {
-                rx_fail_streak_ = 0;
-                std::lock_guard<std::mutex> lock(status_mutex_);
-                status_.rx_stalled = false;
-            }
         }
     }
 

@@ -16,7 +16,7 @@ hello=dict(schema='rfmon.ml.ready.v1',model_sha256='fixture',architecture='fixtu
 if 'universal' in a.model:
     hello['universal']=dict(schema='rfmon.ml.universal.v1',types=['dji_ofdm','lightbridge','hopping_controller','not_a_drone'],
         decision='universal_c4_decision_v3',model_types={'Mini 4 Pro':'dji_ofdm','Air 3S':'dji_ofdm'},
-        accuracy={'Mini 4 Pro':dict(same_unit=dict(captures=40,named=30,top1_right=29),unseen_aircraft=dict(captures=20,named=1,top1_right=1))})
+        accuracy={'Mini 4 Pro':dict(same_unit=dict(captures=40,named=30,top1_right=29),unseen_aircraft=dict(captures=20,named=1,top1_right=1),other_dataset=dict(captures=34,named=12,top1_right=0,top3_right=3,given_to_others=5))})
 send(hello)
 try:
     while True:

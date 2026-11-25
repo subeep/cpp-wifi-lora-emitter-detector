@@ -15,6 +15,14 @@ from .universal_features import extract,NAMES,VERSION
 from .universal_inventory import read_json
 
 K15='lte_like_15kHz'; K30='lte_like_30kHz'; KLB='measured_32.8kHz'
+KLB2='lightbridge_10.9375kHz'   # Lightbridge's own symbol (facts v2, 24 Nov 2026); KLB is a third of it
+
+
+def fired(ratios,key,limit=4):
+    """Own-family timing stands out. Lightbridge: either its 32.8 kHz third-lag or its own 10.9375 kHz
+    symbol lag (the app's rule, symbol_timing.cpp). With v1 facts (no KLB2) only the third-lag."""
+    if key==KLB:return max(ratios.get(KLB,0),ratios.get(KLB2,0))>limit
+    return ratios.get(key,0)>limit
 MODELS_15={'Air 2','Air 2S','Mavic Pro','Mini 2','Mini 3','Mini 3 Pro','Mini 5 Pro',
            'Mavic 3','Mavic 3 Pro','FPV','Matrice 300','Mavic 2 Enterprise Advanced',
            'Phantom 4 RTK','DJI link module (self-built)'}   # last two: measured on DroneRFa (E4), 15 kHz only
@@ -32,7 +40,7 @@ def label(row,facts):
             return dict(state='background',model=None,reason='confirmed_scene',model_positive=False)
         if row['dataset']=='DroneRFa':
             # The dataset's background class (town, Wi-Fi, Bluetooth): used only where no drone timing fires.
-            if max(ratios.get(k,0) for k in (K15,K30,KLB))<=4:
+            if not any(fired(ratios,k) for k in (K15,K30,KLB)):
                 return dict(state='background',model=None,reason='dataset_background_no_drone_timing',model_positive=False)
             return dict(state='unknown',model=None,reason='drone_timing_in_dataset_background',model_positive=False)
         return dict(state='unknown',model=None,reason='background_context_requires_sample_review',model_positive=False)
@@ -43,7 +51,7 @@ def label(row,facts):
         return dict(state='unknown',model=None,reason='own_family_not_detected_not_a_negative_label',expected_timing='15/30kHz',model_positive=False)
     expected=KLB if signal=='lightbridge' else K15 if row['dataset']=='DroneRFb-DIR' or model in MODELS_15 else K30 if model in MODELS_30 else None
     if expected:
-        if ratios.get(expected,0)>4:
+        if fired(ratios,expected):
             return dict(state='signal_present',model=model,reason='own_family_timing',expected_timing=expected,model_positive=True)
         return dict(state='unknown',model=None,reason='own_family_not_detected_not_a_negative_label',expected_timing=expected,model_positive=False)
     return dict(state='unknown',model=None,reason='matching_source_no_signal_control_missing',model_positive=False)

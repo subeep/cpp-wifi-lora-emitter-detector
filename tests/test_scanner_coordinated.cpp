@@ -57,9 +57,11 @@ struct Shared {
     std::vector<Call> calls;
     std::vector<cf> subghz;  // sub-GHz visit content (5 MSps), padded with noise
     std::atomic<int> overflow_on_call{-1};
-    // 1: centres above 4.4 GHz come back off frequency (an SBX front end); 2: every capture is empty.
+    // 1: centres above 4.4 GHz come back off frequency (an SBX front end); 2: every capture is empty;
+    // 3: every capture throws a UHD exception (an X310 whose control port stopped getting ACKs).
     std::atomic<int> radio_mode{0};
     std::atomic<int> connects{0};
+    std::atomic<size_t> calls_at_last_connect{0};
     std::vector<Call> snapshot() { std::lock_guard<std::mutex> l(mu); return calls; }
 };
 
@@ -73,10 +75,11 @@ public:
     CaptureResult capture_detailed(double center, double rate, double duration, double settle, bool retune) override {
         const double t0 = now_s();
         std::this_thread::sleep_for(std::chrono::duration<double>(settle + duration));  // real-time pacing
-        if (const int mode = s_->radio_mode.load(); mode == 2 || (mode == 1 && center > 4.4e9)) {
+        if (const int mode = s_->radio_mode.load(); mode == 2 || mode == 3 || (mode == 1 && center > 4.4e9)) {
             CaptureResult r;
             r.sample_rate_hz = rate;
             r.timing.off_frequency = mode == 1;
+            r.timing.exception = mode == 3;
             r.timing.actual_rf_hz = mode == 1 ? 4400e6 : center;
             r.timing.actual_dsp_hz = mode == 1 ? -20e6 : 0;
             std::lock_guard<std::mutex> l(s_->mu);
@@ -187,6 +190,7 @@ int main() {
         });
         ScannerTestAccess::set_device_factory(scanner, [shared](const DeviceProfile&, std::optional<double>) {
             ++shared->connects;
+            shared->calls_at_last_connect = shared->snapshot().size();
             return std::unique_ptr<CaptureDevice>(new FakeRadio(shared));
         });
         const auto schedule = test_schedule();
@@ -390,6 +394,17 @@ int main() {
             shared->radio_mode = 0;
             const size_t back = shared->snapshot().size();
             check(wait_for([&] { return shared->snapshot().size() >= back + 4; }, 20), "Acquisition resumes after the reconnect");
+
+            // Control-port failures reconnect after two failed visits, not at the end of the cycle.
+            const int before = shared->connects.load();
+            const size_t fail_mark = shared->snapshot().size();
+            shared->radio_mode = 3;
+            check(wait_for([&] { return shared->connects.load() > before; }, 20), "UHD control failures trigger a reconnect");
+            shared->radio_mode = 0;
+            const size_t failed = shared->calls_at_last_connect.load() - fail_mark;
+            check(failed <= 2, "The reconnect follows the second consecutive failed visit", std::to_string(failed) + " failed calls");
+            const size_t resumed = shared->snapshot().size();
+            check(wait_for([&] { return shared->snapshot().size() >= resumed + 4; }, 20), "Acquisition resumes after the control reconnect");
         }
 
         // --- Leaving coordinated mode returns to the ordinary band mode ---

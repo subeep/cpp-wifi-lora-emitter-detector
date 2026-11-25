@@ -140,7 +140,14 @@ int main() try {
         s.timing(other);
         auto fast = link;
         fast.capture_seq = 24; fast.center = 2462e6; fast.timing_group = "32.8kHz";
+        // A Lightbridge row is shown once three usable clock readings agree.
+        fast.link_clock = rfmon::link_clock::Estimate{rfmon::link_clock::Link::lightbridge, -4.0, 1.0, 24};
         s.timing(fast);
+        auto fast2 = fast;
+        fast2.capture_seq = 124; fast2.link_clock->ppm = -3.4;
+        s.timing(fast2);
+        fast2.capture_seq = 125; fast2.link_clock->ppm = -4.5;
+        s.timing(fast2);
         rows = detections(s, now);
         require(rows.size() == 3 && rows.count("band:5 GHz/15kHz@5745") && rows.count("band:2.4 GHz/32.8kHz@2460"), "unrelated links were folded");
         // Evidence outlives one sweep, and a later capture of the same centre without a link
@@ -364,7 +371,13 @@ int main() try {
         n.decoded({"run1", 2, 46, 2446e6}, {"Mini 2", "5FSC", true, now, 2, 2446e6, false, 63});
         auto wrong = link;
         wrong.capture_seq = 47; wrong.observed = now + std::chrono::seconds(50); wrong.timing_group = "32.8kHz";
+        wrong.link_clock = rfmon::link_clock::Estimate{rfmon::link_clock::Link::lightbridge, 2.0, 1.0, 24};
         n.timing(wrong);
+        auto wrong2 = wrong;
+        wrong2.capture_seq = 147; wrong2.link_clock->ppm = 2.6;
+        n.timing(wrong2);
+        wrong2.capture_seq = 148; wrong2.link_clock->ppm = 1.5;
+        n.timing(wrong2);
         t = now + std::chrono::seconds(55);
         n.expire(t);
         rows = detections(n, t);

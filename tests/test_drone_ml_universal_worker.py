@@ -117,7 +117,9 @@ class WorkerParityTests(unittest.TestCase):
             x = np.asarray(views[d['meta'][i]['view_index']])
             self.assertTrue(np.array_equal(pooled(spectrogram(x, 20_000_000, CONFIG)), d['spec'][i]))
             f = extract(x)
-            np.testing.assert_allclose(np.nan_to_num(np.asarray(f['values'], np.float32)), np.nan_to_num(d['facts'][i]), rtol=1e-5)
+            # The cache may hold v1 facts (29); v2 facts append to them, so the cached ones are a prefix.
+            n = d['facts'].shape[1]
+            np.testing.assert_allclose(np.nan_to_num(np.asarray(f['values'][:n], np.float32)), np.nan_to_num(d['facts'][i]), rtol=1e-5)
             result, _ = handle(pkg, run, namer, caps, dict(request(k, n=len(rows))), x)
         sub = dict(spec=d['spec'][rows], facts=d['facts'][rows], available=d['available'][rows], meta=[d['meta'][i] for i in rows])
         expected = explain(Views(run, sub, pkg['model_type']).capture(range(len(rows))),

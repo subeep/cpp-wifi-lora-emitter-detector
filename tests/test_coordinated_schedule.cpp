@@ -3,6 +3,7 @@
 // hash, coverage-aware freshness, and channel derivation - including a real
 // archived SX1262 LoRa packet that must still decode after being placed in a
 // 5 MSps sub-GHz capture and derived back to 500 kHz.
+#include <algorithm>
 #include <cmath>
 #include <complex>
 #include <cstdio>
@@ -54,33 +55,73 @@ std::vector<cf> embed(const std::vector<cf>& narrow, size_t up, double offset_cy
 void schedule_tests() {
     const auto s = coord::default_schedule(20e6);
     check(coord::validate(s, 20e6).empty(), "Default schedule is valid at the X310's 20 MSps", coord::validate(s, 20e6));
-    check(s.slots.size() == 3 && s.slots[0].band == BAND_SUB_GHZ && s.slots[1].band == BAND_WIFI_2G4 &&
-              s.slots[2].band == BAND_WIFI_5G,
-          "Band order is sub-GHz -> 2.4 GHz -> 5 GHz");
-    check(s.slots[0].visits_per_cycle == 2 && s.slots[1].visits_per_cycle == 4 && s.slots[2].visits_per_cycle == 6 &&
-              s.slots[0].dwell_s == 0.512 && s.slots[1].dwell_s == 0.512 && s.slots[2].dwell_s == 0.512,
-          "Plan's initial dwell profile: 2/4/6 visits x 512 ms");
-    check(s.slots[1].visits.size() == 14 && s.slots[1].visits[0].kind == coord::VisitKind::DroneOnly &&
-              near(s.slots[1].visits[0].center_hz, 2401e6, 1),
-          "2.4 GHz list: DroneID 2399.5 MHz drone-only visit (offset centre) + channels 1-13");
-    check(s.slots[2].visits.size() == 9, "5 GHz list keeps the existing 9 non-DFS channels");
+    const char* names[] = {"Sub-GHz", "2.4 GHz sweep", "2.4 GHz Wi-Fi", "5.8 GHz", "5.2 GHz", "5.8 GHz gaps", "5.2 GHz gaps"};
+    const int per_cycle[] = {1, 4, 1, 4, 1, 2, 1};
+    const std::size_t sizes[] = {1, 7, 8, 7, 4, 5, 6};
+    bool layout = s.slots.size() == 7;
+    std::string got;
+    for (std::size_t i = 0; layout && i < 7; ++i) {
+        layout = s.slots[i].name == names[i] && s.slots[i].visits_per_cycle == per_cycle[i] &&
+                 s.slots[i].visits.size() == sizes[i] && s.slots[i].dwell_s == 0.512 &&
+                 s.slots[i].band == (i == 0 ? BAND_SUB_GHZ : i < 3 ? BAND_WIFI_2G4 : BAND_WIFI_5G);
+        if (!layout) got = s.slots[i].name + " " + std::to_string(s.slots[i].visits.size());
+    }
+    check(layout, "Split C: Sub-GHz 1, 2.4 sweep 4 of 7, 2.4 Wi-Fi 1 of 8, 5.8 4 of 7, 5.2 1 of 4, 5.8 gaps 2 of 5, "
+                  "5.2 gaps 1 of 6 per cycle, 512 ms each", got);
+    std::vector<double> sweep, rest;
+    for (const auto& v : s.slots[1].visits) sweep.push_back(v.center_hz);
+    for (const auto& v : s.slots[2].visits) rest.push_back(v.center_hz);
+    const auto ch = [](int c) { return wifi_2g4_channels().at(c) + WIFI_CHANNEL_CAPTURE_OFFSET_HZ; };
+    check(sweep == std::vector<double>{2401e6, ch(1), ch(4), ch(7), ch(10), ch(13), sweep.back()} &&
+              near(sweep.back(), 2482.3e6, 1e3) && s.slots[1].visits.back().kind == coord::VisitKind::DroneOnly,
+          "2.4 GHz sweep: DroneID 2399.5, Wi-Fi ch 1, 4, 7, 10, 13 and the 2481.1-2483.5 MHz gap visit");
+    check(rest == std::vector<double>{ch(2), ch(3), ch(5), ch(6), ch(8), ch(9), ch(11), ch(12)},
+          "2.4 GHz Wi-Fi: the other eight channels, each centred");
+    const double half = coord::usable_half_span(20e6);
+    bool alone = true;
+    for (double f = 2400e6; f <= 2483.5e6; f += 25e3)
+        alone = alone && std::any_of(sweep.begin(), sweep.end(), [&](double c) { return std::abs(f - c) <= half; });
+    for (double id : drone::droneid::channels_24)
+        alone = alone && std::any_of(sweep.begin(), sweep.end(), [&](double c) {
+                    return std::abs(id - c) <= coord::droneid_decode_reach_hz(20e6) && std::abs(id - c) > 40e3;
+                });
+    check(alone, "2.4 GHz sweep alone covers 2400-2483.5 MHz and decodes every 2.4 GHz DroneID channel");
+    check(s.slots[3].visits.size() == 7 && s.slots[3].visits[5].center_hz == 5758e6 && s.slots[3].visits[6].center_hz == 5778e6 &&
+              s.slots[3].visits[5].kind == coord::VisitKind::DroneOnly && s.slots[3].visits[0].center_hz == 5746.5e6,
+          "5.8 GHz: Wi-Fi ch 149-165, then DroneID 5756.5 and 5776.5 MHz (channel + 1.5 MHz)");
+    check(s.slots[4].visits.front().center_hz == 5181.5e6 && s.slots[4].visits.back().center_hz == 5241.5e6,
+          "5.2 GHz: Wi-Fi ch 36-48");
+    bool gaps = true;
+    for (std::size_t i : {std::size_t(5), std::size_t(6)})
+        for (const auto& v : s.slots[i].visits)
+            gaps = gaps && v.kind == coord::VisitKind::DroneOnly && v.sample_rate_hz == 20e6 &&
+                   ((i == 5) == (v.center_hz > 5.5e9));
+    check(gaps, "Gap slots hold only drone-only visits of their own band");
 
     const auto e = coord::estimate(s);
-    check(near(e.valid_s, 6.144, 1e-9), "Valid observation per cycle is 6.144 s", std::to_string(e.valid_s));
-    check(near(e.overhead_s, 12 * (0.008 + RETUNE_SETTLE_S), 1e-9), "Overhead is 12 x (pre-roll + settle)");
+    check(near(e.valid_s, 14 * 0.512, 1e-9), "Valid observation per cycle is 14 x 0.512 s", std::to_string(e.valid_s));
+    check(near(e.overhead_s, 14 * (0.008 + RETUNE_SETTLE_S), 1e-9), "Overhead is 14 x (pre-roll + settle)");
     check(near(e.cycle_s, e.valid_s + e.overhead_s, 1e-12), "Cycle = valid + overhead (no inference term)");
-    check(e.slots[0].cycles_per_sweep == 1 && e.slots[1].cycles_per_sweep == 4 && e.slots[2].cycles_per_sweep == 2,
-          "Full sweeps: sub-GHz 1 cycle, 2.4 GHz 4 cycles (14/4), 5 GHz 2 cycles (9/6)");
-    check(near(e.slots[1].sweep_s, 3.5 * e.cycle_s, 1e-9) && near(e.slots[2].sweep_s, 1.5 * e.cycle_s, 1e-9),
-          "Average revisit per centre = centres / visits per cycle x cycle (2.4 GHz 3.5, 5 GHz 1.5 cycles)");
+    const double revisit[] = {1, 1.75, 8, 1.75, 4, 2.5, 6};
+    bool rev = true;
+    for (std::size_t i = 0; i < 7; ++i) rev = rev && near(e.slots[i].sweep_s, revisit[i] * e.cycle_s, 1e-9);
+    check(rev, "Average revisit per centre = centres / visits per cycle x cycle (1, 1.75, 8, 1.75, 4, 2.5, 6 cycles)");
+    auto renamed = s;
+    renamed.slots[4].name = "other";
+    check(coord::schedule_hash(renamed) == coord::schedule_hash(s), "A slot's display name is not part of the hash");
+    const auto wide = coord::default_schedule(56e6);
+    bool capped = true;
+    for (const auto& slot : wide.slots) capped = capped && slot.visits_per_cycle <= int(slot.visits.size());
+    check(capped && wide.slots[1].visits.size() < 7, "56 MSps: fewer sweep centres, never more visits per cycle than centres");
 
     // Rotating cursor resumes where the previous cycle stopped and wraps.
     size_t cursor = 0;
-    auto a = coord::next_visits(s.slots[2], cursor);
-    auto b = coord::next_visits(s.slots[2], cursor);
-    check(a == std::vector<size_t>({0, 1, 2, 3, 4, 5}) && b == std::vector<size_t>({6, 7, 8, 0, 1, 2}) && cursor == 3,
-          "5 GHz cursor: 0-5, then 6,7,8,0,1,2; resumes at 3");
+    auto a = coord::next_visits(s.slots[3], cursor);
+    auto b = coord::next_visits(s.slots[3], cursor);
+    check(a == std::vector<size_t>({0, 1, 2, 3}) && b == std::vector<size_t>({4, 5, 6, 0}) && cursor == 1,
+          "5.8 GHz cursor: 0-3, then 4,5,6,0; resumes at 1");
     coord::Slot one = s.slots[0];
+    one.visits_per_cycle = 2;
     cursor = 0;
     check(coord::next_visits(one, cursor) == std::vector<size_t>({0, 0}), "Short list repeats its centre within a cycle");
     one.enabled = false;
@@ -104,8 +145,79 @@ void schedule_tests() {
     check(!coord::validate(bad, 20e6).empty(), "All slots disabled is rejected");
     check(!coord::validate(coord::default_schedule(56e6), 20e6).empty(), "A rate above the receiver limit is rejected");
     bad = s;
-    bad.slots[2].visits[0].band = BAND_WIFI_2G4;
+    bad.slots[3].visits[0].band = BAND_WIFI_2G4;
     check(!coord::validate(bad, 20e6).empty(), "A visit in the wrong band slot is rejected");
+}
+
+// Every frequency of the drone bands inside some visit's usable span, and every documented
+// DroneID channel within the decoder's reach of some centre (off its DC notch).
+std::vector<double> drone_centres(const coord::Schedule& s) {
+    std::vector<double> out;
+    for (const auto& slot : s.slots)
+        if (slot.band != BAND_SUB_GHZ) for (const auto& v : slot.visits) out.push_back(v.center_hz);
+    return out;
+}
+bool covers_bands(const std::vector<double>& centres, double rate, std::string& missed) {
+    const double half = coord::usable_half_span(rate);
+    for (const auto& band : coord::drone_bands)
+        for (double f = band.low_hz; f <= band.high_hz; f += 25e3) {
+            const bool in = std::any_of(centres.begin(), centres.end(), [&](double c) { return std::abs(f - c) <= half; });
+            if (!in) { char b[64]; std::snprintf(b, sizeof b, "%.3f MHz", f / 1e6); missed = b; return false; }
+        }
+    return true;
+}
+bool reaches_droneid(const std::vector<double>& centres, double rate, std::string& missed) {
+    const double reach = coord::droneid_decode_reach_hz(rate);
+    std::vector<double> channels(std::begin(drone::droneid::channels_24), std::end(drone::droneid::channels_24));
+    channels.insert(channels.end(), std::begin(drone::droneid::channels_58), std::end(drone::droneid::channels_58));
+    for (double ch : channels)
+        if (!std::any_of(centres.begin(), centres.end(), [&](double c) { return std::abs(ch - c) <= reach && std::abs(ch - c) > 40e3; })) {
+            missed = std::to_string(ch / 1e6) + " MHz";
+            return false;
+        }
+    return true;
+}
+
+void coverage_tests() {
+    using Gap = std::pair<double, double>;
+    const auto gaps = coord::uncovered(0, 40e6, {10e6, 30e6}, 5e6);
+    check(gaps.size() == 3 && gaps[0] == Gap{0, 5e6} && gaps[1] == Gap{15e6, 25e6} && gaps[2] == Gap{35e6, 40e6},
+          "uncovered(): the band edges and the space between two spans");
+    check(coord::uncovered(0, 10e6, {5e6}, 5e6).empty() && coord::uncovered(0, 10e6, {}, 5e6).size() == 1 &&
+              coord::uncovered(0, 10e6, {5e6}, 4.9995e6).empty(),
+          "uncovered(): nothing left when one span reaches both edges (slivers under 1 kHz ignored); all of it with none");
+
+    // Why the drone slots exist: the Wi-Fi channel visits alone leave gaps and miss 5.8 GHz DroneID.
+    std::vector<double> wifi_only;
+    for (const auto& [ch, f] : wifi_2g4_channels()) wifi_only.push_back(f + WIFI_CHANNEL_CAPTURE_OFFSET_HZ);
+    for (const auto& [ch, f] : wifi_5g_channels()) wifi_only.push_back(f + WIFI_CHANNEL_CAPTURE_OFFSET_HZ);
+    wifi_only.push_back(coord::DRONEID_2399_5_HZ + WIFI_CHANNEL_CAPTURE_OFFSET_HZ);
+    std::string missed;
+    check(!covers_bands(wifi_only, 20e6, missed) && !reaches_droneid(wifi_only, 20e6, missed) && missed == "5756.500000 MHz",
+          "The old 2.4 + 5 GHz lists leave gaps and cannot decode 5756.5 MHz DroneID", missed);
+
+    for (double rate : {20e6, 25e6, 56e6}) {
+        const auto s = coord::default_schedule(rate);
+        const auto centres = drone_centres(s);
+        char name[96];
+        std::snprintf(name, sizeof name, "%.0f MSps: 2400-2483.5, 5150-5250 and 5725-5850 MHz all covered", rate / 1e6);
+        missed.clear();
+        check(covers_bands(centres, rate, missed), name, missed);
+        std::snprintf(name, sizeof name, "%.0f MSps: every documented DroneID channel decodable on some visit", rate / 1e6);
+        missed.clear();
+        check(reaches_droneid(centres, rate, missed), name, missed);
+        std::size_t wifi = 0;
+        for (const auto& slot : s.slots) for (const auto& v : slot.visits) wifi += v.kind == coord::VisitKind::WifiChannel;
+        std::snprintf(name, sizeof name, "%.0f MSps: the 22 Wi-Fi channel visits are unchanged; additions are drone-only", rate / 1e6);
+        check(wifi == 22, name, std::to_string(wifi));
+    }
+    std::size_t added25 = 0;
+    for (const auto& slot : coord::default_schedule(25e6).slots)
+        for (const auto& v : slot.visits) added25 += v.kind == coord::VisitKind::DroneOnly;
+    check(added25 == 1 + 12, "25 MSps: wider captures need fewer added visits (12 + DroneID 2399.5)", std::to_string(added25));
+    const auto low = coord::default_schedule(2e6);
+    check(low.slots.size() == 3 && low.slots[1].visits.size() == 14 && low.slots[2].visits.size() == 9,
+          "Below 10 MSps no drone slots are added (it would take dozens of visits)");
 }
 
 void freshness_tests() {
@@ -184,6 +296,7 @@ void channel_tests() {
 
 int main() {
     schedule_tests();
+    coverage_tests();
     freshness_tests();
     channel_tests();
     std::printf("%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");

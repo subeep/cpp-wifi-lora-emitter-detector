@@ -45,6 +45,10 @@ private:
                 {"center_hz", t.center}, {"link_low_hz", row.link_low_hz}, {"link_high_hz", row.link_high_hz}, {"sample_rate_hz", t.rate}, {"blocks", t.blocks},
                 {"flagged_fractions", t.fractions}, {"version", t.constants_version},
                 {"observed_steady_s", observed(t.observed)}, {"acquisition_host_ns", t.host_before_ns}};
+            // Measurement only (not compared by stated()): link-grid position modulo the spacing.
+            if (const auto grid = symbol_timing::link_grid(t))
+                result["timing"]["grid_offset"] = {{"hz", grid->hz}, {"spacing_hz", grid->spacing_hz},
+                                                   {"coherence", grid->coherence}, {"blocks", grid->blocks}};
         }
         if (row.classifier_hint) {
             const auto& hint = *row.classifier_hint;
@@ -53,14 +57,22 @@ private:
         }
         if (!row.only_classifier_class.empty())
             result["only_classifier_class"] = row.only_classifier_class;
-        if (row.universal) {
-            const auto& u = *row.universal;
-            auto models = Json::array();
+        const auto classifier = [](const UniversalClaim& u) {
+            auto models = Json::array(), guesses = Json::array();
             for (const auto& m : u.models) models.push_back({{"model", m.name}, {"score", m.score}});
-            result["universal_classifier"] = {{"type", u.type}, {"models", models}, {"accepted", u.accepted},
+            for (const auto& m : u.guesses) guesses.push_back({{"model", m.name}, {"score", m.score}});
+            const auto number = [](const std::optional<double>& v) { return v ? Json(*v) : Json(nullptr); };
+            return Json{{"type", u.type}, {"models", models}, {"accepted", u.accepted},
                 {"classifier_only", u.classifier_only}, {"captures", u.captures}, {"typed", u.typed},
-                {"named", u.named}, {"disagreements", u.disagreements}, {"accuracy", u.accuracy}};
-        }
+                {"named", u.named}, {"disagreements", u.disagreements}, {"accuracy", u.accuracy},
+                // Display only: what it ranked without naming, and which limit was missed.
+                {"not_named", {{"captures", u.unnamed}, {"below_score_limit", u.below_score},
+                               {"beyond_distance_limit", u.beyond_distance}, {"best_guesses", guesses},
+                               {"latest_score", number(u.last_score)}, {"score_limit", number(u.score_limit)},
+                               {"latest_distance", number(u.last_distance)}, {"distance_limit", number(u.distance_limit)}}}};
+        };
+        if (row.universal) result["universal_classifier"] = classifier(*row.universal);
+        if (row.classifier_check) result["classifier_check"] = classifier(*row.classifier_check);
         if (!row.remote_id.empty()) {
             auto& list = result["remote_id"] = Json::array();
             for (const auto& rid : row.remote_id)
@@ -75,6 +87,17 @@ private:
                 {"outer_crc24", true}, {"payload_version", p.version}, {"identity_readable", p.readable},
                 {"identity_encrypted", p.encrypted}, {"product_code", p.product_code}, {"model", p.model},
                 {"serial", p.serial}, {"observed_steady_s", observed(p.observed)}};
+            // Measurement only (not compared by stated()): carrier offset of the row's packets.
+            if (const auto offsets = summarize_offsets(row.droneid_offsets)) {
+                const auto band = [](const OffsetBand& b) {
+                    return b.count ? Json{{"packets", b.count}, {"mean_ppm", b.mean_ppm}, {"spread_ppm", b.spread_ppm}}
+                                   : Json(nullptr);
+                };
+                result["droneid"]["carrier_offset"] = {{"latest_hz", offsets->latest_hz},
+                    {"latest_ppm", offsets->latest_ppm}, {"latest_channel_hz", offsets->latest_channel_hz},
+                    {"all", band(offsets->all)}, {"band_2g4", band(offsets->low)}, {"band_5g", band(offsets->high)},
+                    {"band_difference_ppm", offsets->band_difference_ppm ? Json(*offsets->band_difference_ppm) : Json(nullptr)}};
+            }
         }
         return result;
     }

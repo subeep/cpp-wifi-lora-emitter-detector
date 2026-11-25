@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 from .universal_cache import image
 from .universal_features import extract, NAMES
-from .universal_presence import K15, K30, KLB, MODELS_15, MODELS_30
+from .universal_presence import K15, K30, KLB, MODELS_15, MODELS_30, fired
 
 VIEW = 160000
 STORE = Path('/media/sudeep/Storage/drone_universal_classifier/2026-11-12/views-v1')   # default; --store (E4: store-e4)
@@ -58,8 +58,8 @@ def bg_minutes(meta):
     return np.array([(x - t0).total_seconds() / 60 for x in t])
 
 
-def site_background(out):
-    d = np.load(BG_WINDOWS)
+def site_background(out, windows=BG_WINDOWS):
+    d = np.load(windows)
     meta = [json.loads(m) for m in d['meta']]
     minutes = bg_minutes(meta)
     summary = {}
@@ -94,7 +94,7 @@ def mix_one(job):
     f = extract(x)
     key = expected_timing(drone_meta)
     if key is not None:
-        keep = f['lag_ratios'].get(key, 0) > 4
+        keep = fired(f['lag_ratios'], key)
     else:
         keep = snr_db >= 0
     m = dict(drone_meta, model_weight_key=drone_meta['model'] + '|mix', mixed=True, bg_file=bg_meta['recording_id'],
@@ -138,11 +138,13 @@ def main():
     p.add_argument('--train-mixes', type=int, default=12000); p.add_argument('--eval-mixes', type=int, default=3000)
     p.add_argument('--workers', type=int, default=12); p.add_argument('--seed', type=int, default=7)
     p.add_argument('--store', type=Path, default=STORE, help='B1 view store holding the cache\'s drone views')
+    p.add_argument('--bg-windows', type=Path, default=BG_WINDOWS,
+                   help='site background views with spectrogram and facts (facts v2: universal_bg_windows)')
     a = p.parse_args()
     a.output.mkdir(parents=True, exist_ok=True)
     report = dict(version='universal_c2_data_v2', split_minutes=SPLIT_MIN, snr_db=SNR_DB, store=str(a.store),
                   excluded=f'2.4 GHz captures from minute {EXCLUDE_24_FROM_MIN} (Lightbridge link; user: a Phantom was present)',
-                  site_background=site_background(a.output))
+                  site_background=site_background(a.output, a.bg_windows), bg_windows=str(a.bg_windows))
     for part, n in (('train', a.train_mixes), ('val', a.eval_mixes), ('test', a.eval_mixes)):
         report['mix_' + part] = mixed(a.cache, a.output, part, n, a.seed + len(part), a.workers, a.store)
         print(json.dumps({part: report['mix_' + part]}), flush=True)

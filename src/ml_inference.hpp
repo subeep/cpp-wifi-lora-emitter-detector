@@ -40,9 +40,17 @@ struct UniversalCapture {
     size_t intervals=0;
 };
 // Measured on data never trained on (C4 report of the packaged seed), in captures.
+// other_dataset: recordings of this model from a dataset (another lab's receiver and setup) the
+// package never trained on; zero when the package does not report it. Counted in captures, or in
+// 8 ms views when it comes from a leave-one-dataset-out run (other_dataset_unit says which).
 struct ModelAccuracy {
     size_t same_unit_captures=0, same_unit_named=0, same_unit_right=0;
     size_t unseen_captures=0, unseen_named=0, unseen_right=0;
+    size_t other_dataset_captures=0, other_dataset_named=0, other_dataset_right=0;
+    std::string other_dataset_unit="captures";
+    // Views of other drones given this model's name on those datasets (other held-out models and
+    // never-seen models); unset when the package did not measure it (then the name never carries).
+    std::optional<size_t> other_dataset_given_to_others;
 };
 struct Result {
     std::string status, candidate, accepted, reason, raw, source, band, device;
