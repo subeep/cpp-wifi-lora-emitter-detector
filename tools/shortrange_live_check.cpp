@@ -4,7 +4,7 @@
 // Nothing is transmitted. Stores go to a temporary directory.
 //
 //   shortrange_live_check [--seconds N] [--mode wifi_2g4|wifi_both|coordinated]
-//                         [--device x310|b210] [--export-dir PATH]
+//                         [--device x310|b210] [--rate SPS] [--export-dir PATH]
 #include <stdlib.h>
 
 #include <chrono>
@@ -24,13 +24,15 @@ int main(int argc, char** argv) {
     double seconds = 60;
     std::string mode = BAND_WIFI_2G4, export_dir;
     SdrDeviceType device = SdrDeviceType::X310;
+    std::optional<double> rate;  // Wi-Fi capture rate override
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--seconds" && i + 1 < argc) seconds = std::atof(argv[++i]);
         else if (a == "--mode" && i + 1 < argc) mode = argv[++i];
         else if (a == "--export-dir" && i + 1 < argc) export_dir = argv[++i];
         else if (a == "--device" && i + 1 < argc) device = std::string(argv[++i]) == "b210" ? SdrDeviceType::B210 : SdrDeviceType::X310;
-        else { std::fprintf(stderr, "usage: %s [--seconds N] [--mode BAND] [--device x310|b210] [--export-dir PATH]\n", argv[0]); return 2; }
+        else if (a == "--rate" && i + 1 < argc) rate = std::atof(argv[++i]);
+        else { std::fprintf(stderr, "usage: %s [--seconds N] [--mode BAND] [--device x310|b210] [--rate SPS] [--export-dir PATH]\n", argv[0]); return 2; }
     }
     char tmp[] = "/tmp/rfmon-shortrange-live-XXXXXX";
     if (!mkdtemp(tmp)) return 1;
@@ -42,6 +44,7 @@ int main(int argc, char** argv) {
     {
         Scanner scanner(tmp, [&](const auto& iq, const auto& r) { monitor.observe(iq, r); });
         scanner.set_device_type(device);
+        if (rate && !scanner.set_wifi_sample_rate(rate)) { std::fprintf(stderr, "rate rejected\n"); return 2; }
         scanner.set_active_band(mode);
         const auto t0 = std::chrono::steady_clock::now();
         scanner.start();

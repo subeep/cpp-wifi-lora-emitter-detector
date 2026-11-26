@@ -586,7 +586,10 @@ void draw_coverage_view(PanelState& state, Scanner& scanner) {
         const auto e = coord::estimate(schedule);
         ImGui::Text("Configured: cycle %.2f s (%.3f s valid observation).", e.cycle_s, e.valid_s);
     }
-    draw_editor(state, scanner, device_profile(scanner.device_type()).max_sample_rate_hz);
+    // The scanner accepts a custom Wi-Fi rate above the profile default (scanner.cpp's
+    // coordinated validation does the same), so the editor must not reject it.
+    draw_editor(state, scanner, std::max(device_profile(scanner.device_type()).max_sample_rate_hz,
+                                         scanner.wifi_sample_rate().value_or(0.0)));
 }
 
 namespace {

@@ -9,9 +9,9 @@
 // format halves the bytes/sample vs raw fc32, which is what keeps
 // 56 Msps comfortably inside USB3 bandwidth on the B210 (confirmed on
 // this hardware in the Python prototype: zero overflow at 56 Msps over
-// a 1s sustained capture). The X310's 1GigE link is the newer, lower-
-// bandwidth transport of the two - see PROJECT_STATUS.md for whether
-// 56 Msps has been validated not to overflow there too.
+// a 1s sustained capture). Both radios now default to 20 Msps anyway
+// (config.hpp's device_profile() says why); 56 Msps on the B210 is a
+// custom Wi-Fi rate.
 
 #pragma once
 

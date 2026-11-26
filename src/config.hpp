@@ -143,8 +143,8 @@ constexpr int SUB_CAPTURES_PER_STEP = 4;
 // ordered worker processes Wi-Fi step N while the scan thread captures step
 // N+1, so the ~1.5 s of per-step spectrum + burst processing no longer
 // leaves the radio idle (measured duty 71-74% before). It needs two steps of
-// IQ resident: X310 at 20 Msps = 2 x 640 MB = 1.28 GB, allowed; B210 at 56 Msps
-// = 2 x 1.79 GB, over budget, so the B210 keeps the old inline path. Setting
+// IQ resident: 20 Msps (both radios' default) = 2 x 640 MB = 1.28 GB, allowed; a
+// custom 56 Msps B210 rate = 2 x 1.79 GB, over budget, so it keeps the old inline path. Setting
 // the environment variable RFMON_WIFI_LANE=0 also disables it (A/B runs).
 constexpr size_t WIFI_LANE_MAX_IQ_BYTES = size_t(1536) << 20;
 // Niceness of the processing worker (and the process_bursts helpers it
@@ -213,7 +213,10 @@ constexpr double NARROWBAND_2G4_HI_HZ = 5e6;
 // too hot for fixed gain.
 constexpr double DEFAULT_GAIN_DB = 40.0;
 constexpr const char* ANTENNA = "RX2";
-constexpr const char* DEVICE_ARGS = "type=b200";
+// num_recv_frames=256: UHD's default receive ring overflowed at the B210's
+// higher rates (benchmark_rate at 56 Msps: 10 overruns in 15 s, 0 with 256
+// frames at 40/50/56 Msps; measured 2026-11-25 on serial 3273AC6).
+constexpr const char* DEVICE_ARGS = "type=b200,num_recv_frames=256";
 
 // --- SDR device selection (B210 or X310) ---
 // Both are driven through the same UsrpCapture wrapper (see
@@ -309,10 +312,19 @@ inline DeviceProfile device_profile(SdrDeviceType type) {
         // Consequence, stated plainly: live 1 Mbps beacon decoding is
         // blocked by transport capacity, not by the decoder. Raising
         // this needs a 10GbE NIC, jumbo frames, or moving Wi-Fi to the
-        // B210 (56 Msps over USB3).
+        // B210 (up to 56 Msps over USB3 via a custom Wi-Fi rate).
         return {std::string("addr=") + X310_ADDR, "RX2", 20.0, 31.5, false, 20e6, 500e3};
     }
-    return {DEVICE_ARGS, ANTENNA, DEFAULT_GAIN_DB, 70.0, true, 56e6, 500e3};
+    // B210: 20 Msps by default, although USB3 carries 56. Measured live on
+    // 2026-11-25 (coordinated mode + ML, 120 s each): at 56 Msps there were
+    // 9-33 overflows, the drone symbol-timing and link-clock detectors
+    // rejected every capture (they accept 20-25 Msps only), the native DJI
+    // backend dropped ~47% of samples, the BLE/802.15.4 monitor skipped a
+    // third of captures and the Wi-Fi lane was off (IQ budget). At 20 Msps:
+    // 0 overflows, all of those working, ~5x the FCS-valid Wi-Fi frames and
+    // half the memory. 56 Msps buys nothing yet (wide 802.11n/ac/ax payloads
+    // decode at 20 MHz only); the GUI's custom Wi-Fi rate still allows it.
+    return {DEVICE_ARGS, ANTENNA, DEFAULT_GAIN_DB, 70.0, true, 20e6, 500e3};
 }
 
 // --- Registry ---
