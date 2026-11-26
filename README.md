@@ -112,12 +112,16 @@ with a hit count).
 | Mode | Coverage | Steps | Sample rate (B210) | Sample rate (X310) |
 |---|---|---|---|---|
 | LoRa (Sub-GHz) | 863-868 MHz (IN865 + margin) | 1 | 5 Msps | 5 Msps |
-| Wi-Fi 2.4GHz | 2401-2484 MHz (channels 1-13) | 3 | 56 Msps | 20 Msps (capped) |
-| Wi-Fi 5GHz | UNII-1 (ch 36-48) + UNII-3 (ch 149-165) only | 5 | 56 Msps | 20 Msps (capped) |
+| Wi-Fi 2.4GHz | 2401-2484 MHz (channels 1-13) | 13 | 20 Msps (custom up to 56) | 20 Msps (capped) |
+| Wi-Fi 5GHz | UNII-1 (ch 36-48) + UNII-3 (ch 149-165) only | 9 | 20 Msps (custom up to 56) | 20 Msps (capped) |
 
 The requested rate is always clamped to whichever device is actually
 connected (`DeviceProfile::max_sample_rate_hz`) - see "Multi-device
-support" below for why the X310's cap is so much lower than the B210's.
+support" below for why the X310 is capped at 20 Msps. The B210 also
+defaults to 20 Msps (measured 2026-11-25: at 56 Msps it overflowed, the
+drone symbol-timing/link-clock detectors rejected every capture, and the
+native DJI and BLE decoders could not keep up); a custom Wi-Fi rate in
+the GUI still requests up to 56 Msps.
 
 **5GHz DFS channels (UNII-2/2e, 5250-5725 MHz) are not scanned** -
 those require radar-detection compliance and are used far less often by
@@ -176,7 +180,7 @@ captured in one `DeviceProfile` per device (`config.hpp`):
 | Daughterboard | AD9361 (integrated) | UBX-160 in slot A (channel 0), 10 MHz - 6 GHz, fixed 160MHz analog bandwidth |
 | Gain range | ~0-70dB | 0.0-31.5dB (PGA0, per `uhd_usrp_probe`) |
 | AGC | Yes | **No** - UHD throws `not_implemented_error`; the UI checkbox is shown disabled instead of silently no-op'ing |
-| Max sample rate | 56 Msps (USB3-validated) | 20 Msps (see below) |
+| Default sample rate | 20 Msps (USB3 carries 56; custom Wi-Fi rate) | 20 Msps (see below) |
 
 **X310 network setup.** This X310 is reached over a direct Ethernet
 link, not USB, and needs the host's kernel UDP send buffer raised

@@ -49,7 +49,7 @@ then pick a band. `band_smoke_test` defaults to X310 (override: `./band_smoke_te
 | Second antenna | RF B / TX-RX — intended for a TX loopback test rig, **not yet wired up in code** |
 | Host link | `enp3s0`, Realtek RTL8125 (2.5GbE capable) negotiated at **1000 Mb/s**, **MTU 1500** |
 | 10GbE | **None.** No 10G NIC in the machine |
-| Also available | USRP B210 (`max_sample_rate_hz` 56e6) — not currently used |
+| Also available | USRP B210, serial `3273AC6`, USB3; defaults to 20 MSps like the X310 (56 MSps only as a custom Wi-Fi rate), device args `type=b200,num_recv_frames=256` |
 | LoRa test TX | Melange TarangMini on `/dev/ttyUSB0` (FT232), currently **SF07 / BW125** |
 | Wi-Fi adapter | Realtek RTL8188FTV — **2.4 GHz only**, and it is the host's internet connection |
 

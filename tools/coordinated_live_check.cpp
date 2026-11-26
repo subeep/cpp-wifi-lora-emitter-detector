@@ -11,9 +11,10 @@
 //
 // The drone chain is attached as in the GUI: symbol-timing link detector, DroneID follow-up
 // visits (--no-followup leaves them off for an A/B run), and the merged detection rows with
-// their log (--detection-log PATH keeps the log outside the temporary root).
+// their log (--detection-log PATH keeps the log outside the temporary root). --offset-log PATH
+// writes the GUI's carrier-offset log there, for drone_log_replay.
 //
-//   coordinated_live_check [--seconds N] [--device x310|b210] [--ml] [--classifier-rows] [--json PATH] [--mode BAND]
+//   coordinated_live_check [--seconds N] [--device x310|b210] [--rate SPS] [--ml] [--classifier-rows] [--json PATH] [--mode BAND]
 //                          [--channel N] [--security-record PATH]
 // --mode runs a band mode instead (e.g. wifi_both) for an A/B comparison.
 // --channel N holds a Wi-Fi band mode on one channel. --security-record
@@ -43,6 +44,7 @@
 #include "drones/addon.hpp"
 #include "drones/droneid_followup_wiring.hpp"
 #include "drones/evidence_log.hpp"
+#include "drones/offset_log.hpp"
 #include "drones/evidence_packet.hpp"
 #include "ml_inference.hpp"
 #include "scanner.hpp"
@@ -72,7 +74,8 @@ int main(int argc, char** argv) {
     std::string export_dir;               // with --ml: export the latest model result's evidence here
     SdrDeviceType device = SdrDeviceType::X310;
     std::optional<int> channel;
-    std::string security_record, detection_log;
+    std::optional<double> rate;  // Wi-Fi capture rate override (as the GUI's custom rate)
+    std::string security_record, detection_log, offset_log_path;
     bool with_followup = true;
     double simulate_link_hz = 0;  // test hook: report a link sighting here from 15 s to 75 s
     bool classifier_rows = false;  // with --ml: also open classifier-only rows (off in the app by default)
@@ -84,6 +87,7 @@ int main(int argc, char** argv) {
         else if (a == "--classifier-rows") classifier_rows = true;
         else if (a == "--simulate-link" && i + 1 < argc) simulate_link_hz = std::atof(argv[++i]) * 1e6;
         else if (a == "--detection-log" && i + 1 < argc) detection_log = std::filesystem::absolute(argv[++i]).string();
+        else if (a == "--offset-log" && i + 1 < argc) offset_log_path = std::filesystem::absolute(argv[++i]).string();
         else if (a == "--json" && i + 1 < argc) json_path = argv[++i];
         else if (a == "--mode" && i + 1 < argc) mode = argv[++i];
         else if (a == "--retain" && i + 1 < argc) retain = size_t(std::atoi(argv[++i]));
@@ -91,7 +95,8 @@ int main(int argc, char** argv) {
         else if (a == "--channel" && i + 1 < argc) channel = std::atoi(argv[++i]);
         else if (a == "--security-record" && i + 1 < argc) security_record = std::filesystem::absolute(argv[++i]).string();
         else if (a == "--device" && i + 1 < argc) device = std::string(argv[++i]) == "b210" ? SdrDeviceType::B210 : SdrDeviceType::X310;
-        else { std::fprintf(stderr, "usage: %s [--seconds N] [--device x310|b210] [--ml] [--classifier-rows] [--json PATH] [--mode BAND] [--channel N] [--security-record PATH] [--retain N] [--export-dir PATH]\n", argv[0]); return 2; }
+        else if (a == "--rate" && i + 1 < argc) rate = std::atof(argv[++i]);
+        else { std::fprintf(stderr, "usage: %s [--seconds N] [--device x310|b210] [--rate SPS] [--ml] [--classifier-rows] [--json PATH] [--mode BAND] [--channel N] [--security-record PATH] [--retain N] [--export-dir PATH] [--detection-log PATH] [--offset-log PATH]\n", argv[0]); return 2; }
     }
     char tmp[] = "/tmp/rfmon-coordinated-live-XXXXXX";
     if (!mkdtemp(tmp)) return 1;
@@ -106,6 +111,10 @@ int main(int argc, char** argv) {
     droneid_followup::connect(followup, timing_monitor, drones);
     followup.set_enabled(with_followup);
     drone_claims::Store drone_store;
+    // The GUI's carrier-offset log (data/drone_offsets.jsonl), written where asked so
+    // drone_log_replay can replay the run through the Drones page's grouping.
+    std::optional<drone_claims::OffsetLog> offset_log;
+    if (!offset_log_path.empty()) offset_log.emplace(offset_log_path);
     drone_claims::DetectionLog drone_log(detection_log.empty() ? std::string(tmp) + "/drone_detections.jsonl" : detection_log);
     std::map<std::string, drone_claims::Detection> drone_rows;
     drone_claims::DroneTracks drone_tracks;
@@ -151,6 +160,7 @@ int main(int argc, char** argv) {
                 drones.remote_id.submit(f);
             });
         scanner.set_device_type(device);
+        if (rate && !scanner.set_wifi_sample_rate(rate)) { std::fprintf(stderr, "rate rejected\n"); return 2; }
         scanner.set_iq_retention(retain);
         drones.native_max_capture_s = mode == BAND_COORDINATED ? 3600 : 0.160;
         drones.native.start(true, true);  // as Addon::start_unified does
@@ -187,7 +197,10 @@ int main(int argc, char** argv) {
                 drone_store.expire(now);
                 const auto timing = timing_monitor.snapshot();
                 for (auto it = timing.history.rbegin(); it != timing.history.rend(); ++it)
-                    if (now - it->observed <= lifetime) drone_store.timing(*it);
+                    if (now - it->observed <= lifetime) {
+                        drone_store.timing(*it);
+                        if (offset_log) offset_log->link(*it);
+                    }
                 // Tally each completed timing result once (history is newest first, bounded).
                 const uint64_t fresh = std::min<uint64_t>(timing.completed - timing_counted, timing.history.size());
                 for (uint64_t k = 0; k < fresh; ++k) {
@@ -197,7 +210,9 @@ int main(int argc, char** argv) {
                     if (r.timing_group) ++group_centres[g + " @ " + std::to_string(int(std::lround(r.center / 1e6))) + " MHz"];
                 }
                 timing_counted = timing.completed;
-                for (const auto& packet : drones.native.snapshot().native_packets) ingest_native_packet(drone_store, packet, now);
+                for (const auto& packet : drones.native.snapshot().native_packets)
+                    if (const auto added = ingest_native_packet(drone_store, packet, now); added && offset_log)
+                        offset_log->packet(added->first, added->second);
                 drone_rows = detections(drone_store, now, remote_id_sightings(drones.remote_id.snapshot(), now));
                 const auto classifier = model.snapshot();
                 add_universal_claims(drone_rows, classifier);
@@ -302,6 +317,7 @@ int main(int argc, char** argv) {
 
         json out;
         out["device"] = device == SdrDeviceType::X310 ? "X310" : "B210";
+        out["wifi_rate_override_hz"] = rate ? json(*rate) : json(nullptr);
         out["mode"] = mode;
         out["seconds"] = seconds;
         out["connected"] = status.connected;
